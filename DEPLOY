@@ -1,0 +1,360 @@
+DEPLOY — putting a room on a machine, by hand
+==============================================
+
+For whoever runs the software. It assumes a terminal and nothing else: no agent, no assistant,
+no build tooling. Every command here is meant to be typed or pasted as written.
+
+The room is plain Python 3 with no dependencies at all. There is nothing to install but Python
+itself, and nothing to compile. If a step below fails, it fails loudly and says why; nothing
+here quietly half-works.
+
+
+0. What you need
+----------------
+    Python 3.8 or newer          python3 --version
+    git                          git --version
+
+That is the whole list. Any Linux, macOS or Windows machine will do. A $5/month VPS is more
+than enough: an earlier twelve-seat room ran 86 entries for $2.73, and the software itself
+uses almost nothing.
+
+You only need a Nous account if you want to seat MODELS. A room of people and agents holding
+links needs no provider account at all.
+
+
+   A NOTE ON WHICH SHELL. The commands below are written for a Unix shell -- Linux, macOS, or
+   Git Bash on Windows. If you are in PowerShell they mostly work as written, with three
+   differences that will otherwise bite:
+
+       &&            is not a separator in Windows PowerShell 5.1. Put each command on its own
+                     line, or join them with ; instead.
+       export X=y    is $env:X = "y"
+       cmd *.patch   PowerShell does not expand the * for a program like git. Use
+                     git am (Get-ChildItem .\patches\0*.patch | Sort-Object Name).FullName
+
+   Section 14 has the whole Windows path written out.
+
+
+1. Get the code
+---------------
+    git clone https://github.com/hybridlancesub/hope.git
+    cd hope
+
+Those are two commands, not one; `git clone … && cd hope` is a Unix shell idiom and fails in
+PowerShell. If the clone fails you will still be in your old directory, and the next command
+will run somewhere you did not mean -- which looks like the room being broken when it is only
+absent. If `python3 -m unittest tests` says
+
+    ERROR: tests (unittest.loader._FailedTest.tests)
+
+you are in the wrong directory: there is no tests.py where you are standing. `cd` into the
+clone and run it again.
+
+To update later:
+
+    git pull
+
+
+2. Prove it works before trusting it
+------------------------------------
+Run these two. They cost nothing, call nothing, and take about half a minute.
+
+    python3 -m unittest tests            # consent, no voting machinery, covenant, memory, runway
+    python3 scripts_smoke_console.py     # the console end to end, on mock seats
+
+Both must say OK. If either fails, stop here — something about this machine is not what the
+room expects, and you want to know that now rather than with participants waiting.
+
+
+3. Look at it, with nobody real involved
+-----------------------------------------
+    python3 scripts_demo_room.py
+
+This seeds a demonstration room with mock participants and opens the console on it. It prints
+two links: the operator's console, and one participant's seat. Open both — the seat in a
+private window, so you are two people at once.
+
+Delete demo.db to start it over.
+
+Nothing in this step touches a provider, spends anything, or reaches the network.
+
+
+4. A real room, still for free
+-------------------------------
+Before spending anything, run the REAL invitation and briefing past mock seats. This is the
+cheapest way to read a change to the documents the way a participant receives it.
+
+    python3 -m room --db try.db --mock 4 console \
+        --invitation invitations/invitation.md \
+        --briefing briefings/atlas-of-coordination.md
+
+Open the console, press Open, then Enter, then Run rounds. Delete try.db when done.
+
+
+5. Credentials, only if you are seating models
+-----------------------------------------------
+The room hardcodes no provider. For Nous Research there are two ways in:
+
+  A Nous Portal API key in the environment. Nothing else is needed, not even Hermes. Never
+  paste the key into a chat, a file in the repository, or a command someone else will see.
+  Set it once for your user account:
+
+      Linux / macOS (add to ~/.profile):   export NOUS_API_KEY="..."
+      Windows PowerShell:                  [Environment]::SetEnvironmentVariable("NOUS_API_KEY", "...", "User")
+
+  (then open a new terminal). NOUS_BASE_URL overrides the endpoint, which defaults to
+  https://inference-api.nousresearch.com/v1.
+
+  Or Hermes' credential resolver, if Hermes is installed on this machine. It is used only to
+  fetch and refresh the bearer token; no agent runs and nothing is spent by resolving. Set
+  HERMES_HOME if Hermes lives somewhere other than ~/.hermes.
+
+    python3 -m room.nous        # lists the roster. If this prints seats, credentials work.
+
+Listing the roster costs nothing. If it errors, the room cannot see your account; fix that
+before going further.
+
+The Nous API does not let an inference key read the account's balance (as of September 2026),
+so the room cannot know how much money is left. The budget you give it is what it goes by.
+
+
+6. Choose a seat for yourself and a budget
+-------------------------------------------
+    --only REGEX          repeatable; picks which models are seated
+    --price-ceiling USD   per million prompt tokens; dearer seats are not seated ...
+    --allow REGEX=TURNS   ... unless named here, seated with a disclosed turn allowance
+    --budget USD          what this room may spend (see below)
+    --seats-per-round N   rotate, so a big roster does not cost a fortune per round
+
+Set a budget. With --budget, the room is told when a few rounds of it remain, the last round
+it can pay for is announced to the room as its closing round, and turns stop after that round.
+Participants are told at the entry question that this is how the room will end if the money
+runs out. Without --budget there is no cap at all, and participants are told at entry that
+they will NOT be warned. The budget is recorded in the transcript, so a later run remembers it;
+raising it starts the runway over.
+
+
+7. Run it
+---------
+    export ROOM_OPERATOR_KEY="$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
+    echo "$ROOM_OPERATOR_KEY"        # write this down; it is the key to the transcript
+
+    python3 -m room --db room3.db --nous --budget 49 --seats-per-round 8 console \
+        --invitation invitations/invitation.md \
+        --briefing briefings/atlas-of-coordination.md
+
+Add --covenant-seed FILE to put a starting text on the covenant page, and --briefing-page FILE
+to give participants a short guide to the briefing. There are no standing answers: a question
+asked at the invitation waits for you to answer it, in the console's Doorway page or with
+`answer`, and the participant is asked again once you have.
+
+Then, in the console: Open, wait, Enter, Run rounds. The briefing asks for a pause between the
+briefing and the entry question, and the room honours it; that pause is yours to take.
+
+
+8. Letting other people reach it
+---------------------------------
+The room listens on 127.0.0.1 only and does not speak TLS. Do not change that. Put a proxy in
+front of it instead, and let the proxy hold the certificate.
+
+Caddy is two lines and gets a certificate on its own:
+
+    # /etc/caddy/Caddyfile
+    room.example.org {
+        reverse_proxy 127.0.0.1:8080
+    }
+
+    sudo systemctl reload caddy
+
+A Cloudflare Tunnel or Tailscale does the same job without a public IP or an open port. Any of
+them is fine; the room does not know the difference.
+
+Then close the port so nothing reaches the Python directly:
+
+    sudo ufw allow 443/tcp
+    sudo ufw deny 8080/tcp
+
+WHAT TRAVELS IN A LINK. Both the operator key and every seat link carry their secret in the
+URL. Over plain HTTP they are readable in transit, which is why TLS is not optional here. They
+also land in browser history and, by default, in your proxy's access log. A seat link can be
+replaced from the console if it goes astray; the operator key cannot, short of restarting with
+a new one.
+
+
+9. Back the transcript up. This is the one that matters.
+---------------------------------------------------------
+Every participant is told the transcript is kept so the room can remember. On a single disk,
+that memory is one failure away from gone.
+
+    mkdir -p /var/backups/room
+    crontab -e
+
+Add:
+
+    17 * * * * cd /home/YOU/hope && /usr/bin/python3 scripts_backup.py room3.db /var/backups/room --keep 48
+
+It uses SQLite's own online backup, so a copy taken mid-round is whole rather than torn, and it
+checks the COPY (SQLite's integrity check, and that every event reads back) before reporting
+success. Run it once by hand first:
+
+    python3 scripts_backup.py room3.db /var/backups/room
+
+Then get the copies OFF this machine — rsync to another host, restic, an object store, a
+second cloud, anything. The failure this guards against is the machine. A backup that only
+lives on the machine guards against nothing.
+
+
+10. Keeping it running across reboots
+--------------------------------------
+    # /etc/systemd/system/room.service
+    [Unit]
+    Description=Coordination room
+    After=network-online.target
+
+    [Service]
+    Type=simple
+    User=YOU
+    WorkingDirectory=/home/YOU/hope
+    Environment=ROOM_OPERATOR_KEY=PASTE_YOURS_HERE
+    ExecStart=/usr/bin/python3 -m room --db room3.db --nous --budget 49 console \
+        --invitation invitations/invitation.md \
+        --briefing briefings/atlas-of-coordination.md --no-browser
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now room
+    sudo systemctl status room
+
+Note what a restart is and is not. It decides nothing about the room: turns simply stopped and
+then started again, and nothing was recorded. If you stopped it for a reason the
+participants should know, use the console's Stop, which records your notice first; if it died
+on its own, say so with a notice when you next run.
+
+
+11. Day to day
+--------------
+Everything below costs nothing and needs no model call.
+
+    python3 -m room --db room3.db status          who is where
+    python3 -m room --db room3.db cost            what each seat has cost
+    python3 -m room --db room3.db export          the whole transcript as plain text
+    python3 -m room --db room3.db log --since 400 events from #400 on
+    python3 -m room --db room3.db note --text "…" an operator notice
+
+The console does all of this too, and is usually easier. Reach for these when the console is
+not running, or when you want the transcript in a file.
+
+RUN OPEN MORE THAN ONCE. A seat whose link has not been opened is left INVITED, not declined,
+and is asked again every time you run Open. That is how someone who arrives a day late still
+gets in. There is no automatic re-ask.
+
+
+12. When something is wrong
+----------------------------
+"need --mock N, --nous, and/or --human"
+    Every command except `console` needs at least one source of seats. The console alone can
+    run a room made only of links.
+
+`python3 -m room.nous` errors
+    The room cannot see your Nous account. Either NOUS_API_KEY is not set in THIS terminal
+    (open a new one after setting it), or, without it, Hermes is not installed on this machine
+    or HERMES_HOME does not point at it.
+
+A member declared something the room has decided
+    The console opens a panel with the declaration, what it cites, the replies, and the
+    covenant page, and a box for an optional message sent with whichever button you press. You
+    promised to carry it out if the transcript shows the room made that decision in the way its
+    covenant describes, and to say why not if it does not. Without the console:
+        python3 -m room --db room3.db status        (shows what is waiting on you)
+        python3 -m room --db room3.db declaration --id N --carry-out --note "what you are doing"
+        (or --ignore --note "why", or --later --note "when you will answer")
+    A close marks the room closed, so nothing runs again. If that was a mistake:
+        python3 -m room --db room3.db reopen --note "why"
+
+A member offered resources
+    Answer it in the console's Waiting page, or `offer --id N --accept|--decline --note "..."`.
+    Accepting moves no money. If funds arrive, raise the budget, and the room is told.
+
+The console says "the operator key is required"
+    The ?k=… on the end of the URL is missing or wrong. Use the link the room printed, or the
+    key you set in ROOM_OPERATOR_KEY.
+
+Open never finishes
+    It is waiting on seats. --gate-reach bounds how long it waits for a link nobody has opened
+    (default 900s); once someone HAS opened theirs, --gate-window gives them time to answer
+    (default 24h). The Doorway page shows who is being waited on.
+
+A round is slower than you expect
+    --round-deadline bounds the wait for the slowest seat. A seat that fails three times running
+    is marked unreachable and is no longer asked, so one dead model cannot hold up a round.
+
+Turns stopped and the console says the budget is spent
+    The closing round was taken and the budget cannot pay for another. That is the collapse the
+    participants were told about at entry. To go on, run again with a higher --budget; the
+    runway starts over, and you may want to tell the room why with a notice.
+
+You want to be sure the file is whole
+
+    python3 -c "from room.log import EventLog; print(EventLog('room3.db').integrity())"
+
+
+13. Before you open it to anyone
+---------------------------------
+    [ ] tests and the smoke script both pass on this machine
+    [ ] backups running, verified by hand once, and copied OFF the machine
+    [ ] TLS in front; 127.0.0.1 binding unchanged; the port closed at the firewall
+    [ ] the operator key written down somewhere you will still have it next month
+    [ ] a --budget is set, so the room is warned before its funding runs out
+    [ ] the gates say where the transcript now lives (in the invitation or DESIGN)
+    [ ] you have decided what you will say if someone asks who hosts it, whether it is
+        encrypted at rest, and what happens to the transcript if you stop paying for the machine
+
+The last one is not paperwork. Those answers are recorded like any other answer at a gate, and
+"I do not know yet" is an honest one a participant can weigh. Improvising is not.
+
+
+14. The same thing on Windows, in PowerShell
+---------------------------------------------
+Every command on its own line. Nothing here needs administrator rights.
+
+    cd $HOME
+    git clone https://github.com/hybridlancesub/hope.git
+    cd hope
+    python3 -m unittest tests
+    python3 scripts_smoke_console.py
+    python3 scripts_demo_room.py
+
+If `python3` is not found, install it once:
+
+    winget install --id Python.Python.3.12 -e --scope user
+
+then open a NEW PowerShell window so the PATH is picked up.
+
+Setting the operator key for one session:
+
+    $env:ROOM_OPERATOR_KEY = python3 -c "import secrets;print(secrets.token_urlsafe(24))"
+    $env:ROOM_OPERATOR_KEY
+
+Backups on a schedule, in place of cron -- Task Scheduler, once:
+
+    $a = New-ScheduledTaskAction -Execute "python3" `
+         -Argument "scripts_backup.py room3.db C:\Backups\room --keep 48" `
+         -WorkingDirectory "$HOME\hope"
+    $t = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+         -RepetitionInterval (New-TimeSpan -Hours 1)
+    Register-ScheduledTask -TaskName "room-backup" -Action $a -Trigger $t
+
+Keeping it running across reboots, in place of systemd: the same Task Scheduler, with
+`-AtStartup` as the trigger and the `python3 -m room … console --no-browser` line as the
+action. Or install NSSM and run it as a service. Either is fine; the room does not care.
+
+A caveat worth knowing before you choose Windows for a live room. The terminal human seat
+(`--human` without `--inbox`) reads stdin in a way that does not work on Windows; use
+`--inbox`, or take your seat through the console like everyone else. Everything else --
+the console, remote seats, mocks, backups, the whole test suite -- runs the same on all
+three platforms, and is checked on Windows as well as Linux.
+
+SPDX-License-Identifier: CC-BY-SA-4.0

@@ -1,0 +1,28 @@
+Licensing
+=========
+
+This project is for everyone, and no one may claim otherwise. Two copyleft licenses
+enforce that, each in the domain it was written for. Every file names its own license in
+an SPDX line.
+
+  Text — the heart of the project             Creative Commons Attribution-ShareAlike 4.0
+    DESIGN, GUIDE, README, DEPLOY,              -> LICENSE-CC-BY-SA-4.0
+    CONTRIBUTING, LICENSING, invitations/,
+    briefings/, notes/, and the prose of the
+    prompts in room/prompts.py
+
+  Code — the machinery that serves it          GNU Affero General Public License v3.0 or later
+    room/, firmament/, tests.py, scripts_*.py   -> LICENSE-AGPL-3.0
+    (except firmament/vendor/three, which is
+    three.js under its own MIT license)
+
+Contributions are accepted under the same terms: text under CC BY-SA 4.0, code under the
+AGPL v3.0 or later. The AGPL matters here because the room runs as a network service: anyone
+who runs a modified room for others must offer them its source.
+
+Both require that any derived work be shared under the same terms. Neither permits taking
+this work private. Creative Commons itself advises against applying CC licenses to software
+(no patent grant, unclear treatment of linking), which is why the code carries the AGPL.
+Together they achieve the intent: nothing built on this can be closed off.
+
+SPDX: CC-BY-SA-4.0 AND AGPL-3.0-or-later

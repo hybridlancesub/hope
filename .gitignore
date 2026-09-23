@@ -1,0 +1,9 @@
+*.db
+*.db-*
+*.log
+__pycache__/
+records/
+*.seats.json
+# a retelling or map of a sitting holds participants' words: it never leaves the machine
+firmament/story.json
+firmament/map-*.html
