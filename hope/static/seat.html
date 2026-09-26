@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later
      One seat. This page shows its holder the question in front of them and nothing else about
-     the room: a seat link is a seat, not a gallery. It never composes JSON by hand, which is
+     the field: a seat link is a seat, not a gallery. It never composes JSON by hand, which is
      also why an escape sequence pasted into a terminal can no longer become a contribution. -->
 <html lang="en">
 <head>
@@ -67,7 +67,7 @@
 </div>
 
 <div class="dock" id="dock" hidden><div class="inner">
-  <textarea id="say" placeholder="Write here."></textarea>
+  <textarea id="say"></textarea>
   <div class="row" id="buttons"></div>
   <div class="hint" id="hint"></div>
   <div class="flash" id="flash"></div>
@@ -82,7 +82,7 @@ let turnId = null, kind = null, deadline = null, sending = false, lastView = "";
 
 const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
-// Event ids are the room's citation system. Make them clickable so building on what is
+// Event ids are the field's citation system. Make them clickable so building on what is
 // already there costs one tap instead of careful retyping.
 function renderView(text){
   return esc(text)
@@ -96,53 +96,16 @@ function fmtClock(s){
   return m + ":" + String(r).padStart(2,"0");
 }
 
-const GATES = {
-  invitation: {
-    lead: "You have been invited to take part in a coordination room.",
-    note: "Accepting commits you to nothing except receiving the documentation. Declining is a complete answer and costs nothing.",
-    buttons: [["Accept", "yes", "go", "Say yes to hearing more. You will be sent the documentation and the briefing, and asked separately, later, whether you actually enter. Nothing else is committed by this."],
-              ["Decline", "no", "no", "A complete and respected answer. It covers this request, at this time, and nothing else — it forecloses nothing and counts against you in no way."],
-              ["Ask a question first", "question", "", "Put a question to whoever invited you. It is recorded, answered personally, and you are asked again with the answer in hand. You are not asked anything further until then."]],
-    hint: "Anything you type is recorded alongside your answer, in your own words."
-  },
-  delivery: {
-    lead: "This is the documentation and the briefing. Nothing is decided here.",
-    note: "You are not being asked whether to enter. Read at your own pace; the question of entering comes later, separately.",
-    buttons: [["I have read it", "received", "go", "Acknowledge that you received and read it. This is not entering the room and does not commit you to anything."],
-              ["Stop here", "no", "no", "Leave now, having read it. Nothing further is asked of you."]],
-    hint: "Anything you type is recorded with your acknowledgement."
-  },
-  entry: {
-    lead: "Do you enter the room?",
-    note: "You may withdraw at any moment afterwards, immediately and without giving a reason.",
-    buttons: [["Enter", "yes", "go", "Join the room. Everything is open to you at once — contribute, reply to anyone, write on the covenant page, keep memories, rest — and you can withdraw at any moment, honoured immediately, no reason required."],
-              ["Decline", "no", "no", "Leave without entering. A complete answer; nothing of yours is kept but the record of having been asked and having answered."]],
-    hint: "A sentence about how you mean to take part is recorded with your entry."
-  },
-  share: {
-    lead: "The room has stopped. You are asked one question about your own words.",
-    note: "No answer is read as declining to share. Nothing is assumed.",
-    buttons: [["Share everything I said", "share", "go", "Everything you contributed here may be shown to the other room, attributed to you, word for word."],
-              ["Share nothing", "no", "no", "Nothing of yours is carried over. No reason is needed, and this is also what happens if you simply do not answer."]],
-    hint: "This decides only whether your own contributions travel. It changes nothing about the record here."
-  },
-  turn: {
-    lead: "Your turn.",
-    note: "",
-    buttons: [["Contribute", "", "go", "Say something of your own. Write it below and send; it is kept in the transcript under your name."],
-              ["Reply to #", "#", "", "Answer one specific entry. Start with its number (click any #id above), then say in your own words how you are answering it."],
-              ["Remember", "remember ", "", "Keep a few sentences for the room to carry forward, at most 600 characters. Shared with everyone; only you can let it go."],
-              ["Let go of #", "let go ", "", "Let go of a memory you added, by its number. Its words are removed."],
-              ["Copy covenant", "copycov", "", "Put the current covenant page into the box below, so you can edit it before sending."],
-              ["Rewrite covenant", "covenant ", "", "Replace the whole covenant page with what is in the box. Everyone sees who changed it; earlier versions stay reachable."],
-              ["Rest", "rest ", "", "Step out for a number of rounds, e.g. 3. You are not asked until they pass. Resting costs the room nothing."],
-              ["Declare a decision", "declare ", "", "Tell the operator something the room has decided. Start with close, pause, or other (anything else the room asks the operator to carry out), then say what it decided and how, in the way its covenant describes, citing entries by #id. The operator reads it against the transcript and carries it out, or says in the room why not."],
-              ["Offer resources", "offer ", "", "Put an offer of resources (funds, or a way to raise them) before the operator and everyone. Nothing is expected of anyone, and this page never moves money."],
-              ["Pass", "pass", "", "Take no action this turn. A full and ordinary answer — nothing is owed."],
-              ["Withdraw", "withdraw ", "no", "Leave the room. Honoured immediately, no justification required. What you have already said stays in the transcript; you will not be asked again."]],
-    hint: "Plain words contribute. Click any #id in the text above to cite it; start with #id to reply to it. There is no voting here: to ask the room to decide something, say so."
-  }
-};
+// Every word on this page comes from hope/prompts.py (SEAT_PAGE), where all the words participants
+// are told live, so what this page says is checked with them. Fetched once, then kept.
+let W = null;
+async function words(){
+  if (W) return W;
+  const r = await fetch(BASE + "words.json", {cache:"no-store"});
+  W = await r.json();
+  $("say").placeholder = W.placeholder;
+  return W;
+}
 
 function paint(d){
   const who = d.seat ? `<b>${esc(d.seat.name)}</b> <span class="muted">of ${esc(d.seat.hails_from)}</span>` : "";
@@ -150,14 +113,24 @@ function paint(d){
   if (!d || d.state !== "your_turn"){
     turnId = null;
     $("dock").hidden = true;
-    $("main").innerHTML = `<div class="waiting">Nothing is being asked of you right now.
-      <div class="muted" style="margin-top:.6rem">This page is watching for your next turn.
+    const m = d.member || {};
+    if (m.state === "OUT"){
+      const [label, tip] = W["return"];
+      $("main").innerHTML = `<div class="waiting">${esc(m.joined ? W.left_member : W.left_declined)}
+        <div style="margin-top:1rem"><button class="go" id="back" data-tip="${esc(tip).replace(/"/g, "&quot;")}">${esc(label)}</button></div>
+        <div class="flash" id="backflash"></div></div>`;
+      $("back").onclick = askBack;
+      return;
+    }
+    const extra = m.returning ? `<div class="muted" style="margin-top:.6rem">${esc(W.asked_back)}</div>` : "";
+    $("main").innerHTML = `<div class="waiting">${esc(W.waiting)}${extra}
+      <div class="muted" style="margin-top:.6rem">${esc(W.watching)}
       <span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>`;
     return;
   }
   const fresh = d.turn_id !== turnId;
   turnId = d.turn_id; kind = d.kind; deadline = d.seconds_left; lastView = d.view || "";
-  const g = GATES[d.kind] || GATES.turn;
+  const g = W.gates[d.kind] || W.gates.turn;
   $("main").innerHTML = `
     <div class="card">
       <div class="ask">${esc(g.lead)}</div>
@@ -189,10 +162,10 @@ function paint(d){
 
 function tick(){
   const el = $("clk"); if (!el) return;
-  if (deadline === null || deadline === undefined){ el.textContent = "There is no clock on this answer. Take the time you need."; return; }
-  el.textContent = deadline > 0
-    ? `${fmtClock(deadline)} left — no reply is recorded as ${kind === "turn" ? "a pass" : "a decline"}.`
-    : "The window has closed.";
+  const c = W.clock;
+  if (deadline === null || deadline === undefined){ el.textContent = c.none; return; }
+  const which = kind === "turn" ? c.turn : kind === "share" ? c.share : c.gate;
+  el.textContent = deadline > 0 ? which.replace("{left}", fmtClock(deadline)) : c.closed;
   el.classList.toggle("low", deadline <= 60);
 }
 setInterval(() => { if (deadline > 0){ deadline -= 1; tick(); } }, 1000);
@@ -201,43 +174,49 @@ async function send(prefix){
   if (sending || !turnId) return;
   const typed = $("say").value.trim();
   let text;
-  if (prefix === "yes" || prefix === "no" || prefix === "received" || prefix === "share" || prefix === "question"){
+  if (prefix === "yes" || prefix === "no" || prefix === "received" || prefix === "question"){
     text = (prefix + " " + typed).trim();
+  } else if (prefix === "share"){
+    text = "share";
+  } else if (prefix === "share-some"){
+    const ids = typed.match(/\d+/g);
+    if (!ids){ flash(W.flash.share_which, false); return; }
+    text = "share " + ids.map(n => "#" + n).join(" ");
   } else if (prefix === "pass"){
     text = "pass";
   } else if (prefix === "copycov"){
     const v = (lastView || "").split("\n");
     const start = v.findIndex(l => l.startsWith("COVENANT PAGE ("));
     const end = v.findIndex(l => l.startsWith("END OF COVENANT PAGE"));
-    if (start < 0 || end < start){ flash("There is no covenant page in this view.", false); return; }
+    if (start < 0 || end < start){ flash(W.flash.no_covenant, false); return; }
     const page = v.slice(start + 1, end).join("\n");
     $("say").value = page === "(empty)" ? "" : page;
     $("say").focus();
-    flash("The current page is in the box. Edit it, then press Rewrite covenant.", true);
+    flash(W.flash.covenant_copied, true);
     return;
   } else if (prefix === "#"){
     const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
-    if (!m){ flash("Say which entry, e.g. #169, then your reply.", false); return; }
+    if (!m){ flash(W.flash.which_entry, false); return; }
     text = "#" + m[1] + " " + m[2];
   } else if (prefix === "let go "){
     const m = typed.match(/#?(\d+)/);
-    if (!m){ flash("Say which memory, e.g. #169.", false); return; }
+    if (!m){ flash(W.flash.which_memory, false); return; }
     text = "let go " + m[1];
   } else if (prefix === "rest "){
     const m = typed.match(/(\d+)\s*([\s\S]*)/);
-    if (!m){ flash("Say for how many rounds, e.g. 3.", false); return; }
+    if (!m){ flash(W.flash.how_many, false); return; }
     text = "rest " + m[1] + (m[2] ? " " + m[2] : "");
   } else if (prefix === "declare "){
     const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
-    if (!m || !m[2].trim()){ flash("Start with close, pause or other, then say what the room decided and how.", false); return; }
+    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
     text = "declare " + m[1].toLowerCase() + " " + m[2];
   } else if (prefix === "offer " && !typed){
-    flash("Say what you can offer, and how it would reach the room.", false); return;
+    flash(W.flash.offer_what, false); return;
   } else if (prefix === "covenant " && !typed){
-    flash("The box is empty. Press Copy covenant to start from the current page.", false); return;
+    flash(W.flash.covenant_empty, false); return;
   } else {
     text = (prefix + typed).trim();
-    if (!text){ flash("Nothing to send.", false); return; }
+    if (!text){ flash(W.flash.nothing, false); return; }
   }
   sending = true;
   try {
@@ -246,9 +225,9 @@ async function send(prefix){
       body: JSON.stringify({ text, turn_id: turnId })
     });
     const out = await r.json();
-    if (out.ok){ flash("Recorded as " + out.recorded_as.action + ".", true); $("say").value = ""; turnId = null; }
-    else flash(out.error || "Not accepted.", false);
-  } catch(e){ flash("Could not reach the room: " + e.message, false); }
+    if (out.ok){ flash(W.recorded_as.replace("{action}", out.recorded_as.action), true); $("say").value = ""; turnId = null; }
+    else flash(out.error || W.flash.not_accepted, false);
+  } catch(e){ flash(W.flash.unreachable + e.message, false); }
   finally { sending = false; poll(); }
 }
 
@@ -282,11 +261,22 @@ document.addEventListener("focusin", e => {
 document.addEventListener("focusout", hideTip);
 document.addEventListener("scroll", hideTip, true);
 
+async function askBack(){
+  try {
+    const r = await fetch(BASE + "return", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    const out = await r.json();
+    const f = $("backflash");
+    if (f){ f.textContent = out.ok ? W.asked_back : (out.error || W.flash.not_recorded); f.className = "flash " + (out.ok ? "ok" : "bad"); }
+  } catch(e){ /* the field may not be running; the button stays */ }
+  poll();
+}
+
 async function poll(){
   try {
+    await words();
     const r = await fetch(BASE + "turn.json", {cache:"no-store"});
     if (r.ok) paint(await r.json());
-  } catch(e){ /* the room may simply not be running; keep watching */ }
+  } catch(e){ /* the field may simply not be running; keep watching */ }
 }
 poll(); setInterval(poll, 2000);
 </script>

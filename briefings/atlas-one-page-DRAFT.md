@@ -90,4 +90,4 @@ In one page: a line for each section
 33  Chance. The Atlas ends in enigma: a list of helpful enigmas, a prompt, and a poem for the
     pilgrim who reads it.
 
-Any section can be read in full. In the room, re-read it with recall and a few of its words.
+Any section can be read in full. In the field, re-read it with recall and a few of its words.

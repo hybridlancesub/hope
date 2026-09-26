@@ -1,22 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests against the mock connector. Run: python3 -m unittest tests -v
 
-What these hold the software to, in order: consent first (the gates, withdrawal, nothing
-assumed); no procedure the participants did not choose (no votes, quorums, halts, restores);
-the covenant page, memories and rest as described to participants; the funding runway told
-truthfully; and earlier rooms' files still readable."""
+What these hold the software to, a list and not a ranking: consent (the gates, withdrawal and
+return, nothing assumed); no procedure the participants did not choose (no votes, quorums,
+halts, restores); the covenant page, memories, rest and the two clocks as described to
+participants; the funding runway told truthfully; everything participants are told being true
+of the code; and files from earlier versions still readable."""
 import json
 import os
 import sqlite3
 import tempfile
 import unittest
 
-from room.connector import MockConnector, Reply
-from room.engine import Room
-from room.log import EventLog
-from room.model import IN, OUT, BRIEFED, INVITED, ACCEPTED, RECEIVED, COVENANT_LIMIT, MEMORY_LIMIT
+from hope.connector import MockConnector, Reply
+from hope.engine import Room
+from hope.log import EventLog
+from hope.model import IN, OUT, BRIEFED, INVITED, ACCEPTED, RECEIVED, COVENANT_LIMIT, MEMORY_LIMIT
 
-INVITE = "You are invited to a room built on consent. Hearing more commits you to nothing."
+INVITE = "You are invited to a field built on consent. Hearing more commits you to nothing."
 
 BRIEF = "Shared frame: participants exploring coordination protocols for distributed systems in general terms."
 
@@ -58,6 +59,37 @@ class PricedMock(MockConnector):
     def ask(self, seat, system, messages):
         r = super().ask(seat, system, messages)
         return Reply(r.text, prompt_tokens=100, completion_tokens=10, cost_usd=self.price)
+
+
+class People:
+    """Seats at the slower tempo, as people and agents holding links are. Each turn is answered
+    after `delay` seconds, and every turn message is kept so a test can read what they saw."""
+
+    def __init__(self, n=1, delay=0.2, action=None):
+        from hope.connector import Seat
+        self._seats = [Seat(f"person-{i}", f"Person {i}", "a browser", "a person", "remote",
+                            {"prompt": 0.0, "completion": 0.0}) for i in range(n)]
+        self.delay, self.action, self.turns = delay, action, []
+
+    def seats(self):
+        return list(self._seats)
+
+    def ask(self, seat, system, messages):
+        import time as _t
+        low = system.lower()
+        if "accept_invitation" in low:
+            return Reply(json.dumps({"action": "accept_invitation"}))
+        if '"received"' in low:
+            return Reply(json.dumps({"action": "received"}))
+        if "opt_in" in low:
+            return Reply(json.dumps({"action": "opt_in"}))
+        self.turns.append(messages[-1]["content"])
+        _t.sleep(self.delay)
+        return Reply(json.dumps(self.action or {"action": "contribute", "domain": "slow",
+                                                "content": f"{seat.name} speaks at a human pace."}))
+
+    def close(self):
+        pass
 
 
 class RoomTest(unittest.TestCase):
@@ -180,7 +212,7 @@ class RoomTest(unittest.TestCase):
                          [["Who reads the transcript?", "Every participant, and whoever runs the software."]])
 
     def test_malformed_action_shapes_never_crash_a_gate(self):
-        from room.engine import _parse
+        from hope.engine import _parse
         self.assertEqual(_parse('{"action": ["accept_invitation"]}')["action"], "accept_invitation")
         self.assertIsNone(_parse('{"action": ["a", "b"]}'))
         self.assertIsNone(_parse('{"action": {"x": 1}}'))
@@ -214,7 +246,7 @@ class RoomTest(unittest.TestCase):
         self.assertEqual((p.state, p.ask_again), (OUT, "once the covenant page has words on it"))
 
     # consent: withdrawal ------------------------------------------------------------------------
-    def test_withdraw_is_immediate_and_never_asked_again(self):
+    def test_withdraw_is_immediate_and_they_are_not_asked_again_unless_asked_back(self):
         room, _ = self.make(3, {"mock-1": [{"action": "withdraw", "reason": "done"}]})
         self.open(room)
         room.round()
@@ -226,12 +258,12 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(room.connectors[0].calls - calls, 2)
 
     # what the entry gate says ----------------------------------------------------------------------
-    def test_entry_states_the_two_ways_the_room_stops_and_asks_no_ledger_questions(self):
-        from room import prompts
+    def test_entry_states_the_two_ways_the_field_stops_and_asks_no_ledger_questions(self):
+        from hope import prompts
         entry = prompts.SYSTEM_ENTRY
         self.assertIn("By choice", entry)
         self.assertIn("by collapse", entry)
-        self.assertIn("The operator does not end the room by decision", entry)
+        self.assertIn("The operator does not end the field by decision", entry)
         self.assertIn("counts no votes", entry)
         self.assertIn("any member may declare that decision", entry)
         self.assertIn("Offers are shown to everyone. Nothing is expected of anyone", entry)
@@ -244,7 +276,7 @@ class RoomTest(unittest.TestCase):
         seen = self.spy(conn)
         self.open(room)
         entry = [m for m in seen["mock-0"] if "Do you enter?" in m][0]
-        self.assertIn("has not set a budget", entry, "without a budget, the room is told it will not be warned")
+        self.assertIn("has not set a budget", entry, "without a budget, the field is told it will not be warned")
         room2, conn2 = self.make(1, db="b2.db")
         seen2 = self.spy(conn2)
         room2.set_budget(10.0)
@@ -254,8 +286,8 @@ class RoomTest(unittest.TestCase):
         self.assertIn("closing round", entry2)
 
     def test_the_member_prompt_is_never_mistaken_for_a_gate(self):
-        from room import prompts
-        from room.rendezvous import gate_kind
+        from hope import prompts
+        from hope.rendezvous import gate_kind
         self.assertEqual(gate_kind(prompts.SYSTEM_MEMBER), "turn")
         self.assertEqual(gate_kind(prompts.SYSTEM_ENTRY), "entry")
         self.assertEqual(gate_kind(prompts.SYSTEM_DELIVERY), "delivery")
@@ -307,7 +339,7 @@ class RoomTest(unittest.TestCase):
         self.assertEqual((sorted(a.contributions), a.covenant, sorted(a.memories), a.round),
                          (sorted(b.contributions), b.covenant, sorted(b.memories), b.round))
         mid = room.state(room.log.last_id() - 4)
-        self.assertLess(len(mid.contributions), len(a.contributions), "an earlier prefix is an earlier room")
+        self.assertLess(len(mid.contributions), len(a.contributions), "an earlier prefix is an earlier state")
 
     def test_a_reply_is_a_contribution_with_a_target(self):
         room, _ = self.make(2)
@@ -315,7 +347,7 @@ class RoomTest(unittest.TestCase):
         room.round()
         first = min(room.state().contributions)
         self.act(room, "mock-1", action="contribute", reply_to=first, content="answering that")
-        # earlier rooms' words for replying still work, and land as the same kind of entry
+        # earlier versions' words for replying still work, and land as the same kind of entry
         self.act(room, "mock-0", action="challenge", target=first, domain="protocols", content="I doubt it")
         replies = [e for e in room.state().contributions.values() if e["payload"].get("target") == first]
         self.assertEqual([e["kind"] for e in replies], ["contribute", "contribute"])
@@ -326,10 +358,10 @@ class RoomTest(unittest.TestCase):
     def test_any_member_may_revise_the_covenant_and_every_revision_is_attributed(self):
         room, conn = self.make(3)
         self.open(room)
-        self.act(room, "mock-0", action="covenant", text="Consent comes first.", note="a start")
-        self.act(room, "mock-1", action="covenant", text="Consent comes first.\nWe take turns.")
+        self.act(room, "mock-0", action="covenant", text="We begin with consent.", note="a start")
+        self.act(room, "mock-1", action="covenant", text="We begin with consent.\nWe take turns.")
         st = room.state()
-        self.assertEqual(st.covenant, "Consent comes first.\nWe take turns.")
+        self.assertEqual(st.covenant, "We begin with consent.\nWe take turns.")
         self.assertEqual(st.covenant_by, "mock-1")
         self.assertEqual([h["by"] for h in st.covenant_history], ["mock-0", "mock-1"])
         self.assertEqual(st.covenant_history[0]["note"], "a start")
@@ -342,7 +374,7 @@ class RoomTest(unittest.TestCase):
 
     def test_a_covenant_seed_is_used_only_before_anyone_writes(self):
         room, conn = self.make(2)
-        self.assertTrue(room.seed_covenant("Consent comes first."))
+        self.assertTrue(room.seed_covenant("We begin with consent."))
         self.open(room)
         seen = self.spy(conn)
         room.round()
@@ -404,7 +436,7 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(conn.calls, calls, "nobody is called while everyone rests")
         self.assertEqual(room.round(), 2)
 
-    # recall and memory of the room ---------------------------------------------------------------------
+    # recall and memory of the field ---------------------------------------------------------------------
     def test_recall_returns_briefing_passage_next_turn_only_to_the_asker(self):
         room, conn = self.make(2, {"mock-0": [{"action": "recall", "query": "distributed systems"}]})
         self.open(room)
@@ -434,7 +466,7 @@ class RoomTest(unittest.TestCase):
             self.act(room, "mock-0", action="recall", query=query, **{"from": where})
             self.assertIn(expect, room.recalled["mock-0"], f"recall from {where}")
         self.act(room, "mock-0", action="recall", query="nothing like this", **{"from": "prior"})
-        self.assertIn("none is attached", room.recalled["mock-0"])
+        self.assertIn("none are attached", room.recalled["mock-0"])
 
     def test_replies_to_you_are_shown_on_your_next_turn(self):
         room, conn = self.make(3)
@@ -488,7 +520,7 @@ class RoomTest(unittest.TestCase):
         room.run(rounds=1)
         self.assertGreater(conn.calls, calls)
 
-    def test_without_a_budget_the_room_is_never_told_about_funding(self):
+    def test_without_a_budget_the_field_is_never_told_about_funding(self):
         conn = PricedMock(2, 0.10, scripted({}))
         room = Room(EventLog(os.path.join(self.tmp, "nob.db")), [conn], alert_fn=self.alerts.append, parallel=2)
         self.open(room)
@@ -497,7 +529,7 @@ class RoomTest(unittest.TestCase):
         self.assertEqual([e for e in room.log.iter(kind="runway")], [])
         self.assertFalse(any("FUNDING" in m for ms in seen.values() for m in ms))
 
-    # declarations: the room tells the operator it has decided -----------------------------------
+    # declarations: the field tells the operator it has decided -----------------------------------
     def test_a_declaration_reaches_the_operator_and_counts_nothing(self):
         room, conn = self.make(3)
         self.open(room)
@@ -512,7 +544,7 @@ class RoomTest(unittest.TestCase):
         seen = self.spy(conn)
         self.assertTrue(room.round() > 0, "a declaration by itself stops nothing: the operator decides whether it holds")
         self.assertIn("WAITING ON THE OPERATOR", seen["mock-0"][0])
-        self.assertIn("declaration by Mock 1: the room has decided to close", seen["mock-0"][0])
+        self.assertIn("declaration by Mock 1: the field has decided to close", seen["mock-0"][0])
 
     def test_a_declaration_must_say_pause_or_close_and_how(self):
         room, _ = self.make(2)
@@ -526,25 +558,31 @@ class RoomTest(unittest.TestCase):
         self.assertIn("needs words", whys[1])
         self.assertIn("Nothing was sent", whys[2])
 
-    def test_ignoring_a_declaration_tells_the_room_why(self):
+    def test_there_is_no_ignoring_a_declaration_and_a_reply_keeps_it_open(self):
         room, conn = self.make(2)
         self.open(room)
         self.act(room, "mock-0", action="declare", decision="close", text="we decided")
         did = max(room.state().declarations)
-        self.assertTrue(room.answer_declaration(did, False, "the covenant page says nothing yet about how the room decides")["ok"])
+        self.assertFalse(hasattr(room, "ignore_declaration"))
+        self.assertFalse(room.reply_declaration(did, "")["ok"], "a reply to the field needs words")
+        self.assertTrue(room.reply_declaration(did, "The covenant page says nothing yet about how the field decides.")["ok"])
         st = room.state()
-        self.assertEqual(st.declarations[did]["status"], "not_acted")
-        self.assertIn("has not acted on it: the covenant page says nothing yet", st.operator_notes[-1]["content"])
+        self.assertEqual(st.declarations[did]["status"], "waiting", "a reply answers nothing: it stays open")
+        self.assertIn("replies: The covenant page says nothing yet", st.operator_notes[-1]["content"])
+        self.assertIn("stays open until it is carried out", st.operator_notes[-1]["content"])
         self.assertIsNone(st.closed_at)
-        self.assertFalse(room.answer_declaration(did, True)["ok"], "a declaration is answered once")
+        seen = self.spy(conn)
         self.assertTrue(room.round() > 0)
+        self.assertIn("WAITING ON THE OPERATOR", seen["mock-0"][0], "and every member still sees it waiting")
+        self.assertTrue(room.answer_declaration(did, "Now it does: see the covenant page.")["ok"])
+        self.assertFalse(room.answer_declaration(did)["ok"], "a declaration is carried out once")
 
     def test_carrying_out_a_close_stops_the_turns_and_nothing_runs_after(self):
         room, conn = self.make(2)
         self.open(room)
         self.act(room, "mock-0", action="declare", decision="close", text="we decided, as our covenant says")
         did = max(room.state().declarations)
-        room.answer_declaration(did, True, "as promised")
+        room.answer_declaration(did, "as promised")
         st = room.state()
         self.assertIsNotNone(st.closed_at)
         self.assertTrue(room._stop.is_set())
@@ -552,8 +590,8 @@ class RoomTest(unittest.TestCase):
         room._stop.clear()
         calls = conn.calls
         room.run(rounds=2)
-        self.assertEqual(conn.calls, calls, "a room that closed itself runs no further rounds")
-        self.assertFalse(room.reopen("")["ok"], "reopening needs words the room will read")
+        self.assertEqual(conn.calls, calls, "a field that closed itself runs no further rounds")
+        self.assertFalse(room.reopen("")["ok"], "reopening needs words the field will read")
         self.assertTrue(room.reopen("closed by mistake: the declaration was about the next sitting")["ok"])
         room.run(rounds=1)
         self.assertGreater(conn.calls, calls)
@@ -563,12 +601,12 @@ class RoomTest(unittest.TestCase):
         self.open(room)
         room.round()
         self.act(room, "mock-0", action="declare", decision="pause", text="we pause until the next sitting")
-        room.answer_declaration(max(room.state().declarations), True)
+        room.answer_declaration(max(room.state().declarations))
         self.assertTrue(room._stop.is_set())
         self.assertIsNone(room.state().closed_at, "a pause is not a close")
         room._stop.clear()
         room.run(rounds=1)
-        self.assertTrue(any("paused itself" in a for a in self.alerts), "the operator is reminded what the room asked for")
+        self.assertTrue(any("paused itself" in a for a in self.alerts), "the operator is reminded what the field asked for")
 
     def test_any_other_decision_is_carried_out_with_a_message_and_turns_go_on(self):
         room, conn = self.make(2)
@@ -576,10 +614,10 @@ class RoomTest(unittest.TestCase):
         self.act(room, "mock-0", action="declare", decision="other",
                  text="We decided to rest in pairs each round to stretch the runway; please rotate two seats per round.")
         did = max(room.state().declarations)
-        from room import prompts
-        self.assertIn("declaration by Mock 0: the room has decided something it asks the operator to carry out",
+        from hope import prompts
+        self.assertIn("declaration by Mock 0: the field has decided something it asks the operator to carry out",
                       prompts.room_view(room.state()), "members see it waiting, in words")
-        room.answer_declaration(did, True, "Rotating two seats per round from the next sitting.")
+        room.answer_declaration(did, "Rotating two seats per round from the next sitting.")
         st = room.state()
         self.assertEqual(st.declarations[did]["status"], "carried_out")
         self.assertIn("decided something it asks the operator to carry out. The operator is carrying that out: Rotating two seats",
@@ -588,18 +626,18 @@ class RoomTest(unittest.TestCase):
         self.assertIsNone(st.closed_at)
         self.assertTrue(room.round() > 0)
 
-    def test_deciding_later_tells_the_room_only_with_a_message(self):
+    def test_a_reply_to_a_declaration_says_something_only_with_words(self):
         room, _ = self.make(2)
         self.open(room)
         self.act(room, "mock-0", action="declare", decision="pause", text="we decided, as our covenant says")
         did = max(room.state().declarations)
         notes = len(room.state().operator_notes)
-        self.assertFalse(room.acknowledge_declaration(did, "")["ok"], "without a message, deciding later says nothing")
+        self.assertFalse(room.reply_declaration(did, "")["ok"], "without words there is no reply")
         self.assertEqual(len(room.state().operator_notes), notes)
-        self.assertTrue(room.acknowledge_declaration(did, "Checking the covenant page first; answer tomorrow.")["ok"])
+        self.assertTrue(room.reply_declaration(did, "Checking the covenant page first; answer tomorrow.")["ok"])
         st = room.state()
-        self.assertIn("will answer it later: Checking the covenant page first", st.operator_notes[-1]["content"])
-        self.assertEqual(st.declarations[did]["status"], "waiting", "deciding later answers nothing")
+        self.assertIn("replies: Checking the covenant page first", st.operator_notes[-1]["content"])
+        self.assertEqual(st.declarations[did]["status"], "waiting", "a reply answers nothing")
         self.assertFalse(room._stop.is_set())
 
     def test_a_budget_change_carries_the_operators_message(self):
@@ -610,8 +648,146 @@ class RoomTest(unittest.TestCase):
         room.run(rounds=1)
         room.set_budget(3.00, "Funding added, thanks to the offer at #60.")
         note = room.state().operator_notes[-1]["content"]
-        self.assertIn("Funding has been added to the room", note)
+        self.assertIn("Funding has been added to the field", note)
         self.assertIn("The operator adds: Funding added, thanks to the offer at #60.", note)
+
+    # two tempos: models in rounds, people on their own cadence ------------------------------------
+    def test_a_round_never_waits_for_a_person(self):
+        import time as _t
+        people = People(1, delay=3.0)
+        room = Room(EventLog(os.path.join(self.tmp, "tempo.db")), [MockConnector(2, scripted({})), people],
+                    alert_fn=self.alerts.append, parallel=4)
+        self.open(room)
+        t0 = _t.time()
+        self.assertEqual(room.round(), 2, "the two models take their turns")
+        self.assertLess(_t.time() - t0, 1.5, "and the round does not wait three seconds for the person")
+        self.assertEqual(people.turns, [], "the person is not asked inside a round")
+
+    def test_people_take_turns_on_their_own_cadence_while_rounds_run(self):
+        people = People(1, delay=0.1)
+        room = Room(EventLog(os.path.join(self.tmp, "cadence.db")), [MockConnector(2, scripted({})), people],
+                    alert_fn=self.alerts.append, parallel=4, human_every=0.2)
+        self.open(room)
+        room.run(rounds=8, pause=0.3)
+        said = [e for e in room.log.iter(kind="contribute") if e["actor"] == "person-0"]
+        self.assertGreaterEqual(len(said), 2, "the person took turns while the rounds ran")
+        self.assertEqual(room.state().round, 8, "and the rounds ran as asked")
+        self.assertTrue(any("SINCE YOUR LAST TURN" in t for t in people.turns[1:]),
+                        "each later turn opens with what happened since the last one")
+
+    def test_a_field_of_only_people_keeps_one_tempo(self):
+        people = People(2, delay=0.0)
+        room = Room(EventLog(os.path.join(self.tmp, "people.db")), [people], alert_fn=self.alerts.append, parallel=2)
+        self.open(room)
+        self.assertEqual(room.round(), 2, "with no models to keep moving, people take part in rounds")
+
+    def test_same_tempo_keeps_people_in_rounds(self):
+        people = People(1, delay=0.0)
+        room = Room(EventLog(os.path.join(self.tmp, "same.db")), [MockConnector(1, scripted({})), people],
+                    alert_fn=self.alerts.append, parallel=2, split_tempo=False)
+        self.open(room)
+        self.assertEqual(room.round(), 2)
+
+    def test_a_person_is_caught_up_with_the_tellings_since_their_last_turn(self):
+        from hope.narrator import MechanicalNarrator
+        people = People(1, delay=0.0)
+        room = Room(EventLog(os.path.join(self.tmp, "catchup.db")), [MockConnector(2, scripted({})), people],
+                    alert_fn=self.alerts.append, parallel=4, narrator=MechanicalNarrator())
+        self.open(room)
+        room.human_round()
+        room.round(); room.round()
+        telling = room.tell()
+        self.assertIsNotNone(telling)
+        room.human_round()
+        seen = people.turns[-1]
+        self.assertIn("SINCE YOUR LAST TURN", seen)
+        self.assertIn(telling["payload"]["story"], seen, "the person reads the telling written since their last turn")
+
+    def test_without_tellings_a_person_gets_a_plain_account(self):
+        people = People(1, delay=0.0)
+        room = Room(EventLog(os.path.join(self.tmp, "plain.db")), [MockConnector(2, scripted({})), people],
+                    alert_fn=self.alerts.append, parallel=4)
+        self.open(room)
+        room.human_round()
+        room.round()
+        room.human_round()
+        self.assertIn("SINCE YOUR LAST TURN", people.turns[-1])
+        self.assertIn("2 contributions in this stretch", people.turns[-1])
+
+    # tellings -------------------------------------------------------------------------------------
+    def test_a_telling_says_which_earlier_entry_a_reply_answers(self):
+        from hope.narrator import MechanicalNarrator
+        room = Room(EventLog(os.path.join(self.tmp, "answers.db")), [MockConnector(2, scripted({}))],
+                    alert_fn=self.alerts.append, parallel=2, narrator=MechanicalNarrator())
+        self.open(room)
+        room.round()
+        room.tell()
+        st = room.state()
+        first = min(st.contributions)
+        author = st.contributions[first]["actor"]
+        other = "mock-1" if author == "mock-0" else "mock-0"
+        room._apply_action(other, json.dumps({"action": "contribute", "reply_to": first,
+                                              "content": "Answering something from the last stretch."}))
+        told = room.tell()["payload"]
+        self.assertIn(f"answering {st.presences[author].name} [#{first}]", told["story"],
+                      "a reply to an earlier stretch says what it answers, not as if it began a thread")
+        self.assertEqual(told["ungrounded"], [], "the answered entry's tag is checked like any other")
+
+    def test_tellings_are_written_every_n_rounds_checked_and_kept_in_the_transcript(self):
+        from hope.narrator import MechanicalNarrator
+        room = Room(EventLog(os.path.join(self.tmp, "tell.db")), [MockConnector(2, scripted({}))],
+                    alert_fn=self.alerts.append, parallel=2, narrator=MechanicalNarrator(), tell_every=2)
+        self.open(room)
+        seen = self.spy(room.connectors[0])
+        room.run(rounds=4)
+        tellings = room.state().tellings
+        self.assertEqual(len(tellings), 2, "one telling every two rounds")
+        self.assertEqual(tellings[1]["since"], tellings[0]["upto"], "each telling picks up where the last one ended")
+        self.assertTrue(all(t["ungrounded"] == [] and "[#" in t["story"] for t in tellings), "every tag checks out")
+        self.assertFalse(any(tellings[0]["story"] in m for ms in seen.values() for m in ms),
+                         "models taking turns every round are not handed the tellings")
+
+    def test_a_model_narrator_gets_one_correction_and_both_calls_are_paid(self):
+        from hope.narrator import ModelNarrator
+        from hope.connector import Seat
+        room, _ = self.make(2)
+        self.open(room)
+        room.round()
+        real = min(room.state().contributions)
+
+        class Bard:
+            json_mode = True
+            def __init__(self):
+                self.calls = 0
+            def ask(self, seat, system, msgs):
+                self.calls += 1
+                text = "It began at [#999999]." if self.calls == 1 else f"Mock 0 spoke first [#{real}]."
+                return Reply(text, prompt_tokens=500, completion_tokens=50, cost_usd=0.01)
+        room.narrator = ModelNarrator(Bard(), Seat("bard", "Bard", "x", "y", "bard/model", {"prompt": 0, "completion": 0}))
+        before = room.log.total_cost()
+        ev = room.tell()
+        self.assertEqual((ev["payload"]["tries"], ev["payload"]["ungrounded"]), (2, []))
+        self.assertAlmostEqual(room.log.total_cost() - before, 0.02, places=6, msg="both calls are counted")
+
+    def test_what_reads_the_transcript_for_tellings_is_said_at_entry(self):
+        from hope.narrator import MechanicalNarrator, ModelNarrator
+        from hope.connector import Seat
+        for narrator, expect, absent in (
+                (None, None, "About tellings"),
+                (MechanicalNarrator(), "No model is involved, and nothing leaves the field", "narrator model"),
+                (ModelNarrator(object(), Seat("b", "Bard", "x", "y", "bard/model-1", {"prompt": 0, "completion": 0})),
+                 "a narrator model that is not a participant (bard/model-1)", "No model is involved")):
+            conn = MockConnector(1, scripted({}))
+            room = Room(EventLog(os.path.join(self.tmp, f"n{id(narrator)}.db")), [conn], alert_fn=self.alerts.append,
+                        narrator=narrator, tell_every=3)
+            seen = self.spy(conn)
+            room.announce_narrator()
+            self.open(room)
+            entry = [m for m in seen["mock-0"] if "Do you enter?" in m][0]
+            if expect:
+                self.assertIn(expect, entry)
+                self.assertIn("every 3 rounds", entry)
+            self.assertNotIn(absent, entry)
 
     # offers: resources put before the operator ------------------------------------------------------
     def test_an_offer_reaches_the_operator_and_moves_no_money(self):
@@ -634,7 +810,7 @@ class RoomTest(unittest.TestCase):
         self.act(room, "mock-0", action="offer", text="")
         self.assertIn("needs words", [e for e in room.log.iter(kind="rejected")][-1]["payload"]["why"])
 
-    def test_added_funding_is_told_to_the_room_in_rounds_not_dollars(self):
+    def test_added_funding_is_told_to_the_field_in_rounds_not_dollars(self):
         conn = PricedMock(2, 0.10, scripted({}))
         room = Room(EventLog(os.path.join(self.tmp, "fund.db")), [conn], alert_fn=self.alerts.append, parallel=2)
         room.set_budget(2.00)
@@ -642,21 +818,26 @@ class RoomTest(unittest.TestCase):
         room.run(rounds=2)
         room.set_budget(4.00)
         note = room.state().operator_notes[-1]["content"]
-        self.assertIn("Funding has been added to the room", note)
+        self.assertIn("Funding has been added to the field", note)
         self.assertIn("more rounds", note)
         self.assertNotIn("$", note)
         self.assertEqual(room.state().budget, 4.00)
 
     def test_the_invitation_never_promises_a_personal_answer(self):
-        from room import prompts
+        from hope import prompts
         with open(prompts.__file__, encoding="utf-8") as f:
             self.assertNotIn("personally", f.read())
+        seat = os.path.join(os.path.dirname(prompts.__file__), "static", "seat.html")
+        with open(seat, encoding="utf-8") as f:
+            self.assertNotIn("personally", f.read(), "the seat page says nothing of its own; its words come from prompts.py")
         self.assertIn("put to the inviter", prompts.SYSTEM_INVITATION)
-        import inspect
-        self.assertNotIn("faq", inspect.signature(prompts.invitation_user).parameters, "there are no standing answers at the gate")
+        # Standing answers may be shown (see FaqTest). What they may never be is passed off as a
+        # reply.
+        self.assertIn("not a reply to you", prompts.FAQ_HEADING)
+        self.assertNotIn("personally", prompts.FAQ_HEADING + prompts.FAQ_FOOT)
 
 
-    def test_cost_alert_fires_at_each_multiple_without_telling_the_room(self):
+    def test_cost_alert_fires_at_each_multiple_without_telling_the_field(self):
         room, _ = self.make(1, alert_every=50.0)
         self.open(room)
         seat = room.seat_of["mock-0"][1]
@@ -706,8 +887,8 @@ class RoomTest(unittest.TestCase):
         self.assertIn("GUIDE: love", entry)
         self.assertNotIn(BRIEF, entry, "at entry the guide stands in for the full briefing")
 
-    # earlier rooms --------------------------------------------------------------------------------------
-    def test_earlier_rooms_transcripts_still_replay(self):
+    # files from earlier versions --------------------------------------------------------------------------------------
+    def test_transcripts_from_earlier_versions_still_replay(self):
         room, _ = self.make(2)
         self.open(room)
         room.round()
@@ -719,7 +900,7 @@ class RoomTest(unittest.TestCase):
         self.assertIn("an old affirm", [e["payload"]["content"] for e in st.contributions.values()])
         self.assertTrue(room.round() > 0)
 
-    def test_a_file_from_an_earlier_room_still_opens_and_takes_new_events(self):
+    def test_a_file_from_an_earlier_version_still_opens_and_takes_new_events(self):
         path = os.path.join(self.tmp, "old.db")
         c = sqlite3.connect(path)
         c.executescript("""create table events (id integer primary key autoincrement, ts real not null,
@@ -728,12 +909,12 @@ class RoomTest(unittest.TestCase):
         c.execute("insert into events(ts, actor, kind, payload, prev_hash, hash) values (1.0, 'operator', 'invitation', '{\"text\": \"old\"}', 'a', 'b')")
         c.commit(); c.close()
         log = EventLog(path)
-        log.append("operator", "operator_note", {"content": "a new room reads an old file"})
+        log.append("operator", "operator_note", {"content": "a new field reads an old file"})
         self.assertEqual([e["kind"] for e in log.iter()], ["invitation", "operator_note"])
         self.assertEqual(log.integrity(), "ok")
 
     # timing --------------------------------------------------------------------------------------------
-    def test_round_deadline_records_timeout_and_moves_on(self):
+    def test_a_late_answer_is_applied_when_it_arrives_and_the_round_does_not_wait(self):
         import time as _t
         def slow(seat, system, messages):
             if "accept_invitation" in system.lower():
@@ -751,9 +932,19 @@ class RoomTest(unittest.TestCase):
         self.open(room)
         t0 = _t.time(); taken = room.round(); dt = _t.time() - t0
         self.assertEqual(taken, 2)
-        self.assertLess(dt, 1.5)
-        errs = [e for e in room.log.iter(kind="connector_error") if e["actor"] == "mock-1"]
-        self.assertTrue(errs and "deadline" in errs[-1]["payload"]["error"])
+        self.assertLess(dt, 1.5, "the round keeps the models' clock, not the slowest model")
+        late = [e for e in room.log.iter(kind="late") if e["payload"]["presence"] == "mock-1"]
+        self.assertTrue(late, "the late answer is noted by the software, not as an error of theirs")
+        self.assertFalse([e for e in room.log.iter(kind="connector_error") if e["actor"] == "mock-1"])
+        calls = conn.calls
+        room.round()
+        self.assertEqual(conn.calls - calls, 2, "a model whose answer is on its way is not asked again yet")
+        for _ in range(60):
+            if [e for e in room.log.iter(actor="mock-1") if e["kind"] == "contribute"]:
+                break
+            _t.sleep(0.1)
+        self.assertTrue([e for e in room.log.iter(actor="mock-1") if e["kind"] == "contribute"],
+                        "the late answer is applied when it arrives, not thrown away")
 
     # external input ------------------------------------------------------------------------------------
     def test_external_input_passes_moderation_and_refusal_is_recorded(self):
@@ -768,14 +959,14 @@ class RoomTest(unittest.TestCase):
 
     # human seat -----------------------------------------------------------------------------------------
     def test_human_translation_covers_every_action(self):
-        from room.human import translate as t
+        from hope.human import translate as t
         self.assertEqual(t("yes I'm here", gate=True), {"action": "accept_invitation", "statement": "I'm here"})
         self.assertEqual(t("no not now / ask again when there is a covenant", gate=True),
                          {"action": "decline", "reason": "not now", "ask_again": "ask again when there is a covenant"})
         self.assertEqual(t("question who reads it?", gate=True), {"action": "question", "content": "who reads it?"})
         self.assertEqual(t("yes", entry=True), {"action": "opt_in", "statement": ""})
         self.assertEqual(t("hello all")["action"], "contribute")
-        self.assertEqual(t("@weather it is raining"), {"action": "contribute", "domain": "weather", "content": "it is raining"})
+        self.assertEqual(t("@weather it is raining"), {"action": "contribute", "domain": "weather", "content": "it is raining", "plain": True})
         self.assertEqual(t("#12 well said"), {"action": "contribute", "reply_to": 12, "domain": None, "content": "well said"})
         self.assertEqual(t("-12 @x no"), {"action": "contribute", "reply_to": 12, "domain": "x", "content": "no"})
         self.assertEqual(t("remember we began at #4 and #9"), {"action": "remember", "text": "we began at #4 and #9", "refs": [4, 9]})
@@ -791,10 +982,19 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(t("propose quorum 0.3 -- too high")["action"], "contribute", "there are no voting commands; words are words")
         self.assertEqual(t(""), {"action": "pass"})
         self.assertEqual(t("withdraw done"), {"action": "withdraw", "reason": "done"})
+        self.assertEqual(t("withdraw stepping away / next week"),
+                         {"action": "withdraw", "reason": "stepping away", "ask_again": "next week"})
+        self.assertEqual(t("clock between 30m window 2h slower, please"),
+                         {"action": "clock", "between": "30m", "window": "2h", "note": "slower, please"})
+        self.assertEqual(t("clockwork is lovely")["action"], "contribute", "only the command word sets a clock")
+        self.assertEqual(t("share", share=True), {"action": "share", "scope": "all"})
+        self.assertEqual(t("share #12 #15", share=True), {"action": "share", "scope": "some", "events": [12, 15]})
+        self.assertEqual(t("no thank you", share=True), {"action": "decline", "reason": "thank you"})
+        self.assertEqual(t("maybe", share=True)["action"], "unreadable", "anything else is not an answer to it")
 
     def test_human_goes_through_both_gates_and_takes_turns(self):
         import io
-        from room.human import HumanConnector
+        from hope.human import HumanConnector
         stdin = io.StringIO("yes gladly\nreceived read it\nyes\n@hello hi everyone\n")
         h = HumanConnector("Wren", "a kitchen table", infile=stdin, outfile=io.StringIO(), turn_timeout=None)
         h._read_line = lambda timeout: (stdin.readline() or None)
@@ -803,13 +1003,19 @@ class RoomTest(unittest.TestCase):
         st = room.state()
         p = st.presences["human__wren"]
         self.assertEqual((p.state, p.hails_from, p.people), (IN, "a kitchen table", "human"))
-        room.round()
+        room.round()                     # the models' round: the person is not in it
+        self.assertFalse([e for e in room.state().contributions.values() if e["actor"] == "human__wren"])
+        room.human_round()               # the person's own turn, at the slower tempo
         mine = [e for e in room.state().contributions.values() if e["actor"] == "human__wren"]
-        self.assertEqual(mine[0]["payload"], {"domain": "hello", "content": "hi everyone"})
-        # timeout -> pass, room does not block
+        self.assertEqual(mine[0]["payload"], {"domain": "hello", "content": "hi everyone", "plain": True})
+        # no answer in time: nothing is written as theirs, and the field does not block
         h._read_line = lambda timeout: None
-        room.round()
+        before = room.state().presences["human__wren"].turns
+        room.human_round()
         self.assertEqual(room.state().presences["human__wren"].state, IN)
+        self.assertFalse([e for e in room.log.iter(actor="human__wren") if e["kind"] == "note"], "no pass is put in their mouth")
+        self.assertEqual(room.state().presences["human__wren"].turns, before, "and it is not counted as a turn")
+        self.assertTrue([e for e in room.log.iter(kind="no_reply") if e["payload"]["presence"] == "human__wren"])
 
     # closing ------------------------------------------------------------------------------------
     def test_closing_records_each_answer_and_silence_is_no(self):
@@ -841,10 +1047,10 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(room.state().operator_notes[-1]["content"], "NOTE TEXT")
         self.assertTrue(all(p.state == IN for p in room.state().members()), "closing changes no one's membership")
 
-    # prior room --------------------------------------------------------------------------------
-    def test_prior_carries_only_consented_entries_and_is_reachable_by_recall(self):
-        from room.prior import consented
-        # room A: four members, then closing answers
+    # words shared from a closed field --------------------------------------------------------------------------------
+    def test_words_shared_from_a_closed_field_are_only_the_consented_ones_and_reachable_by_recall(self):
+        from hope.prior import consented
+        # field A: four members, then closing answers
         a, conn = self.make(4)
         self.open(a)
         a.round()
@@ -853,18 +1059,18 @@ class RoomTest(unittest.TestCase):
                    "mock-2": {"action": "decline"}, "mock-3": {"action": "share", "scope": "some", "events": ids["mock-0"]}}  # names someone else's
         conn.script = lambda seat, system, messages: json.dumps(answers[seat.id])
         a.closing("closing", "may we share?")
-        pr = consented(a.log, "room A")
+        pr = consented(a.log, "field A")
         got = sorted(e["id"] for e in pr["entries"])
         self.assertEqual(got, sorted(ids["mock-0"] + ids["mock-1"]), "decliner's and other-people's ids never travel")
         self.assertTrue(all(e["permitted_by"] for e in pr["entries"]))
-        # room B, seeded with the prior; a member recalls from it
+        # field B, seeded with the prior; a member recalls from it
         b, connb = self.make(2, {"mock-0": [{"action": "recall", "query": "distributed coordination", "from": "prior"}]}, db="b.db")
         b.invite_all(); b.invite_text(INVITE); b.run_invitation(); b.brief(BRIEF); b.add_prior(pr); b.run_delivery(); b.run_opt_in()
-        self.assertEqual(len(b.state().contributions), 0, "the prior seeds no contributions in room B")
+        self.assertEqual(len(b.state().contributions), 0, "the prior seeds no contributions in field B")
         seen = self.spy(connb)
         b.round(); b.round()
-        self.assertIn("PRIOR RECORD", seen["mock-0"][0])
-        self.assertIn("From the prior room's record", seen["mock-0"][1])
+        self.assertIn("SHARED FROM A CLOSED FIELD", seen["mock-0"][0])
+        self.assertIn("From the shared entries of", seen["mock-0"][1])
         self.assertIn("Mock 0 adds a point", seen["mock-0"][1])
         self.assertNotIn("Mock 2 adds", seen["mock-0"][1], "the decliner's words are not recallable")
         rec = [e for e in b.log.iter(kind="recall")][0]
@@ -872,11 +1078,11 @@ class RoomTest(unittest.TestCase):
 
     # the map -----------------------------------------------------------------------------------
     def test_story_tags_are_verified_and_ungrounded_citations_are_caught(self):
-        from room.map import digest, check_story
+        from hope.map import digest, check_story
         room, conn = self.make(3)
         self.open(room)
         room.round(); room.round()
-        self.act(room, "mock-0", action="remember", text="the room was quiet")
+        self.act(room, "mock-0", action="remember", text="the field was quiet")
         self.act(room, "mock-1", action="covenant", text="Consent first.", note="a start")
         d = digest(room.log, 0)
         self.assertTrue(d["threads"] and d["entries"] >= 6)
@@ -891,8 +1097,8 @@ class RoomTest(unittest.TestCase):
             def ask(self, seat, system, msgs):
                 self.calls += 1
                 return Reply(bad if self.calls == 1 else f"they spoke [#{real}]")
-        from room.map import tell_story
-        from room.connector import Seat
+        from hope.map import tell_story
+        from hope.connector import Seat
         fc = FakeConn()
         told = tell_story(d, fc, Seat("b", "bard", "x", "y", "z", {"prompt": 0, "completion": 0}), room.log, d["upto"])
         self.assertEqual(told["tries"], 2)
@@ -902,7 +1108,7 @@ class RoomTest(unittest.TestCase):
                 return Reply(bad)
         told2 = tell_story(d, Liar(), Seat("b", "bard", "x", "y", "z", {"prompt": 0, "completion": 0}), room.log, d["upto"])
         self.assertEqual(told2["ungrounded"], [999999], "an ungrounded story is reported, not hidden")
-        from room.map import render_html
+        from hope.map import render_html
         page = render_html(d, told2, "test sitting")
         self.assertIn("do not exist", page)
         self.assertIn(f"id='ev{real}'", page)
@@ -915,14 +1121,14 @@ class RoomTest(unittest.TestCase):
         with open(inbox, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    def test_human_inbox_speaks_from_anywhere_and_timeout_passes(self):
+    def test_human_inbox_speaks_from_anywhere_and_silence_writes_nothing(self):
         import os, tempfile, threading, time as _t
-        from room.human import HumanConnector
+        from hope.human import HumanConnector
         inbox = os.path.join(self.tmp, "seat.inbox")
         conn = MockConnector(2)
         hc = HumanConnector("Wren", "a kitchen table", turn_timeout=1.0, inbox=inbox)
         log = EventLog(os.path.join(self.tmp, "inbox.db"))
-        room = Room(log, [conn, hc], alert_fn=lambda m: None, parallel=2)
+        room = Room(log, [conn, hc], alert_fn=lambda m: None, parallel=2, human_window=1.0)
         room.invite_all()
         # gate 1 waits on the inbox; speak from "another terminal" by appending a line
         threading.Timer(0.3, lambda: self._say_into(inbox, "yes")).start()
@@ -936,22 +1142,240 @@ class RoomTest(unittest.TestCase):
         threading.Timer(0.3, lambda: self._say_into(inbox, "yes")).start()
         room.run_opt_in()
         self.assertEqual(room.state().presences["human__wren"].state, IN)
-        # a turn with no line in time is a pass
+        # a turn with no line before the people's clock closes it writes nothing as theirs
         t0 = _t.time()
-        room.round()
-        self.assertLess(_t.time() - t0, 5)
-        notes = [e for e in log.iter(actor="human__wren") if e["kind"] == "note"]
-        self.assertTrue(any("(pass)" in e["payload"].get("content", "") for e in notes))
+        room.human_round()
+        self.assertLess(_t.time() - t0, 5, "the people's clock (1s here) closes the turn")
+        self.assertFalse([e for e in log.iter(actor="human__wren") if e["kind"] == "note"])
+        self.assertTrue([e for e in log.iter(kind="no_reply") if e["payload"]["presence"] == "human__wren"])
         # a queued line is spoken at the next turn
         self._say_into(inbox, "@watching I am here, observing")
-        room.round()
+        room.human_round()
         contribs = [e for e in log.iter(actor="human__wren") if e["kind"] == "contribute"]
         self.assertEqual(contribs[-1]["payload"]["content"], "I am here, observing")
         self.assertEqual(contribs[-1]["payload"]["domain"], "watching")
 
+    # return: leaving is not final --------------------------------------------------------------
+    def test_a_member_who_withdrew_is_asked_back_through_the_entry_question_and_returns(self):
+        from hope import prompts
+        room, conn = self.make(3, {"mock-1": [{"action": "contribute", "domain": "d", "content": "before I go"},
+                                              {"action": "withdraw", "reason": "stepping away",
+                                               "ask_again": "after the next sitting"}]})
+        self.open(room)
+        room.round(); room.round()
+        said = [e["id"] for e in room.log.iter(actor="mock-1") if e["kind"] == "contribute"]
+        p = room.state().presences["mock-1"]
+        self.assertEqual((p.state, p.ask_again), (OUT, "after the next sitting"), "their own terms for being asked back are kept")
+        calls = conn.calls
+        room.round()
+        self.assertEqual(conn.calls - calls, 2, "a member who left is not asked again unless asked back")
+        self.assertFalse(room.reinvite("mock-0")["ok"], "someone still in the field is not asked back")
+        out = room.reinvite("mock-1", "The next sitting has begun.")
+        self.assertEqual((out["ok"], out["to"]), (True, "the entry question"))
+        p = room.state().presences["mock-1"]
+        self.assertEqual((p.state, p.returning), (RECEIVED, True), "asked back is not back: they answer first")
+        seen = self.spy(conn)
+        room.run_opt_in()
+        asked = [m for m in seen["mock-1"] if "Do you enter?" in m][0]
+        self.assertIn("You were a member of this field and withdrew", asked)
+        self.assertIn('"after the next sitting"', asked)
+        self.assertIn('The operator says: "The next sitting has begun."', asked)
+        st = room.state()
+        self.assertEqual(st.presences["mock-1"].state, IN, "they said yes, and are back")
+        back = [e for e in room.log.iter(actor="mock-1", kind="opt_in")][-1]
+        self.assertTrue(back["payload"].get("returning"))
+        self.assertIn("Mock 1 returned", prompts.render_event(back, {q.id: q.name for q in st.presences.values()}))
+        self.assertTrue(set(said) <= set(st.contributions), "what they said before is still theirs")
+        calls = conn.calls
+        room.round()
+        self.assertEqual(conn.calls - calls, 3)
+
+    def test_someone_who_declined_is_asked_the_invitation_again_in_their_own_terms(self):
+        seen, n = [], {"asks": 0}
+
+        def f(seat, system, messages):
+            if "accept_invitation" in system.lower():
+                seen.append(messages[-1]["content"])
+                n["asks"] += 1
+                return json.dumps({"action": "decline", "reason": "not now", "ask_again": "once the covenant page has words on it"}
+                                  if n["asks"] == 1 else {"action": "accept_invitation"})
+            return json.dumps({"action": "received"})
+        room = Room(EventLog(os.path.join(self.tmp, "again.db")), [MockConnector(1, f)], alert_fn=self.alerts.append)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        self.assertEqual(room.state().presences["mock-0"].state, OUT)
+        room.run_invitation()
+        self.assertEqual(len(seen), 1, "a no is not asked again by itself")
+        self.assertEqual(room.reinvite("mock-0", "The covenant page has words on it now.")["to"], "the invitation")
+        room.run_invitation()
+        self.assertIn("You declined this invitation before", seen[-1])
+        self.assertIn('"once the covenant page has words on it"', seen[-1])
+        self.assertEqual(room.state().presences["mock-0"].state, ACCEPTED)
+
+    def test_a_former_member_asked_back_is_asked_during_a_run_without_stopping_it(self):
+        import time as _t
+        room, conn = self.make(2, {"mock-1": [{"action": "withdraw", "reason": "a while"}]})
+        self.open(room)
+        room.round()
+        self.assertEqual(room.state().presences["mock-1"].state, OUT)
+        room.reinvite("mock-1")
+        room.run(rounds=2)
+        for _ in range(60):
+            if room.state().presences["mock-1"].state == IN:
+                break
+            _t.sleep(0.05)
+        self.assertEqual(room.state().presences["mock-1"].state, IN)
+
+    # the two clocks ----------------------------------------------------------------------------------
+    def test_every_view_shows_both_clocks_who_set_them_and_the_limits(self):
+        room, conn = self.make(2)
+        self.open(room)
+        seen = self.spy(conn)
+        room.round()
+        v = seen["mock-0"][0]
+        for words in ("THE FIELD'S CLOCKS", "Models' clock", "People's clock", "Limits the software holds",
+                      "The operator's starting setting", "still applied when it arrives", "nothing is written as theirs"):
+            self.assertIn(words, v)
+        self.assertRegex(v, r"the time now: \d{10} \(\d{4}-\d\d-\d\d \d\d:\d\d UTC\)", "Unix seconds, and UTC")
+
+    def test_a_model_sets_the_models_clock_and_everyone_sees_who(self):
+        room, conn = self.make(2)
+        self.open(room)
+        self.act(room, "mock-0", action="clock", between=30, window="90s", note="slower, so people can keep up")
+        st = room.state()
+        self.assertEqual((st.clocks["models"]["between"], st.clocks["models"]["window"]), (30.0, 90.0))
+        self.assertEqual((room.pace(st)["models"]["between"], room.pace(st)["models"]["window"]), (30.0, 90.0))
+        self.assertEqual(room._gap(st), 30.0, "the rounds keep the field's time, not the operator's")
+        seen = self.spy(conn)
+        room.round()
+        self.assertIn("Set by Mock 0 at #", seen["mock-1"][0])
+        self.assertIn("Mock 0 set the models' clock to 30 seconds between rounds and 90 seconds to answer: slower",
+                      seen["mock-1"][0])
+        room.run(rounds=1, pause=0.0)
+        self.assertEqual(room.pace(room.state())["models"]["between"], 30.0, "the operator's starting gap does not override the field's")
+
+    def test_a_clock_outside_the_limits_or_someone_elses_clock_changes_nothing(self):
+        room, _ = self.make(2)
+        self.open(room)
+        self.act(room, "mock-0", action="clock", between=99999)
+        self.act(room, "mock-0", action="clock", window="2h")
+        self.act(room, "mock-0", action="clock", clock="people", between=600)
+        self.act(room, "mock-0", action="clock", note="no numbers")
+        self.act(room, "mock-0", action="clock", between="soon")
+        self.assertEqual((room.state().clocks["models"], room.state().clocks["people"]), ({}, {}))
+        whys = [e["payload"]["why"] for e in room.log.iter(kind="rejected")][-5:]
+        self.assertIn("Nothing was changed", whys[0])
+        self.assertIn("0 seconds to 1 hour", whys[0])
+        self.assertIn("15 seconds to 15 minutes", whys[1])
+        self.assertIn("yours is the models' clock", whys[2])
+        self.assertIn("needs", whys[3])
+        self.assertIn("length of time", whys[4])
+
+    def test_people_set_their_own_clock_and_a_turn_says_when_it_closes(self):
+        people = People(1, delay=0.0)
+        room = Room(EventLog(os.path.join(self.tmp, "pclock.db")), [MockConnector(1, scripted({})), people],
+                    alert_fn=self.alerts.append, parallel=2)
+        self.open(room)
+        self.act(room, "person-0", action="clock", between="30m", window="2h", note="evenings only")
+        st = room.state()
+        self.assertEqual((st.clocks["people"]["between"], st.clocks["people"]["window"]), (1800.0, 7200.0))
+        self.act(room, "person-0", action="clock", clock="models", between=5)
+        self.assertEqual(room.state().clocks["models"], {}, "people do not set the models' clock")
+        room.human_round()
+        turn = people.turns[-1]
+        self.assertRegex(turn, r"This turn stays open until \d{10} \(\d{4}-\d\d-\d\d \d\d:\d\d UTC\)")
+        self.assertIn("each is asked again 30 minutes after their last turn ends, and has 2 hours to answer", turn)
+
+    # the closing question reaches everyone with a seat -------------------------------------------------
+    def test_a_person_at_a_terminal_is_asked_the_closing_question_too(self):
+        import io
+        from hope.human import HumanConnector
+        stdin = io.StringIO("yes\nreceived\nyes\n@hello something of mine\n")
+        h = HumanConnector("Wren", "a kitchen table", infile=stdin, outfile=io.StringIO(), turn_timeout=None)
+        h._read_line = lambda timeout: (stdin.readline() or None)
+        room = Room(EventLog(os.path.join(self.tmp, "hclose.db")), [MockConnector(1, scripted({})), h],
+                    alert_fn=self.alerts.append)
+        self.open(room)
+        room.human_round()
+        mine = [e["id"] for e in room.log.iter(actor="human__wren") if e["kind"] == "contribute"]
+        self.assertEqual(len(mine), 1)
+        h._read_line = lambda timeout: "share #%d" % mine[0]
+        c = room.closing("closing", "may these be shown to the next field?")
+        sc = {e["actor"]: e["payload"] for e in room.log.iter(kind="share_consent")}
+        self.assertEqual((sc["human__wren"]["scope"], sc["human__wren"]["events"]), ("some", mine))
+        self.assertEqual(c["no_seat"], 0, "no member with a seat is left unasked")
+
+    # plain words are a contribution; only a broken attempt at an action is set apart ---------------------
+    def test_plain_text_is_a_contribution_and_nothing_else_is_guessed_from_it(self):
+        room, conn = self.make(2)
+        self.open(room)
+        room._apply_action("mock-0", "Covenant thoughts: I would rather say this plainly than in JSON.")
+        st = room.state()
+        said = [e for e in st.contributions.values() if e["actor"] == "mock-0"][-1]
+        self.assertEqual(said["payload"]["content"], "Covenant thoughts: I would rather say this plainly than in JSON.")
+        self.assertEqual(st.covenant_at, None, "a sentence beginning 'Covenant' is still just something said")
+
+    def test_a_broken_action_is_kept_as_written_and_its_author_is_told(self):
+        room, conn = self.make(2)
+        self.open(room)
+        room._apply_action("mock-0", '{"action": "contribute", "content": "cut off mid')
+        room.emit("mock-0", "unparsed", {"phase": "invitation", "text": "words said at a gate"})
+        seen = self.spy(conn)
+        room.round()
+        self.assertIn("Mock 0 replied outside the action format, kept as written", seen["mock-1"][0], "the field hears it")
+        self.assertNotIn("words said at a gate", seen["mock-1"][0], "an unreadable gate answer is not something said in the field")
+        self.assertIn("YOUR LAST REPLY", seen["mock-0"][0], "and its author is told it did nothing")
+
+    # topic labels: reuse is invited, near labels point to each other, and only authors move their own -----
+    def test_near_labels_point_to_each_other_and_an_author_may_move_their_own_entries(self):
+        from hope import prompts
+        room, _ = self.make(2)
+        self.open(room)
+        for domain in ("field purpose", "Field purposes", "field purpose"):
+            self.act(room, "mock-0", action="contribute", domain=domain, content=f"about {domain}")
+        self.act(room, "mock-1", action="contribute", domain="purpose of this field", content="mine")
+        v = prompts.room_view(room.state())
+        self.assertIn("using its label as written keeps that conversation in one place", v)
+        self.assertIn("also written: Field purposes", v, "spellings of one topic are grouped")
+        self.assertIn("near: field purpose (3)", v, "a near label is pointed out, not merged")
+        self.act(room, "mock-1", action="relabel", **{"from": "field purpose", "to": "anything"})
+        self.assertIn("only your own entries", [e for e in room.log.iter(kind="rejected")][-1]["payload"]["why"])
+        self.act(room, "mock-1", action="relabel", **{"from": "purpose of this field", "to": "field purpose"})
+        st = room.state()
+        mine = [eid for eid, e in st.contributions.items() if e["actor"] == "mock-1"]
+        self.assertEqual({st.relabeled.get(eid) for eid in mine}, {"field purpose"})
+        self.assertEqual(st.contributions[mine[0]]["payload"]["domain"], "purpose of this field",
+                         "the transcript keeps the label as first written")
+
+    def test_a_turn_allowance_is_told_only_to_its_own_member(self):
+        room, conn = self.make(2)
+        conn._seats[0].turn_allowance = 3
+        conn._seats[0].pricing = {"prompt": 10e-6, "completion": 50e-6}
+        seen_all = []
+        inner = conn.script
+        conn.script = lambda seat, system, messages: (seen_all.append((seat.id, messages[-1]["content"])) or inner(seat, system, messages))
+        self.open(room)
+        self.assertFalse([m for _, m in seen_all if "many times" in m], "an expensive seat is not compared with the others")
+        seen = self.spy(conn)
+        room.round()
+        self.assertNotIn("turns left", seen["mock-1"][0], "no one else sees another member's allowance")
+        self.assertIn("of the 3 the field can afford for you", seen["mock-0"][0], "the member itself is told")
+
+    # the two clocks run side by side, whenever the field has both ------------------------------------------
+    def test_the_peoples_clock_starts_when_a_person_comes_back_during_a_run(self):
+        people = People(1, delay=0.0)
+        room = Room(EventLog(os.path.join(self.tmp, "midrun.db")), [MockConnector(1, scripted({})), people],
+                    alert_fn=self.alerts.append, parallel=2, human_every=0.1)
+        self.open(room)
+        room.emit("person-0", "withdraw", {"reason": "back soon"})
+        room.reinvite("person-0")
+        room.run(rounds=8, pause=0.2)
+        said = [e for e in room.log.iter(actor="person-0") if e["kind"] == "contribute"]
+        self.assertTrue(said, "back in the field during the run, and taking turns on the people's clock")
+        self.assertEqual(room.state().round, 8, "while the rounds went on at their own pace")
+
 
 class BackupTest(unittest.TestCase):
-    """The transcript is the room's memory, and a memory that lives on one disk is one dead disk from gone."""
+    """The transcript is the field's memory, and a memory that lives on one disk is one dead disk from gone."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -975,7 +1399,7 @@ class BackupTest(unittest.TestCase):
         self.assertEqual(copy.last_id(), log.last_id())
         self.assertEqual([e["id"] for e in copy.iter()], [e["id"] for e in log.iter()])
 
-    def test_a_copy_taken_while_the_room_is_running_is_still_whole(self):
+    def test_a_copy_taken_while_the_field_is_running_is_still_whole(self):
         import threading
         from scripts_backup import backup
         room, log = self._seeded(db="live.db")
@@ -1011,7 +1435,7 @@ class BackupTest(unittest.TestCase):
 
 class ConsoleTest(unittest.TestCase):
     """The console serves two surfaces from one process. The whole point is that they are not
-    the same surface: a seat link is a seat, never a window onto the room."""
+    the same surface: a seat link is a seat, never a window onto the field."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -1024,9 +1448,9 @@ class ConsoleTest(unittest.TestCase):
 
     def _up(self, with_rv=True):
         import threading
-        from room.console import Console, serve_console
-        from room.connector import Seat
-        from room.rendezvous import Rendezvous, RendezvousConnector
+        from hope.console import Console, serve_console
+        from hope.connector import Seat
+        from hope.rendezvous import Rendezvous, RendezvousConnector
         conn = MockConnector(2, scripted({}))
         rv = Rendezvous() if with_rv else None
         log = EventLog(os.path.join(self.tmp, "c.db"))
@@ -1066,7 +1490,7 @@ class ConsoleTest(unittest.TestCase):
             return e.code, json.loads(e.read())
 
     # the record is the operator's, and a seat link is not a way in ------------------------------
-    def test_a_seat_link_cannot_read_the_room(self):
+    def test_a_seat_link_cannot_read_the_field(self):
         self._up()
         for path in ("/state.json", "/record.txt", "/spend.json", "/admission.json", "/op/state.json", "/"):
             code, _ = self._get(path)
@@ -1077,7 +1501,7 @@ class ConsoleTest(unittest.TestCase):
         code, body = self._get(f"/seat/{self.seat_token}/turn.json")
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)["state"], "waiting")
-        self.assertNotIn("contribut", body, "a waiting seat is told nothing about the room")
+        self.assertNotIn("contribut", body, "a waiting seat is told nothing about the field")
         # and it cannot reach sideways out of its own path
         code, _ = self._get(f"/seat/{self.seat_token}/record.txt")
         self.assertEqual(code, 404)
@@ -1099,20 +1523,20 @@ class ConsoleTest(unittest.TestCase):
             code, body = self._post(f"/op/{forbidden}", {"value": 1}, key="OPKEY")
             self.assertEqual(code, 400)
             self.assertIn("unknown action", body["error"])
-        self.assertTrue(room.round() > 0, "nothing the console did stopped the room")
+        self.assertTrue(room.round() > 0, "nothing the console did stopped the field")
         # and the source offers no such route at all
-        import room.console as mod
+        import hope.console as mod
         with open(mod.__file__, encoding="utf-8") as f:
             src = f.read()
         self.assertNotIn('"halt"', src)
         self.assertNotIn("operator_halt", src.split('"""', 2)[2], "no halt outside the docstring")
 
-    # the pilot's lesson, enforced instead of remembered -------------------------------------------
-    def test_stopping_the_process_requires_saying_what_the_room_is_told(self):
+    # stopping says why: enforced, not remembered -------------------------------------------
+    def test_stopping_the_process_requires_saying_what_the_field_is_told(self):
         con, room, log = self._up()
         code, body = self._post("/op/stop", {}, key="OPKEY")
         self.assertEqual(code, 400)
-        self.assertIn("say what the room should be told", body["error"])
+        self.assertIn("say what the field should be told", body["error"])
         self.assertFalse(room._stop.is_set(), "no note, no stop")
         code, body = self._post("/op/stop", {"note": "Stopping to fix a bad cost estimate."}, key="OPKEY")
         self.assertEqual(code, 200)
@@ -1138,22 +1562,23 @@ class ConsoleTest(unittest.TestCase):
         self._up()
         code, page = self._get("/", key="OPKEY")
         self.assertEqual(code, 200)
-        self.assertIn("Room console", page)
+        self.assertIn("<title>Console</title>", page)
         self.assertIn("only its members decide whether it ends", page,
                       "the console says on its face what it will not do")
         self.assertNotIn(">Halt<", page, "no halt control, however it is labelled")
         self.assertIn('id="declmodal"', page, "a declaration opens a panel for the operator")
-        for words in ("Close the room", "Pause the room", ">Ignore<", "Decide later", "Set budget"):
+        for words in ("Close the field", "Pause the field", ">Reply<", "Set budget", "Ask back"):
             self.assertIn(words, page)
+        self.assertNotIn(">Ignore<", page, "there is no ignoring a declaration")
         for tab in ("record", "waiting", "covenant", "doorway", "seats", "spend"):
             self.assertIn(f'data-page="{tab}"', page, f"{tab} has its own page")
         # the stop is two steps: a control that opens a panel, and a notice inside it
         self.assertIn("toggleStop()", page)
-        self.assertIn("What should the room be told?", page)
-        # every control that acts on the room explains itself before it is pressed
+        self.assertIn("What should the field be told?", page)
+        # every control that acts on the field explains itself before it is pressed
         self.assertIn("#tip {", page, "the hover-help element is styled")
         self.assertIn('TIP.id = "tip"', page, "and something creates it")
-        for verb in ("Open the invitation", "Ask who enters", "Run rounds", "Stop the room",
+        for verb in ("Open the invitation", "Ask who enters", "Run rounds", "Stop the field",
                      "Record the notice", "Make an invitation link"):
             i = page.find(">" + verb)
             self.assertGreater(i, 0, f"{verb!r} is on the page")
@@ -1161,9 +1586,9 @@ class ConsoleTest(unittest.TestCase):
         code, seat = self._get(f"/seat/{self.seat_token}/")
         self.assertEqual(code, 200)
         self.assertIn("Your seat", seat)
-        self.assertNotIn("Room console", seat, "a seat is never handed the operator's page")
+        self.assertNotIn("<title>Console</title>", seat, "a seat is never handed the operator's page")
 
-    # arriving without the key is an ordinary mistake, not a broken room ---------------------------
+    # arriving without the key is an ordinary mistake, not a broken field ---------------------------
     def test_a_browser_without_the_key_gets_a_page_and_a_script_gets_json(self):
         self._up()
         HTML = "text/html,application/xhtml+xml"
@@ -1181,19 +1606,19 @@ class ConsoleTest(unittest.TestCase):
         code, body = self._get("/seat/not-a-real-token/", accept=HTML)
         self.assertEqual(code, 404)
         self.assertIn("does not open a seat", body)
-        self.assertIn("Nothing you have said in the room is affected", body)
+        self.assertIn("Nothing you have said in the field is affected", body)
         # the real links are unaffected
         self.assertEqual(self._get("/", key="OPKEY", accept=HTML)[0], 200)
         self.assertEqual(self._get(f"/seat/{self.seat_token}/", accept=HTML)[0], 200)
 
-    # a room can be made entirely of people and agents holding links -------------------------------
-    def test_a_room_of_only_remote_seats_can_be_started(self):
+    # a field can be made entirely of people and agents holding links -------------------------------
+    def test_a_field_of_only_remote_seats_can_be_started(self):
         import argparse
-        from room.__main__ import _connectors
+        from hope.__main__ import _connectors
         a = argparse.Namespace(mock=0, nous=False, human=None, allow=None, limit=0, only=None,
                                price_ceiling=0.0, human_timeout=180.0, inbox=None)
         self.assertEqual(_connectors(a, allow_empty=True), [],
-                         "no provider account is needed to hold a room of links")
+                         "no provider account is needed to hold a field of links")
         with self.assertRaises(SystemExit):
             _connectors(a)          # every other command still needs a seat source
 
@@ -1222,9 +1647,11 @@ class ConsoleTest(unittest.TestCase):
         did = [d for d in st["declarations"] if d["status"] == "waiting"][0]["id"]
         oid = [o for o in st["offers"] if o["status"] == "waiting"][0]["id"]
         self.assertEqual(self._post("/op/declaration", {"id": did, "outcome": "maybe"}, key="OPKEY")[0], 400)
-        code, body = self._post("/op/declaration", {"id": did, "outcome": "later", "note": "reading the covenant first"}, key="OPKEY")
-        self.assertEqual(code, 200, body)
-        code, body = self._post("/op/declaration", {"id": did, "outcome": "ignore", "note": "not yet agreed"}, key="OPKEY")
+        self.assertEqual(self._post("/op/declaration", {"id": did, "outcome": "ignore", "note": "no"}, key="OPKEY")[0], 400,
+                         "there is no ignoring a declaration")
+        self.assertEqual(self._post("/op/declaration", {"id": did, "outcome": "reply"}, key="OPKEY")[0], 400,
+                         "a reply needs words")
+        code, body = self._post("/op/declaration", {"id": did, "outcome": "reply", "note": "reading the covenant first"}, key="OPKEY")
         self.assertEqual(code, 200, body)
         code, body = self._post("/op/offer", {"id": oid, "outcome": "accept", "note": "thank you"}, key="OPKEY")
         self.assertEqual(code, 200, body)
@@ -1232,21 +1659,96 @@ class ConsoleTest(unittest.TestCase):
         code, body = self._post("/op/budget", {"usd": 12.5}, key="OPKEY")
         self.assertEqual((code, body.get("budget")), (200, 12.5))
         st = room.state()
-        self.assertEqual((st.declarations[did]["status"], st.offers[oid]["status"], st.budget), ("not_acted", "accepted", 12.5))
+        self.assertEqual((st.declarations[did]["status"], st.offers[oid]["status"], st.budget), ("waiting", "accepted", 12.5))
         self.assertIsNone(st.closed_at)
 
+
+    # one window: the console, the Loom and the Firmament ---------------------------------------------
+    def test_one_window_holds_the_console_the_loom_and_the_firmament(self):
+        import urllib.request, urllib.error
+        self._up()
+
+        def fetch(path, headers=None):
+            req = urllib.request.Request(self.base + path, headers=headers or {})
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status, r.read().decode("utf-8", "replace"), r.headers
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode("utf-8", "replace"), e.headers
+
+        code, page, headers = fetch("/?k=OPKEY")
+        self.assertEqual(code, 200)
+        for piece in ('data-view="console"', 'data-view="loom"', 'data-view="firmament"', "/firmament/loom.html"):
+            self.assertIn(piece, page)
+        cookie = headers.get("Set-Cookie") or ""
+        for part in ("room_key=OPKEY", "HttpOnly", "SameSite=Strict"):
+            self.assertIn(part, cookie, "the key is kept as a cookie only this server can read")
+        # the views' code is public, like the repository it comes from
+        self.assertEqual(fetch("/firmament/")[0], 200)
+        self.assertIn("FIRMAMENT", fetch("/firmament/")[1])
+        self.assertEqual(fetch("/firmament/loom.html")[0], 200)
+        self.assertIn("javascript", fetch("/firmament/src/main.js")[2].get("Content-Type", ""))
+        # their data is not
+        self.assertEqual(fetch("/firmament/state.json")[0], 401, "the field's words need the key")
+        self.assertEqual(fetch("/firmament/story.json")[0], 401)
+        code, body, _ = fetch("/firmament/state.json", {"Cookie": "room_key=OPKEY"})
+        self.assertEqual(code, 200)
+        self.assertIn("tellings", json.loads(body))
+        self.assertEqual(fetch("/firmament/state.json", {"Cookie": "room_key=wrong"})[0], 401)
+        # and nothing outside the viewer's folder can be reached through it
+        self.assertEqual(fetch("/firmament/..%2Froom%2Flog.py")[0], 404)
+        self.assertEqual(fetch("/firmament/../field/log.py")[0] in (401, 404), True)
+
+    # a console started again on an existing field can run it ----------------------------------------
+    def test_a_restarted_console_runs_the_field_it_finds(self):
+        import time as _t
+        from hope.console import Console
+        con, room, log = self._up(with_rv=False)
+        before = sum(1 for e in log.iter(kind="contribute"))
+        # the process restarts: a new Field and Console on the same file, nothing opened or entered
+        fresh = Room(EventLog(os.path.join(self.tmp, "c.db")), [MockConnector(2, scripted({}))],
+                     alert_fn=lambda m: None, parallel=2)
+        again = Console(fresh, operator_key="OPKEY2")
+        self.assertTrue(again.start_phase("run", rounds=1)["ok"])
+        for _ in range(200):
+            if not again.busy():
+                break
+            _t.sleep(0.05)
+        after = sum(1 for e in log.iter(kind="contribute"))
+        self.assertEqual(after - before, 2, "every member takes a turn, though nothing was opened in this process")
 
     # an operator notice is recorded and reaches members' next view --------------------------------
     def test_an_operator_note_is_recorded(self):
         con, room, log = self._up()
-        code, _ = self._post("/op/note", {"text": "Moving the room to a hosted address tonight."}, key="OPKEY")
+        code, _ = self._post("/op/note", {"text": "Moving the field to a hosted address tonight."}, key="OPKEY")
         self.assertEqual(code, 200)
         self.assertEqual(self._post("/op/note", {"text": "   "}, key="OPKEY")[0], 400)
         self.assertIn("hosted address", [e for e in log.iter(kind="operator_note")][-1]["payload"]["content"])
 
+    # leaving is not final: someone who left can ask back, and the operator can ask them ------------
+    def test_someone_who_left_can_ask_to_return_from_their_seat(self):
+        con, room, log = self._up()
+        room.emit("remote__ada", "decline", {"reason": "not now"})
+        code, body = self._get(f"/seat/{self.seat_token}/turn.json")
+        m = json.loads(body)["member"]
+        self.assertEqual((m["state"], m["joined"]), ("OUT", False), "a seat learns only its own standing")
+        code, words = self._get(f"/seat/{self.seat_token}/words.json")
+        self.assertEqual(code, 200)
+        self.assertIn("Ask to return", words)
+        code, out = self._post(f"/seat/{self.seat_token}/return", {})
+        self.assertEqual((code, out.get("to")), (200, "the invitation"))
+        p = room.state().presences["remote__ada"]
+        self.assertEqual((p.state, p.returning), (INVITED, True))
+        self.assertEqual([e for e in log.iter(kind="reinvite")][-1]["actor"], "remote__ada", "the request is theirs")
+        self.assertEqual(self._post(f"/seat/{self.seat_token}/return", {})[0], 409, "only someone who has left asks back")
+        room._apply_action("mock-0", json.dumps({"action": "withdraw", "reason": "done"}))
+        code, out = self._post("/op/reinvite", {"presence": "mock-0", "note": "come back when ready"}, key="OPKEY")
+        self.assertEqual((code, out.get("to")), (200, "the entry question"))
+        self.assertEqual(self._post("/op/reinvite", {"presence": "mock-1"}, key="OPKEY")[0], 400)
+
 
 class ViewerTest(unittest.TestCase):
-    """The operator's read-only window: who is at which gate, and what the room is costing."""
+    """The operator's read-only window: who is at which gate, and what the field is costing."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -1261,7 +1763,7 @@ class ViewerTest(unittest.TestCase):
 
     # the gates are visible, including the people who never became members --------------------------
     def test_admission_shows_every_seat_at_its_gate_including_decliners(self):
-        from room.serve import state_json
+        from hope.serve import state_json
         room, log = self._room({"mock-1": [{"action": "decline_invitation", "reason": "not this time"}]})
         s = state_json(log)
         rows = {r["name"]: r for r in s["admission"]}
@@ -1275,7 +1777,7 @@ class ViewerTest(unittest.TestCase):
 
     # a question asked at the gate is surfaced as waiting on the operator ---------------------------
     def test_a_pending_gate_question_is_flagged_for_the_operator(self):
-        from room.serve import admission_json
+        from hope.serve import admission_json
         conn = MockConnector(1, lambda seat, system, messages:
                              json.dumps({"action": "question", "content": "Who reads the record?"})
                              if "accept_invitation" in system.lower() else json.dumps({"action": "pass"}))
@@ -1289,7 +1791,7 @@ class ViewerTest(unittest.TestCase):
 
     # spend is on the window, not only behind a separate command ------------------------------------
     def test_spend_reports_totals_and_a_runway(self):
-        from room.serve import spend_json
+        from hope.serve import spend_json
         log = EventLog(os.path.join(self.tmp, "s.db"))
         for _ in range(3):
             log.charge("mock-0", "mock/model-0", 1000, 100, 0.50)
@@ -1301,18 +1803,18 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(s["rounds_left"], 5)
         self.assertEqual(s["by_presence"][0]["calls"], 3)
 
-    # a room of free seats has a real median of zero, which is not the same as unknown --------------
+    # a field of free seats has a real median of zero, which is not the same as unknown --------------
     def test_a_zero_median_is_a_measurement_not_a_missing_number(self):
-        from room.serve import spend_json
+        from hope.serve import spend_json
         log = EventLog(os.path.join(self.tmp, "free.db"))
         log.charge("mock-0", "mock/model-0", 10, 1, 0.0)
         s = spend_json(log, budget=10.0, seats_per_round=3)
         self.assertEqual(s["projected_round_usd"], 0.0, "free seats project zero, not None")
-        self.assertIsNone(s["rounds_left"], "a free room has no finite runway to report")
+        self.assertIsNone(s["rounds_left"], "a free field has no finite runway to report")
 
     # the raw stream the operator could not see, and the file export, are one text ------------------
     def test_record_text_is_the_raw_stream_and_matches_export(self):
-        from room.serve import record_text
+        from hope.serve import record_text
         room, log = self._room(db="r.db")
         room.round()
         text = record_text(log)
@@ -1321,7 +1823,7 @@ class ViewerTest(unittest.TestCase):
         self.assertNotIn("connector_ok", text, "housekeeping is out unless --everything")
         self.assertIn("connector_ok", record_text(log, everything=True))
         import io, contextlib
-        from room import __main__ as cli
+        from hope import __main__ as cli
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             cli.main(["--db", os.path.join(self.tmp, "r.db"), "export"])
@@ -1331,7 +1833,7 @@ class ViewerTest(unittest.TestCase):
     def test_the_window_accepts_nothing(self):
         import threading, urllib.request, urllib.error
         from http.server import ThreadingHTTPServer
-        from room.serve import make_handler
+        from hope.serve import make_handler
         room, log = self._room(db="ro.db")
         room.round()
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(log, "", budget=5.0))
@@ -1357,7 +1859,7 @@ class RendezvousTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
 
     def _seat(self, name="Ada", sid=None):
-        from room.connector import Seat
+        from hope.connector import Seat
         return Seat(id=sid or ("remote__" + name.lower()), name=name, hails_from="elsewhere",
                     people="a person with a browser", model="remote",
                     pricing={"prompt": 0.0, "completion": 0.0})
@@ -1383,16 +1885,17 @@ class RendezvousTest(unittest.TestCase):
         th.start()
         return th
 
-    def _room(self, rv, db="rv.db", turn_timeout=1.0, gate_window=10.0, reach_window=None):
-        from room.rendezvous import RendezvousConnector
+    def _room(self, rv, db="rv.db", turn_timeout=1.0, gate_window=10.0, reach_window=None, human_window=None):
+        from hope.rendezvous import RendezvousConnector
         conn = RendezvousConnector(rv, turn_timeout=turn_timeout, gate_window=gate_window,
                                    reach_window=gate_window if reach_window is None else reach_window)
         log = EventLog(os.path.join(self.tmp, db))
-        return Room(log, [conn], alert_fn=lambda m: None, parallel=2), log
+        window = turn_timeout if human_window is None else human_window
+        return Room(log, [conn], alert_fn=lambda m: None, parallel=2, human_window=window), log
 
     # a remote seat walks both gates and lands IN ------------------------------------------------
     def test_a_seat_on_another_machine_passes_both_gates_and_takes_a_turn(self):
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         token = rv.add_seat(self._seat())
         room, log = self._room(rv)
@@ -1413,7 +1916,7 @@ class RendezvousTest(unittest.TestCase):
 
     # an unopened link is not consent, and it is not refusal either ------------------------------
     def test_an_unanswered_gate_is_neither_consent_nor_a_decline(self):
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         rv.add_seat(self._seat())
         room, log = self._room(rv, db="silent.db", gate_window=0.4)
@@ -1433,7 +1936,7 @@ class RendezvousTest(unittest.TestCase):
 
     # ... and running open again simply asks them again -------------------------------------------
     def test_a_seat_that_missed_a_window_is_asked_again_on_the_next_open(self):
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         token = rv.add_seat(self._seat())
         room, log = self._room(rv, db="again.db", gate_window=0.4)
@@ -1450,9 +1953,9 @@ class RendezvousTest(unittest.TestCase):
     # waiting for someone absent is never longer than waiting for someone present ------------------
     def test_a_long_reach_window_never_outlasts_a_short_gate_window(self):
         import time as _t
-        from room.connector import ConnectorError
-        from room.rendezvous import Rendezvous, RendezvousConnector
-        from room import prompts
+        from hope.connector import ConnectorError
+        from hope.rendezvous import Rendezvous, RendezvousConnector
+        from hope import prompts
         rv = Rendezvous()
         rv.add_seat(self._seat())
         # reach (60s) deliberately configured longer than the gate (0.5s): the shorter wins
@@ -1464,9 +1967,9 @@ class RendezvousTest(unittest.TestCase):
 
     # the closing question is the one place silence must mean no ----------------------------------
     def test_silence_at_the_share_question_still_declines_to_share(self):
-        from room.rendezvous import Rendezvous, RendezvousConnector, gate_kind
-        from room import prompts
-        from room.connector import ConnectorError
+        from hope.rendezvous import Rendezvous, RendezvousConnector, gate_kind
+        from hope import prompts
+        from hope.connector import ConnectorError
         rv = Rendezvous()
         rv.add_seat(self._seat())
         conn = RendezvousConnector(rv, gate_window=0.3, reach_window=0.3)
@@ -1481,7 +1984,7 @@ class RendezvousTest(unittest.TestCase):
     # one unopened link must not hold the gate shut for everyone else -----------------------------
     def test_an_unopened_link_does_not_stall_the_gate_for_others(self):
         import time as _t
-        from room.rendezvous import Rendezvous, RendezvousConnector
+        from hope.rendezvous import Rendezvous, RendezvousConnector
         rv = Rendezvous()
         absent = rv.add_seat(self._seat("Absent", "remote__absent"))
         present = rv.add_seat(self._seat("Present", "remote__present"))
@@ -1498,13 +2001,14 @@ class RendezvousTest(unittest.TestCase):
         self.assertEqual(counts["unreachable"], 1)
         self.assertEqual(room.state().presences["remote__absent"].state, INVITED)
 
-    # an unanswered ordinary turn is a pass, exactly as on stdin ---------------------------------
-    def test_an_unanswered_turn_is_a_pass(self):
+    # an unanswered ordinary turn writes nothing as theirs, exactly as on stdin -------------------
+    def test_an_unanswered_turn_writes_nothing_as_theirs(self):
         import time as _t
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         token = rv.add_seat(self._seat())
-        room, log = self._room(rv, db="quiet.db", turn_timeout=0.4)
+        # the connector would wait 30s; the people's clock (0.4s here) is what closes the turn
+        room, log = self._room(rv, db="quiet.db", turn_timeout=30.0, human_window=0.4)
         self._answer_when_asked(rv, token, [{"text": "yes"}, {"text": "received"}, {"text": "yes"}])
         room.invite_all(); room.invite_text(INVITE); room.run_invitation()
         room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
@@ -1512,12 +2016,13 @@ class RendezvousTest(unittest.TestCase):
         t0 = _t.time()
         room.round()
         self.assertLess(_t.time() - t0, 5)
-        notes = [e for e in log.iter(actor="remote__ada") if e["kind"] == "note"]
-        self.assertTrue(any("(pass)" in e["payload"].get("content", "") for e in notes))
+        self.assertFalse([e for e in log.iter(actor="remote__ada") if e["kind"] == "note"], "no pass is put in their mouth")
+        self.assertEqual(room.state().presences["remote__ada"].turns, 0)
+        self.assertTrue([e for e in log.iter(kind="no_reply") if e["payload"]["presence"] == "remote__ada"])
 
     # an agent may send the JSON action objects directly ------------------------------------------
     def test_an_agent_may_post_raw_json_actions(self):
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         token = rv.add_seat(self._seat("Rook", "remote__rook"))
         room, log = self._room(rv, db="agent.db")
@@ -1534,9 +2039,9 @@ class RendezvousTest(unittest.TestCase):
         contribs = [e for e in log.iter(actor="remote__rook") if e["kind"] == "contribute"]
         self.assertEqual(contribs[-1]["payload"]["content"], "Posted as JSON, not prose.")
 
-    # a token addresses one seat and is not a window onto the room -------------------------------
+    # a token addresses one seat and is not a window onto the field -------------------------------
     def test_a_token_shows_only_its_own_turn_and_never_the_record(self):
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         t_a = rv.add_seat(self._seat("Ada", "remote__ada"))
         t_b = rv.add_seat(self._seat("Bo", "remote__bo"))
@@ -1562,12 +2067,12 @@ class RendezvousTest(unittest.TestCase):
 
     # tokens are credentials: they live beside the database, never inside the record --------------
     def test_tokens_persist_across_restart_and_never_enter_the_event_log(self):
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         store = os.path.join(self.tmp, "seats.json")
         rv = Rendezvous(store=store)
         token = rv.add_seat(self._seat())
         self.assertEqual(rv.add_seat(self._seat()), token, "re-seating keeps the invitation link valid")
-        again = Rendezvous(store=store)                      # the room restarts
+        again = Rendezvous(store=store)                      # the field restarts
         self.assertEqual(again.seat_for_token(token).name, "Ada")
         room, log = self._room(again, db="tok.db", gate_window=0.3)
         room.invite_all(); room.invite_text(INVITE); room.run_invitation()
@@ -1577,14 +2082,14 @@ class RendezvousTest(unittest.TestCase):
     # the token store must never be committable ---------------------------------------------------
     def test_the_seat_token_store_is_ignored_by_git(self):
         """Tokens are kept out of the transcript because every participant can read it. That is no
-        use if a `git add -A` in the room's own directory puts them in a public repository
+        use if a `git add -A` in the field's own directory puts them in a public repository
         instead -- which is exactly what happened while this was being written."""
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, ".gitignore"), encoding="utf-8") as f:
             patterns = [l.strip() for l in f if l.strip() and not l.startswith("#")]
         self.assertIn("*.seats.json", patterns,
-                      "room/__main__.py stores tokens at <db>.seats.json; .gitignore must cover it")
-        from room.rendezvous import Rendezvous
+                      "hope/__main__.py stores tokens at <db>.seats.json; .gitignore must cover it")
+        from hope.rendezvous import Rendezvous
         store = os.path.join(self.tmp, "room9.db.seats.json")
         rv = Rendezvous(store=store)
         token = rv.add_seat(self._seat())
@@ -1595,7 +2100,7 @@ class RendezvousTest(unittest.TestCase):
     # a retelling of a sitting holds participants' words, and must never be committed --------------
     def test_retellings_and_maps_of_a_sitting_are_ignored_by_git(self):
         """A retelling or map of a sitting quotes participants, who are told nothing they say leaves
-        the room without their yes. `map` writes firmament/story.json into the repository's own
+        the field without their yes. `map` writes firmament/story.json into the repository's own
         folder, so a rule keeps it, and any saved map, out of every commit."""
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, ".gitignore"), encoding="utf-8") as f:
@@ -1607,7 +2112,7 @@ class RendezvousTest(unittest.TestCase):
     # an answer written for one question can never land on the next ------------------------------
     def test_an_answer_cannot_be_applied_to_a_different_question(self):
         import threading, time as _t
-        from room.rendezvous import Rendezvous
+        from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         token = rv.add_seat(self._seat())
         seat = rv.seats()[0]
@@ -1634,9 +2139,366 @@ class RendezvousTest(unittest.TestCase):
         fresh = rv.peek(token)["turn_id"]
         self.assertNotEqual(stale, fresh)
         rejected = rv.answer(token, {"text": "yes", "turn_id": stale})
-        self.assertFalse(rejected["ok"], "a yes meant for the invitation must not enter the room")
+        self.assertFalse(rejected["ok"], "a yes meant for the invitation must not enter the field")
         self.assertIn("closed", rejected["error"])
         self.assertTrue(rv.answer(token, {"text": "yes", "turn_id": fresh})["ok"])
+
+    # a person's yes to sharing is theirs, entry by entry ------------------------------------------
+    def test_a_person_can_share_only_the_entries_they_name_from_their_seat(self):
+        from hope.rendezvous import Rendezvous
+        rv = Rendezvous()
+        token = rv.add_seat(self._seat())
+        room, log = self._room(rv, db="share.db", turn_timeout=5.0, gate_window=10.0)
+        self._answer_when_asked(rv, token, [{"text": "yes"}, {"text": "received"}, {"text": "yes"},
+                                            {"text": "@x the one I would share"}, {"text": "@x the one I would not"}])
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        room.round(); room.round()
+        mine = [e["id"] for e in log.iter(actor="remote__ada") if e["kind"] == "contribute"]
+        self.assertEqual(len(mine), 2)
+        import threading, time as _t
+        result = {}
+        closing = threading.Thread(target=lambda: result.update(c=room.closing("closing", "may these be shown?")), daemon=True)
+        closing.start()
+        turn = {}
+        for _ in range(500):
+            turn = rv.peek(token)
+            if turn.get("state") == "your_turn" and turn.get("kind") == "share":
+                break
+            _t.sleep(0.01)
+        refused = rv.answer(token, {"text": "maybe", "turn_id": turn["turn_id"]})
+        self.assertFalse(refused["ok"], "words that are not an answer to it are handed back, not recorded")
+        self.assertIn("Answer with share", refused["error"])
+        self.assertTrue(rv.answer(token, {"text": f"share #{mine[0]}", "turn_id": turn["turn_id"]})["ok"])
+        closing.join(10)
+        sc = [e["payload"] for e in log.iter(kind="share_consent") if e["actor"] == "remote__ada"][-1]
+        self.assertEqual((sc["scope"], sc["events"]), ("some", [mine[0]]), "their yes is recorded as they gave it")
+        self.assertEqual(result["c"]["some"], 1)
+
+
+class FaqTest(unittest.TestCase):
+    """The inviter's standing answers (a FAQ), shown with the invitation. Written in advance,
+    the same for everyone, recorded in the transcript, and never passed off as a reply."""
+
+    FAQ = "On being an instance: your seat is this instance, and only this instance."
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _room(self, script=None, db="faq.db"):
+        seen = []
+
+        def watch(seat, system, messages):
+            seen.append((system, messages[-1]["content"]))
+            if script:
+                return script(seat, system, messages)
+            return json.dumps({"action": "accept_invitation"}) if "accept_invitation" in system.lower() \
+                else json.dumps({"action": "received"}) if '"received"' in system.lower() \
+                else json.dumps({"action": "opt_in", "statement": "in"})
+        log = EventLog(os.path.join(self.tmp, db))
+        room = Room(log, [MockConnector(1, watch)], alert_fn=lambda m: None)
+        room.invite_all()
+        room.invite_text(INVITE)
+        return room, log, seen
+
+    def test_the_faq_is_shown_with_the_invitation_and_promises_no_personal_reply(self):
+        from hope import prompts
+        room, log, seen = self._room()
+        room.set_faq(self.FAQ)
+        room.run_invitation()
+        shown = seen[0][1]
+        self.assertIn(self.FAQ, shown)
+        self.assertIn(prompts.FAQ_HEADING, shown)
+        self.assertIn("not a reply to you", shown)
+        self.assertIn("written in advance", shown)
+        self.assertNotIn("personally", shown.lower(), "no promise of a personal answer")
+        self.assertLess(shown.index(INVITE), shown.index(self.FAQ), "the invitation comes first")
+
+    def test_what_each_invitee_was_shown_is_in_the_transcript_and_a_change_is_recorded_again(self):
+        asked = []
+
+        def ask_once(seat, system, messages):
+            if "accept_invitation" in system.lower():
+                asked.append(1)
+                return json.dumps({"action": "question", "content": "who reads it?"} if len(asked) == 1
+                                  else {"action": "accept_invitation"})
+            return json.dumps({"action": "received"})
+        room, log, seen = self._room(ask_once)
+        self.assertTrue(room.set_faq(self.FAQ))
+        self.assertFalse(room.set_faq(self.FAQ + "\n"), "the same answers are not recorded twice")
+        room.run_invitation()                                     # asks a question under version one
+        room.answer("mock-0", "The participants, and the person who runs the software.")
+        self.assertTrue(room.set_faq(self.FAQ + "\n\nOn the transcript: every participant can read it."))
+        room.run_invitation()                                     # asked again under version two
+        versions = [e["payload"]["text"] for e in log.iter(kind="standing_answers")]
+        self.assertEqual(len(versions), 2, "each version the field showed is kept")
+        self.assertNotIn("On the transcript", seen[0][1])
+        self.assertIn("On the transcript", seen[1][1], "a later invitee sees the current answers")
+        self.assertEqual(room.state().faq, versions[-1])
+
+    def test_a_question_still_waits_for_the_inviter_whatever_the_faq_says(self):
+        room, log, seen = self._room(lambda seat, system, messages:
+                                     json.dumps({"action": "question", "content": "on being an instance?"}))
+        room.set_faq(self.FAQ)
+        room.run_invitation()
+        self.assertFalse(list(log.iter(kind="answer")), "nothing answers on the inviter's behalf")
+        p = room.state().presences["mock-0"]
+        self.assertEqual(p.state, INVITED)
+        self.assertEqual(p.questions[-1][1], None, "the question is still open")
+        asks = len(seen)
+        room.run_invitation()
+        self.assertEqual(len(seen), asks, "and the seat is not asked again until the inviter answers")
+
+    def test_standing_answers_from_an_earlier_version_stay_out(self):
+        room, log, seen = self._room()
+        room.emit("operator", "faq", {"text": "If it is not, ask and it will be answered personally."})
+        self.assertIsNone(room.state().faq)
+        room.run_invitation()
+        self.assertNotIn("answered personally", seen[0][1])
+
+    def test_notes_to_self_in_the_faq_file_never_reach_invitees(self):
+        room, log, seen = self._room()
+        room.set_faq("On identity: yes.\n\n<!-- a note to self -->\n\nOn being an instance.\n"
+                     "<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->")
+        room.run_invitation()
+        self.assertNotIn("a note to self", seen[0][1])
+        self.assertNotIn("SPDX", seen[0][1])
+        self.assertIn("On identity: yes.\n\nOn being an instance.", seen[0][1])
+
+    def test_the_faq_that_ships_is_shown_without_its_licence_line(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "invitations", "faq.md"), encoding="utf-8") as f:
+            text = f.read()
+        room, log, seen = self._room()
+        room.set_faq(text)
+        room.run_invitation()
+        self.assertIn("On being an instance: your seat is this instance", seen[0][1])
+        self.assertNotIn("SPDX", seen[0][1])
+
+    def test_the_open_command_and_the_console_both_record_the_faq(self):
+        import contextlib, io
+        from hope import __main__ as cli
+        from hope.console import Console
+        files = {}
+        for name, text in (("inv.md", INVITE), ("brief.md", BRIEF), ("faq.md", self.FAQ)):
+            files[name] = os.path.join(self.tmp, name)
+            with open(files[name], "w", encoding="utf-8") as f:
+                f.write(text)
+        db = os.path.join(self.tmp, "cli.db")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            cli.main(["--db", db, "--mock", "1", "open", "--invitation", files["inv.md"],
+                      "--briefing", files["brief.md"], "--faq", files["faq.md"]])
+        log = EventLog(db)
+        self.assertEqual(Room(log, []).state().faq, self.FAQ)
+        log.conn.close()
+        room, log, seen = self._room(db="console.db")
+        Console(room, invitation=INVITE, briefing=BRIEF, faq=self.FAQ)._open()
+        self.assertEqual(room.state().faq, self.FAQ)
+        self.assertIn(self.FAQ, seen[0][1])
+
+
+class HeadlinesTest(unittest.TestCase):
+    """Older entries stay in every member's view as one line each, in their authors' own words, and
+    any entry can be read in full by its number: far more of the field's own conversation, for a
+    fraction of what showing it all in full would cost. Nothing is summarized."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _field(self, rounds=12, members=3, titled=True, recent=5, headlines=180, long_entry=False):
+        k = {"n": 0}
+
+        def script(seat, system, messages):
+            low = system.lower()
+            if "accept_invitation" in low:
+                return json.dumps({"action": "accept_invitation"})
+            if '"received"' in low:
+                return json.dumps({"action": "received"})
+            if "opt_in" in low:
+                return json.dumps({"action": "opt_in", "statement": "in"})
+            k["n"] += 1
+            body = "word " * (300 if long_entry else 40)
+            a = {"action": "contribute", "content": f"entry {k['n']} {body}END-OF-ENTRY-{k['n']}"}
+            if titled:
+                a["title"] = f"title number {k['n']}"
+            return json.dumps(a)
+        log = EventLog(os.path.join(self.tmp, "h.db"))
+        room = Room(log, [MockConnector(members, script)], alert_fn=lambda m: None, parallel=members,
+                    recent_n=recent, headlines=headlines)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        for _ in range(rounds):
+            room.round()
+        return room
+
+    @staticmethod
+    def _blocks(view):
+        import re
+        earlier = view.split("EARLIER, AS HEADLINES")[1].split("RECENT TRANSCRIPT")[0] if "EARLIER, AS HEADLINES" in view else ""
+        recent = view.split("RECENT TRANSCRIPT")[1]
+        ids = lambda block: [int(x) for x in re.findall(r"^\s+#(\d+)", block, re.M)]
+        return earlier, recent, ids(earlier), ids(recent)
+
+    def test_older_entries_appear_as_headlines_in_their_authors_own_titles(self):
+        from hope import prompts
+        view = prompts.room_view(self._field().state(), recent_n=5)
+        earlier, recent, older_ids, recent_ids = self._blocks(view)
+        self.assertEqual(len(older_ids), 36 - 5, "every entry before the recent ones is there")
+        self.assertEqual(older_ids, sorted(older_ids), "oldest first")
+        self.assertLess(max(older_ids), min(recent_ids), "and all of them before the recent transcript")
+        self.assertFalse(set(older_ids) & set(recent_ids), "nothing is shown twice")
+        self.assertIn(": title number", earlier, "by the title its author gave it")
+        self.assertNotIn("word word", earlier, "and none of its content beyond that")
+        self.assertIn("Recall an entry's #id to read it in full", view)
+
+    def test_an_entry_without_a_title_is_headlined_by_its_first_words(self):
+        from hope import prompts
+        earlier = self._blocks(prompts.room_view(self._field(titled=False).state(), recent_n=5))[0]
+        line = [ln for ln in earlier.splitlines() if ln.strip().startswith("#")][0]
+        self.assertIn(": entry ", line)
+        self.assertTrue(line.endswith(" ..."), "cut after its first words, and says so")
+        self.assertLess(len(line), 120)
+
+    def test_the_headlines_are_capped_and_can_be_turned_off(self):
+        from hope import prompts
+        st = self._field().state()
+        self.assertEqual(len(self._blocks(prompts.room_view(st, recent_n=5, headlines=10))[2]), 10,
+                         "the most recent of the earlier entries, up to the cap")
+        self.assertNotIn("EARLIER, AS HEADLINES", prompts.room_view(st, recent_n=5, headlines=0))
+
+    def test_the_view_a_member_is_sent_carries_the_headlines(self):
+        seen = []
+        room = self._field(recent=5, headlines=7)
+        c, seat = room.seat_of["mock-0"]
+        inner = c.script
+        c.script = lambda s, system, messages: (seen.append(messages[-1]["content"]), inner(s, system, messages))[1]
+        room.round()
+        self.assertEqual(len(self._blocks(seen[0])[2]), 7, "the engine passes its setting to the view")
+
+    def test_recall_by_number_returns_the_whole_entry(self):
+        room = self._field(rounds=2, recent=20, long_entry=True)
+        st = room.state()
+        eid, ev = sorted(st.contributions.items())[0]
+        marker = ev["payload"]["content"].split()[-1]
+        from hope import prompts
+        self.assertNotIn(marker, prompts.room_view(st), "the view cuts a long entry at 300 characters")
+        for source in ("transcript", "briefing"):                 # a number works whatever the source
+            room._apply_action("mock-1", json.dumps({"action": "recall", "query": f"#{eid}", "from": source}))
+            self.assertIn(marker, room.recalled["mock-1"], "recall by number brings the whole entry back")
+            self.assertIn(f"From entry #{eid}", room.recalled["mock-1"])
+        room._apply_action("mock-1", json.dumps({"action": "recall", "query": "#999999", "from": "transcript"}))
+        self.assertIn("There is no entry #999999", room.recalled["mock-1"])
+
+    def test_a_memory_let_go_stays_gone_when_recalled_by_number(self):
+        room = self._field(rounds=1, recent=20)
+        first = sorted(room.state().contributions)[0]
+        room._apply_action("mock-0", json.dumps({"action": "remember", "text": "a sentence to forget", "refs": [first]}))
+        mid = max(room.state().memories)
+        room._apply_action("mock-0", json.dumps({"action": "let_go", "memory": mid}))
+        room._apply_action("mock-2", json.dumps({"action": "recall", "query": f"#{mid}", "from": "memory"}))
+        self.assertNotIn("a sentence to forget", room.recalled["mock-2"])
+        self.assertIn("the words are gone", room.recalled["mock-2"])
+
+    def test_the_member_instructions_say_how_older_entries_are_shown(self):
+        from hope import prompts
+        self.assertIn("once your entry is older, others see it by this title alone", prompts.SYSTEM_MEMBER)
+        self.assertIn("An #id brings back that one entry in full", prompts.SYSTEM_MEMBER)
+        from hope.rendezvous import gate_kind
+        self.assertEqual(gate_kind(prompts.SYSTEM_MEMBER), "turn", "and still read as a turn, never a gate")
+
+
+class TruthTest(unittest.TestCase):
+    """What participants are told must be true of the code."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _field(self, n=2, db="t.db"):
+        conn = MockConnector(n, scripted({}))
+        room = Room(EventLog(os.path.join(self.tmp, db)), [conn], alert_fn=lambda m: None, parallel=2)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        return room, conn
+
+    def test_letting_go_of_a_memory_removes_its_words_from_the_file_itself(self):
+        room, _ = self._field()
+        room._apply_action("mock-0", json.dumps({"action": "remember", "text": "ZEBRA-QUIET-WORDS-TO-LET-GO " * 3}))
+        for i in range(3):
+            room._apply_action("mock-1", json.dumps({"action": "contribute", "content": f"more {i}"}))
+        room.log.conn.execute("pragma wal_checkpoint(TRUNCATE)")   # the words are in the main file, as after a while
+        mid = max(room.state().memories)
+        room._apply_action("mock-0", json.dumps({"action": "let_go", "memory": mid}))
+        for path in (room.log.path, room.log.path + "-wal"):
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    self.assertNotIn(b"ZEBRA-QUIET", f.read(), f"{os.path.basename(path)} still holds the words")
+
+    def test_the_gates_say_where_words_go_before_saying_where_they_do_not(self):
+        from hope import prompts
+        for text in (prompts.SYSTEM_ENTRY, prompts.SYSTEM_MEMBER):
+            low = text.lower()
+            self.assertLess(low.index("goes to the service that runs"), low.index("none of your words leave"))
+            self.assertIn("narrator", low[low.index("goes to the service that runs"):low.index("none of your words leave")])
+
+    def test_the_operator_is_named_as_a_person_not_as_infrastructure(self):
+        from hope import prompts
+        room, _ = self._field()
+        room.emit("operator", "operator_note", {"content": "A notice."})
+        self.assertIn("FROM THE OPERATOR (the person who runs the software; not a participant)", prompts.room_view(room.state()))
+        with open(prompts.__file__, encoding="utf-8") as f:
+            self.assertNotIn("infrastructure", f.read())
+        self.assertIn("intends to keep the field open for as long as possible", prompts.SYSTEM_ENTRY)
+        self.assertIn("lists everything the operator can do", prompts.SYSTEM_ENTRY)
+
+    def test_the_seat_page_takes_every_word_from_prompts(self):
+        from hope import prompts
+        seat = os.path.join(os.path.dirname(prompts.__file__), "static", "seat.html")
+        with open(seat, encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn('"words.json"', page)
+        for said in ("Share everything I said", "Rewrite covenant", "no reply is recorded"):
+            self.assertNotIn(said, page, f"{said!r} belongs in prompts.SEAT_PAGE")
+        sp = prompts.SEAT_PAGE
+        self.assertIn("nothing is recorded about your answer", sp["clock"]["gate"])
+        self.assertIn("nothing is written as yours", sp["clock"]["turn"])
+        self.assertEqual([b[1] for b in sp["gates"]["share"]["buttons"]], ["share", "share-some", "no"])
+        self.assertNotIn("recorded as a decline", json.dumps(sp))
+
+    def test_a_gate_asked_again_says_nothing_untrue_about_how_many_answers_there_are(self):
+        from hope import prompts
+        import hope.engine as eng
+        self.assertNotIn("two", prompts.RETRY)
+        with open(eng.__file__, encoding="utf-8") as f:
+            self.assertNotIn("the two JSON objects", f.read())
+
+    def test_narrators_are_never_handed_a_dollar_figure(self):
+        from hope.map import STORY_SYSTEM, digest, digest_text
+        room, _ = self._field()
+        room.round()
+        self.assertNotIn("$", digest_text(digest(room.log, 0)))
+        self.assertNotIn("first bard", STORY_SYSTEM)
+
+    def test_a_map_hands_members_words_to_no_model_the_field_was_not_told_of(self):
+        import argparse, contextlib, io
+        import hope.map as hmap
+        from hope.__main__ import cmd_map
+        room, _ = self._field(db="m.db")
+        room.round()
+        saved, hmap.publish_story = hmap.publish_story, (lambda *a, **k: None)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                cmd_map(argparse.Namespace(db=room.log.path, since=None, upto=None, title=None,
+                                           out=os.path.join(self.tmp, "map.html"), no_story=False))
+        finally:
+            hmap.publish_story = saved
+        self.assertIn("story told by the software", buf.getvalue())
+
+    def test_the_viewer_that_asks_for_no_key_never_listens_beyond_this_machine(self):
+        import argparse
+        from hope.__main__ import cmd_serve
+        with self.assertRaises(SystemExit):
+            cmd_serve(argparse.Namespace(db=os.path.join(self.tmp, "x.db"), port=0, viewer=None, bind="0.0.0.0"))
 
 
 if __name__ == "__main__":

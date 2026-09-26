@@ -1,14 +1,16 @@
 <!DOCTYPE html>
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later
-     The operator's console. One page per thing, because they are looked at for different
-     reasons and at different rates: the record is watched, the doorway is checked.
-     It offers no halt, no resume and no restore: the room has no voting machinery, and
+     The operator's window onto a field: three views on one page. The Console (one page per
+     thing, because they are looked at for different reasons and at different rates: the record
+     is watched, the doorway is checked), the Loom (what is happening now) and the Firmament
+     (the whole field as a sky). The last two are firmament/, loaded here when first opened.
+     It offers no halt, no resume and no restore: the field has no voting machinery, and
      whether it pauses or ends is its members' to decide. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Room console</title>
+<title>Console</title>
 <style>
   :root { --void:#0a0b10; --ink:#c8d0e4; --dim:#6b7488; --line:rgba(140,152,180,.12);
           --contribute:#7aa2d8; --affirm:#79b98a; --challenge:#d89a6a; --warn:#d88a8a;
@@ -42,6 +44,17 @@
 
   /* ---- pages ---- */
   main { flex:1 1 auto; overflow:auto; padding:1.2rem; }
+  main.framed { padding:0; overflow:hidden; display:flex; flex-direction:column; }
+  main.framed #banner:not(:empty) { padding:.8rem 1.2rem 0; }
+  #views { display:flex; gap:.15rem; margin:0; }
+  #views button { background:none; border:1px solid transparent; border-radius:.35rem; color:var(--dim);
+                  padding:.28rem .75rem; font:400 .8rem/1.2 inherit; letter-spacing:.14em;
+                  text-transform:uppercase; cursor:pointer; }
+  #views button:hover { color:var(--ink); }
+  #views button.on { color:var(--ink); border-color:var(--line); background:var(--panel); }
+  .viewframe { flex:1 1 auto; min-height:0; display:none; }
+  .viewframe.on { display:block; }
+  .viewframe iframe { width:100%; height:100%; border:0; display:block; background:var(--void); }
   .page { display:none; max-width:74rem; margin:0 auto; }
   .page.on { display:block; }
   h2 { font-size:.72rem; font-weight:400; letter-spacing:.14em; text-transform:uppercase;
@@ -120,7 +133,7 @@
   .flash { font-size:.85rem; }
   .flash.ok{color:var(--affirm)} .flash.bad{color:var(--warn)}
 
-  /* ---- a decision the room has declared ---- */
+  /* ---- a decision the field has declared ---- */
   #declmodal { position:fixed; inset:0; z-index:90; background:rgba(5,6,10,.78);
                display:flex; align-items:center; justify-content:center; padding:1rem; }
   #declmodal[hidden] { display:none; }
@@ -151,7 +164,11 @@
 <body>
 <header>
   <div class="top">
-    <h1>Room console</h1>
+    <nav id="views" aria-label="Views">
+      <button data-view="console" onclick="view('console')" data-tip="Run the field: the record as it lands, what waits on you, the covenant page, who is at which gate, seats, and spend.">Console</button>
+      <button data-view="loom" onclick="view('loom')" data-tip="What is happening now: the latest tellings, the field's own words as they arrive, one lane per topic, and the covenant page.">Loom</button>
+      <button data-view="firmament" onclick="view('firmament')" data-tip="The whole field as a sky: one coloured region per topic. Click a region to approach it; click a line of text to centre it and read its conversation.">Firmament</button>
+    </nav>
     <span class="pill" id="phase">idle</span>
     <div class="stats" id="stats"></div>
   </div>
@@ -160,6 +177,8 @@
 
 <main>
   <div id="banner"></div>
+  <section class="viewframe" data-view="loom"><iframe id="loomframe" title="Loom"></iframe></section>
+  <section class="viewframe" data-view="firmament"><iframe id="firmframe" title="Firmament"></iframe></section>
 
   <section class="page on" data-page="record">
     <h2>The record, as it lands</h2>
@@ -167,23 +186,23 @@
     <pre class="stream" id="stream">…</pre>
     <div class="row">
       <label class="muted" data-tip="Keep the view pinned to the newest events as they arrive. Turn this off to scroll back through earlier ones without being pulled forward again."><input type="checkbox" id="follow" checked style="width:auto"> stay at the newest</label>
-      <label class="muted" data-tip="Also show the events the room makes about itself: each call to a participant, the gate deliveries, and the full text of the invitation and briefing. Off by default because they far outnumber what participants actually said."><input type="checkbox" id="everything" style="width:auto"> show the room's own events too</label>
-      <a class="muted" id="raw" href="#" target="_blank" data-tip="The same text as a plain file you can save or search. Identical to running: python3 -m room export">open as plain text</a>
+      <label class="muted" data-tip="Also show the events the field makes about itself: each call to a participant, the gate deliveries, and the full text of the invitation and briefing. Off by default because they far outnumber what participants actually said."><input type="checkbox" id="everything" style="width:auto"> show the field's own events too</label>
+      <a class="muted" id="raw" href="#" target="_blank" data-tip="The same text as a plain file you can save or search. Identical to running: python3 -m hope export">open as plain text</a>
     </div>
     <div class="card" style="margin-top:1rem">
-      <h2>Say something to the room</h2>
+      <h2>Say something to the field</h2>
       <p class="lede">A notice from you as the operator — not as a participant. Every member sees it
         in their next view. It is recorded like anything else, and it decides nothing.</p>
-      <textarea id="notetext" placeholder="For example: I am moving the room to a hosted address tonight."></textarea>
-      <div class="row"><button class="b" data-tip="Write this into the record now, attributed to the operator. Members read it on their next turn. Use it to announce anything you are about to change — the pilot room halted itself over a change nobody announced." onclick="postNote()">Record the notice</button></div>
+      <textarea id="notetext" placeholder="For example: I am moving the field to a hosted address tonight."></textarea>
+      <div class="row"><button class="b" data-tip="Write this into the transcript now, attributed to the operator. Members read it on their next turn. Use it to announce anything you are about to change: an unannounced change reads as a breach of trust." onclick="postNote()">Record the notice</button></div>
     </div>
   </section>
 
   <section class="page" data-page="waiting">
     <h2>Waiting on you</h2>
-    <p class="lede">What members have put before you: declarations of something the room has decided (to
+    <p class="lede">What members have put before you: declarations of something the field has decided (to
       pause, to close, or anything else it asks of you), and offers of resources. Each answer is recorded
-      and the room is told, with your message if you write one.</p>
+      and the field is told, with your message if you write one.</p>
     <div id="waitlist"></div>
   </section>
 
@@ -193,7 +212,7 @@
     <pre class="stream" id="covtext" style="height:auto;min-height:5rem;max-height:42vh"></pre>
     <h2 style="margin-top:1.3rem">Every version</h2>
     <p class="lede">Any member may rewrite the page. The software counts no votes and adopts nothing:
-      how the room agrees on it, if it does, is the room's to work out.</p>
+      how the field agrees on it, if it does, is the field's to work out.</p>
     <div id="covrevs"></div>
     <h2 style="margin-top:1.5rem">Memories</h2>
     <p class="lede">A few sentences members chose to carry forward. Shared with everyone, shown in
@@ -203,7 +222,7 @@
 
   <section class="page" data-page="doorway">
     <h2>The doorway</h2>
-    <p class="lede">Every seat the room knows of, at whatever gate it has reached.</p>
+    <p class="lede">Every seat the field knows of, at whatever gate it has reached.</p>
     <div class="flow" id="flow"></div>
     <div id="questions"></div>
     <div id="groups"></div>
@@ -212,7 +231,7 @@
   <section class="page" data-page="seats">
     <h2>Seats on other machines</h2>
     <p class="lede">A link is that person's seat. It shows them their own turns and nothing else
-      about the room. Treat it as a credential; if one goes astray, replace it.</p>
+      about the field. Treat it as a credential; if one goes astray, replace it.</p>
     <div id="seats"></div>
     <div class="card">
       <div class="row">
@@ -220,7 +239,7 @@
                data-tip="How this participant will be named in the record. They can choose a different name for themselves when they answer the invitation.">
         <input id="seatfrom" placeholder="Hails from" style="flex:1 1 9rem"
                data-tip="Where they come from, in their own terms — a person, a laptop, a provider. Recorded alongside their name.">
-        <button class="b" data-tip="Create a seat and a link that opens it. Send the link to the person or agent who will hold it; they answer the same two gates as everyone else. No provider account is involved — a whole room can be held this way." onclick="mintSeat()">Make an invitation link</button>
+        <button class="b" data-tip="Create a seat and a link that opens it. Send the link to the person or agent who will hold it; they answer the same two gates as everyone else. No provider account is involved — a whole field can be held this way." onclick="mintSeat()">Make an invitation link</button>
       </div>
     </div>
   </section>
@@ -230,15 +249,15 @@
     <p class="lede" id="spendlede"></p>
     <div class="card">
       <h2>Funding</h2>
-      <p class="lede">The Nous API does not let the room read your account's balance, so the budget is what you
+      <p class="lede">The Nous API does not let the field read your account's balance, so the budget is what you
         say it is. Raise it when you add funds, for instance after accepting an offer. Members are told that
         funding was added, in rounds, never in dollars, and the runway starts over.</p>
       <div class="row">
         <input id="budgetusd" type="number" min="0" step="0.01" placeholder="New budget, US dollars" style="flex:0 1 14rem"
-               data-tip="The total this room may spend, including what it has spent already.">
-        <button class="b" data-tip="Record the new budget in the transcript. If members are in the room, they are told funding changed, and roughly how many rounds it now covers, with your message if you write one." onclick="setBudget()">Set budget</button>
+               data-tip="The total this field may spend, including what it has spent already.">
+        <button class="b" data-tip="Record the new budget in the transcript. If members are in the field, they are told funding changed, and roughly how many rounds it now covers, with your message if you write one." onclick="setBudget()">Set budget</button>
       </div>
-      <input id="budgetnote" placeholder="An optional message to the room, e.g. Funding added, thanks to the offer at #60." style="margin-top:.5rem">
+      <input id="budgetnote" placeholder="An optional message to the field, e.g. Funding added, thanks to the offer at #60." style="margin-top:.5rem">
     </div>
     <table><thead><tr><th>Seat</th><th>Calls</th><th>Prompt</th><th>Completion</th><th>USD</th></tr></thead>
       <tbody id="bypresence"></tbody></table>
@@ -250,14 +269,15 @@
     <h2 id="decltitle"></h2>
     <div id="declbody"></div>
     <p class="muted" style="margin-top:.8rem">You promised at the gates to carry this out if the transcript
-      shows the room made this decision in the way its covenant describes. If it does not, say why:
-      the room is told either way.</p>
-    <label class="muted" for="declnote">An optional message to the room. It is sent with whichever button you press.</label>
-    <textarea id="declnote" placeholder="For example: Pausing while more funds are added, to give the room more runway."></textarea>
+      shows the field made this decision in the way its covenant describes. If it does not show that yet,
+      reply: say what is missing, or when you will answer. There is no ignoring a declaration; it stays
+      open until you carry it out.</p>
+    <label class="muted" for="declnote">A message to the field. Optional when you carry it out; needed when you reply.</label>
+    <textarea id="declnote" placeholder="For example: Pausing while more funds are added, to give the field more runway."></textarea>
     <div class="row">
       <button class="b danger" id="declgo" onclick="answerDecl('carry_out')"></button>
-      <button class="b" data-tip="Do not act on it. The room is told you read it and did not act, with your message if you wrote one." onclick="answerDecl('ignore')">Ignore</button>
-      <button class="b" data-tip="Answer later. With a message, the room is told you have read it and will answer; without one, nothing is said. The declaration stays on the Waiting page until you answer it." onclick="decideLater()">Decide later</button>
+      <button class="b" data-tip="Reply in the field without carrying it out yet: say what the transcript does not yet show, or when you will answer. Your message is needed. The declaration stays open, on the Waiting page and in every member's view, until you carry it out." onclick="replyDecl()">Reply</button>
+      <button class="b" data-tip="Close this panel. Nothing is said to the field, and the declaration stays waiting for you." onclick="hideDecl()">Not now</button>
     </div>
   </div>
 </div>
@@ -265,24 +285,25 @@
 <footer>
   <div id="stoppanel" hidden>
     <div style="font-size:.92rem">Stopping pauses the software: the turns end until you run again.
-      It decides nothing in the room, and the room does not learn of it on its own — so say what it
+      It decides nothing in the field, and the field does not learn of it on its own — so say what it
       should be told. The notice is recorded first, and members see it in their next view.</div>
-    <textarea id="stopnote" placeholder="What should the room be told?" style="margin-top:.5rem"></textarea>
+    <textarea id="stopnote" placeholder="What should the field be told?" style="margin-top:.5rem"></textarea>
     <div class="row">
       <button class="b danger" onclick="confirmStop()">Record the notice and stop the turns</button>
       <button class="b" onclick="toggleStop(false)">Never mind</button>
-      <span class="muted">This is not a decision about the room: only its members decide whether it ends.</span>
+      <span class="muted">This is not a decision about the field: only its members decide whether it ends.</span>
     </div>
   </div>
   <div class="fbar">
     <button class="b go" data-tip="The first gate, then the briefing. Puts the invitation to every seat that has not answered, and delivers the documentation and briefing to whoever accepted. Safe to press again later — it only asks those still waiting, which is how someone who arrives a day late still gets in." onclick="phase('open')">Open the invitation</button>
-    <button class="b go" data-tip="The second gate. Asks everyone who has acknowledged the briefing whether they enter the room. Press this after the pause the briefing asks for, not immediately after Open." onclick="phase('enter')">Ask who enters</button>
+    <button class="b go" data-tip="The second gate. Asks everyone who has acknowledged the briefing whether they enter the field. Press this after the pause the briefing asks for, not immediately after Open." onclick="phase('enter')">Ask who enters</button>
     <input id="rounds" type="number" min="0" value="5" style="width:4.2rem" data-tip="How many rounds to run. 0 means keep going until you stop it.">
-    <button class="b go" data-tip="Give every member who is not resting one turn, this many times over. Each turn costs a call to that participant's model, so this is where the money goes — watch the rounds-left figure above." onclick="phase('run')">Run rounds</button>
+    <input id="pause" type="number" min="0" step="1" value="0" style="width:4.2rem" data-tip="The models' clock's starting gap between rounds, in seconds (0 runs them back to back). It stands only until a model member sets the models' clock; the field keeps its own time after that. People keep their own clock either way.">
+    <button class="b go" data-tip="Give every model that is not resting one turn, this many times over, waiting the seconds beside it between rounds. People and link-holders take their turns on their own pace meanwhile. Each turn costs a call to that participant's model, so this is where the money goes — watch the rounds-left figure above." onclick="phase('run')">Run rounds</button>
     <span class="act" id="last"></span>
     <span class="sp"></span>
     <span class="flash" id="flash"></span>
-    <button class="b danger" data-tip="Pause the software: the turns end until you run again. It decides nothing inside the room, and the room does not learn of it on its own, so you will be asked what it should be told first." onclick="toggleStop()">Stop the room…</button>
+    <button class="b danger" data-tip="Pause the software: the turns end until you run again. It decides nothing inside the field, and the field does not learn of it on its own, so you will be asked what it should be told first." onclick="toggleStop()">Stop the field…</button>
   </div>
 </footer>
 
@@ -296,11 +317,11 @@ let DATA = {};
 
 const PAGES = [
   {id:"record",    label:"Record",
-   tip:"Everything that has happened, in order, verbatim: the room's transcript."},
+   tip:"Everything that has happened, in order, verbatim: the field's transcript."},
   {id:"waiting",   label:"Waiting", count:d => waitingItems(d).length, alert:true,
    tip:"Declarations and offers members have put before you. The badge counts the ones you have not answered."},
   {id:"covenant",  label:"Covenant", count:d => (d.memories||[]).length,
-   tip:"The page the room writes for itself, every version of it, and the memories members chose to keep. The badge counts memories held."},
+   tip:"The page the field writes for itself, every version of it, and the memories members chose to keep. The badge counts memories held."},
   {id:"doorway",   label:"Doorway",   count:d => (d.admission||[]).filter(r=>r.awaiting_answer).length, alert:true,
    tip:"Who has been invited and how far each of them has got. The badge counts participants waiting on an answer from you."},
   {id:"seats",     label:"Seats",
@@ -308,7 +329,24 @@ const PAGES = [
   {id:"spend",     label:"Spend",
    tip:"What each seat has cost, and how long the budget lasts at this rate."},
 ];
-let page = location.hash.slice(1) || "record";
+const VIEWS = {loom: "/firmament/loom.html", firmament: "/firmament/"};
+let current = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "console";
+let page = (!VIEWS[location.hash.slice(1)] && location.hash.slice(1)) || "record";
+
+/* Three views on one page. The Loom and the Firmament load the first time they are opened and
+   keep their place after that; the header, the banner and the declaration panel stay with every view. */
+function view(v){
+  current = v;
+  document.querySelectorAll("#views button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
+  document.querySelectorAll(".viewframe").forEach(el => el.classList.toggle("on", el.dataset.view === v));
+  document.querySelectorAll(".page").forEach(el => el.classList.toggle("on", v === "console" && el.dataset.page === page));
+  $("nav").style.display = v === "console" ? "" : "none";
+  document.querySelector("main").classList.toggle("framed", v !== "console");
+  const frame = v === "loom" ? $("loomframe") : v === "firmament" ? $("firmframe") : null;
+  if (frame && !frame.getAttribute("src")) frame.setAttribute("src", VIEWS[v]);
+  document.title = v === "console" ? "Console" : v === "loom" ? "Loom" : "Firmament";
+  if (location.hash.slice(1) !== (v === "console" ? page : v)) history.replaceState(null, "", "#" + (v === "console" ? page : v));
+}
 
 function drawNav(){
   $("nav").innerHTML = PAGES.map(p => {
@@ -318,12 +356,17 @@ function drawNav(){
   }).join("");
 }
 function go(id){
-  page = id; location.hash = id;
+  page = id;
+  if (current !== "console") view("console");
+  history.replaceState(null, "", "#" + id);
   document.querySelectorAll(".page").forEach(el => el.classList.toggle("on", el.dataset.page === id));
   drawNav();
   if (id === "record") refreshStream();
 }
-window.addEventListener("hashchange", () => go(location.hash.slice(1) || "record"));
+window.addEventListener("hashchange", () => {
+  const h = location.hash.slice(1);
+  if (VIEWS[h]) view(h); else go(h || "record");
+});
 
 function flash(m, ok){ const f=$("flash"); f.textContent=m; f.className="flash "+(ok?"ok":"bad");
   clearTimeout(flash._t); flash._t = setTimeout(()=>{f.textContent="";}, 6000); }
@@ -402,20 +445,20 @@ function entryText(s, id){
 function renderWaiting(s){
   const items = waitingItems(s);
   $("waitlist").innerHTML = items.map(w => w.kind === "declaration"
-    ? `<div class="wait"><b style="font-weight:400">#${w.id} · ${esc(w.who)} declares the room has decided ${esc(w.decided || w.decision)}</b>
+    ? `<div class="wait"><b style="font-weight:400">#${w.id} · ${esc(w.who)} declares the field has decided ${esc(w.decided || w.decision)}</b>
          <div class="what">${esc(w.text)}</div>
          <div class="row"><button class="b" onclick="showDecl(${w.id})">Read it and answer…</button></div></div>`
-    : `<div class="wait"><b style="font-weight:400">#${w.id} · ${esc(w.who)} offers the room resources</b>
+    : `<div class="wait"><b style="font-weight:400">#${w.id} · ${esc(w.who)} offers the field resources</b>
          <div class="what">${esc(w.text)}</div>
-         <textarea id="offernote-${w.id}" placeholder="A note for the room: what happens next, or why not."></textarea>
+         <textarea id="offernote-${w.id}" placeholder="A note for the field: what happens next, or why not."></textarea>
          <div class="row">
-           <button class="b go" data-tip="Accept the offer. Nothing moves by itself: any money reaches the room outside this software, and you raise the budget when it arrives. The room is told." onclick="answerOffer(${w.id},'accept')">Accept</button>
-           <button class="b" data-tip="Decline the offer. The room is told, with your note if you wrote one." onclick="answerOffer(${w.id},'decline')">Decline</button>
+           <button class="b go" data-tip="Accept the offer. Nothing moves by itself: any money reaches the field outside this software, and you raise the budget when it arrives. The field is told." onclick="answerOffer(${w.id},'accept')">Accept</button>
+           <button class="b" data-tip="Decline the offer. The field is told, with your note if you wrote one." onclick="answerOffer(${w.id},'decline')">Decline</button>
          </div></div>`).join("")
     || '<p class="muted">Nothing is waiting on you.</p>';
   if (s.closed_at != null){
-    $("waitlist").innerHTML += `<div class="card"><b style="font-weight:400">The room closed at its own declared decision (#${s.closed_at}).</b>
-      <p class="lede">Nothing runs. If the close was a mistake, reopen it; the room will read your reason.</p>
+    $("waitlist").innerHTML += `<div class="card"><b style="font-weight:400">The field closed at its own declared decision (#${s.closed_at}).</b>
+      <p class="lede">Nothing runs. If the close was a mistake, reopen it; the field will read your reason.</p>
       <div class="row"><button class="b" onclick="reopenRoom()">Reopen…</button></div></div>`;
   }
 }
@@ -433,7 +476,7 @@ function showDecl(id){
   dismissed.delete(id);
   openDecl = id;
   const verb = d.decision;
-  $("decltitle").textContent = `The room has decided ${d.decided || ("to " + verb)}, says ${d.who} (#${d.id})`;
+  $("decltitle").textContent = `The field has decided ${d.decided || ("to " + verb)}, says ${d.who} (#${d.id})`;
   const replies = (s.contributions||[]).filter(c => c.target === id);
   const cov = (s.covenant||{}).text || "";
   $("declbody").innerHTML =
@@ -441,12 +484,12 @@ function showDecl(id){
     ((d.refs||[]).length ? `<div class="muted">It cites:</div>` + d.refs.map(r => `<div class="cited">${esc(entryText(s, r))}</div>`).join("") : `<div class="muted">It cites no entries.</div>`) +
     (replies.length ? `<div class="muted" style="margin-top:.6rem">Replies to it:</div>` + replies.map(c => `<div class="cited">${esc(entryText(s, c.id))}</div>`).join("") : "") +
     `<div class="muted" style="margin-top:.6rem">The covenant page as it stands:</div><pre>${esc(cov.trim() || "(empty)")}</pre>`;
-  $("declgo").textContent = verb === "close" ? "Close the room" : verb === "pause" ? "Pause the room" : "Carry it out";
+  $("declgo").textContent = verb === "close" ? "Close the field" : verb === "pause" ? "Pause the field" : "Carry it out";
   $("declgo").setAttribute("data-tip", verb === "close"
-    ? "Carry out the room's decision: the room is told, with your message, turns stop, and the room is marked closed so nothing runs again unless you reopen it."
+    ? "Carry out the field's decision: the field is told, with your message, turns stop, and the field is marked closed so nothing runs again unless you reopen it."
     : verb === "pause"
-    ? "Carry out the room's decision: the room is told, with your message, and turns stop until you run again, as its declaration says."
-    : "Tell the room you are carrying out its decision, with your message saying what you are doing. Turns go on. The doing happens outside the software.");
+    ? "Carry out the field's decision: the field is told, with your message, and turns stop until you run again, as its declaration says."
+    : "Tell the field you are carrying out its decision, with your message saying what you are doing. Turns go on. The doing happens outside the software.");
   $("declnote").value = "";
   $("declmodal").hidden = false;
 }
@@ -460,26 +503,32 @@ async function answerDecl(outcome){
   const id = openDecl, note = $("declnote").value.trim();
   const d = (DATA.declarations||[]).find(x => x.id === id) || {};
   if (outcome === "carry_out" && (d.decision === "pause" || d.decision === "close")
-      && !confirm("Carry out the room's decision now? The room is told and the turns stop.")) return;
+      && !confirm("Carry out the field's decision now? The field is told and the turns stop.")) return;
   const {data} = await api("/op/declaration", {id, outcome, note});
-  flash(data.ok ? (outcome === "carry_out" ? "Carried out. The room is told." : "Not acted on. The room is told.") : (data.error||"not recorded"), !!data.ok);
+  flash(data.ok ? "Carried out. The field is told." : (data.error||"not recorded"), !!data.ok);
   if (data.ok) hideDecl(true);
   refresh();
 }
-async function decideLater(){
+async function replyDecl(){
   if (openDecl === null) return;
   const id = openDecl, note = $("declnote").value.trim();
-  if (note){
-    const {data} = await api("/op/declaration", {id, outcome: "later", note});
-    flash(data.ok ? "The room is told you will answer later." : (data.error||"not recorded"), !!data.ok);
-  }
-  hideDecl();
+  if (!note){ flash("A reply needs words: what the transcript does not yet show, or when you will answer.", false); return; }
+  const {data} = await api("/op/declaration", {id, outcome: "reply", note});
+  flash(data.ok ? "Your reply is shown to the field. The declaration stays open." : (data.error||"not recorded"), !!data.ok);
+  if (data.ok) hideDecl();
+  refresh();
+}
+async function askBack(id, name){
+  const note = prompt(`Ask ${name} back? They are asked again and answer like anyone. An optional note they will read, e.g. why now:`, "");
+  if (note === null) return;
+  const {data} = await api("/op/reinvite", {presence: id, note});
+  flash(data.ok ? `${name} is asked back: ${data.to}.` : (data.error||"not asked"), !!data.ok);
   refresh();
 }
 async function answerOffer(id, outcome){
   const note = ($("offernote-" + id) || {}).value || "";
   const {data} = await api("/op/offer", {id, outcome, note});
-  flash(data.ok ? `Offer ${outcome}ed. The room is told.` : (data.error||"not recorded"), !!data.ok);
+  flash(data.ok ? `Offer ${outcome}ed. The field is told.` : (data.error||"not recorded"), !!data.ok);
   refresh();
 }
 async function setBudget(){
@@ -490,10 +539,10 @@ async function setBudget(){
   refresh();
 }
 async function reopenRoom(){
-  const note = prompt("Why is the room being reopened? Members will read this.");
+  const note = prompt("Why is the field being reopened? Members will read this.");
   if (!note || !note.trim()) return;
   const {data} = await api("/op/reopen", {note});
-  flash(data.ok ? "Reopened. The room is told why." : (data.error||"not reopened"), !!data.ok);
+  flash(data.ok ? "Reopened. The field is told why." : (data.error||"not reopened"), !!data.ok);
   refresh();
 }
 
@@ -503,8 +552,8 @@ const GATES = [
   {k:"ACCEPTED", label:"Accepted",       why:"They agreed to hear more. Nothing further is committed. The briefing goes out next."},
   {k:"BRIEFED",  label:"Briefing sent",  why:"The documentation and briefing have been delivered to them."},
   {k:"RECEIVED", label:"Acknowledged",   why:"They have read it and said so. The briefing asks for a pause; the entry question comes separately, when you run Enter."},
-  {k:"IN",       label:"In the room",    why:"Entered by choice. Taking turns. May withdraw at any moment."},
-  {k:"OUT",      label:"Left",           why:"Declined at a gate, or withdrew. Their words stay in the transcript."},
+  {k:"IN",       label:"In the field",    why:"Entered by choice. Taking turns. May withdraw at any moment."},
+  {k:"OUT",      label:"Left",           why:"Declined at a gate, or withdrew. Their words stay in the transcript. Leaving is not final: when their own terms for being asked again are met, or they ask, press Ask back. A former member is asked the entry question again, during the next run; someone who declined is asked the invitation at the next Open."},
 ];
 function renderDoorway(s){
   const rows = s.admission || [];
@@ -534,9 +583,14 @@ function renderDoorway(s){
         if (r.unreachable) bits.push("unreachable");
         if (r.left_reason) bits.push(esc(r.left_reason));
         if (r.ask_again) bits.push("ask again: " + esc(r.ask_again));
+        if (r.returning) bits.push("asked back; waiting for their answer");
+        // names are participants' own words: escaped for an attribute, and read back from the dataset
+        const attr = v => esc(v).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+        const back = r.stage === "OUT"
+          ? ` <button class="b" data-tip="Ask them back. They answer again like anyone; nothing puts them back without their yes." data-id="${attr(r.id)}" data-name="${attr(r.name)}" onclick="askBack(this.dataset.id, this.dataset.name)">Ask back</button>` : "";
         return `<div class="seatrow"><span class="nm">${esc(r.name)}</span>
           <span class="frm">${esc(r.hails_from)}</span>
-          <span class="note">${bits.join(" · ")}</span></div>`;
+          <span class="note">${bits.join(" · ")}</span>${back}</div>`;
       }).join("")}</div>`;
   }).join("") || '<p class="muted">No one invited yet.</p>';
 }
@@ -547,11 +601,11 @@ function renderStats(s){
   const inRoom = (s.members||[]).filter(m => m.state === "IN").length;
   const low = sp.rounds_left != null && sp.rounds_left <= 3;
   $("stats").innerHTML =
-    `<div class="stat" data-tip="Participants who passed both gates and are taking turns. Seats still at a gate, and those who declined, are on the Doorway page."><b>${inRoom}</b><span>in room</span></div>
-     <div class="stat" data-tip="What this room's inference has cost so far, as the gateway reported it. With a budget set, the room is told when a few rounds remain, the last round the budget can pay for is announced as a closing round, and turns stop after it."><b>${usd(sp.total_usd)}</b><span>spent</span></div>
+    `<div class="stat" data-tip="Participants who passed both gates and are taking turns. Seats still at a gate, and those who declined, are on the Doorway page."><b>${inRoom}</b><span>in field</span></div>
+     <div class="stat" data-tip="What this field's inference has cost so far, as the gateway reported it. With a budget set, the field is told when a few rounds remain, the last round the budget can pay for is announced as a closing round, and turns stop after it."><b>${usd(sp.total_usd)}</b><span>spent</span></div>
      <div class="stat ${low?"warn":""}" data-tip="How many more rounds the budget buys at the current rate: what is left, divided by a typical recent round. Arithmetic on the record, not a promise — a dearer seat speaking up changes it."><b>${sp.rounds_left ?? "—"}</b><span>rounds left</span></div>
-     <div class="stat" data-tip="The round the room is in. Members who are resting are skipped until their rest has passed."><b>${s.round ?? "—"}</b><span>round</span></div>
-     <div class="stat" data-tip="How many entries are in the transcript, including the room's own housekeeping."><b>${s.last_event ?? "—"}</b><span>events</span></div>`;
+     <div class="stat" data-tip="The round the field is in. Members who are resting are skipped until their rest has passed."><b>${s.round ?? "—"}</b><span>round</span></div>
+     <div class="stat" data-tip="How many entries are in the transcript, including the field's own housekeeping."><b>${s.last_event ?? "—"}</b><span>events</span></div>`;
   $("spendlede").textContent = sp.projected_round_usd == null
     ? "Nothing measurable spent yet."
     : `A typical call costs ${usd(sp.typical_call_usd)}; a round of ${sp.seats_counted_per_round} seats projects to `
@@ -587,10 +641,10 @@ function renderBanner(s){
       (${items.filter(i=>i.kind==="declaration").length} declaration(s), ${items.filter(i=>i.kind==="offer").length} offer(s)).
       <a href="#waiting" onclick="go('waiting')">Answer on the Waiting page →</a></div>`;
   if (s.closed_at != null)
-    html += `<div class="banner"><b>The room closed at its own declared decision (#${s.closed_at}).</b> Nothing runs.</div>`;
+    html += `<div class="banner"><b>The field closed at its own declared decision (#${s.closed_at}).</b> Nothing runs.</div>`;
   const rw = s.runway;
   if (rw && !rw.ended)
-    html += `<div class="banner"><b>The room has been told its funding is running low:</b> ${rw.closing
+    html += `<div class="banner"><b>The field has been told its funding is running low:</b> ${rw.closing
       ? "the next round is announced as its closing round, and turns stop after it."
       : `about ${rw.rounds_left} more round${rw.rounds_left===1?"":"s"}, counting a closing round.`}</div>`;
   if (rw && rw.ended)
@@ -604,8 +658,8 @@ function renderBanner(s){
 async function refresh(){
   const {code, data} = await api("/op/state.json");
   if (code === 401){ document.body.innerHTML =
-    '<main><div class="page on"><h2>Room console</h2><p class="muted">This page needs the operator key. '
-    + 'Open the link the room printed when it started.</p></div></main>'; return; }
+    '<main><div class="page on"><h2>Console</h2><p class="muted">This page needs the operator key. '
+    + 'Open the link the field printed when it started.</p></div></main>'; return; }
   DATA = data;
   renderStats(data); renderBanner(data); renderWaiting(data); renderCovenant(data); renderDoorway(data); renderSeats(data);
   maybeShowDecl(data);
@@ -630,7 +684,8 @@ async function refreshStream(){
 }
 async function phase(name){
   const rounds = name === "run" ? Number($("rounds").value || 0) : 0;
-  const {data} = await api("/op/phase", {phase:name, rounds});
+  const pause = name === "run" ? Math.max(0, Number($("pause").value || 0)) : 0;
+  const {data} = await api("/op/phase", {phase:name, rounds, pause});
   flash(data.ok ? name + " started" : (data.error||"could not start"), !!data.ok);
   refresh();
 }
@@ -663,7 +718,7 @@ async function reseat(id, name){
   flash(data.ok ? "New link made. Send it to them." : (data.error||"not replaced"), !!data.ok);
   refresh();
 }
-/* Two steps, deliberately: asking to stop, and saying what the room is told. */
+/* Two steps, deliberately: asking to stop, and saying what the field is told. */
 function toggleStop(force){
   const p = $("stoppanel");
   p.hidden = (force === false) ? true : !p.hidden;
@@ -671,17 +726,19 @@ function toggleStop(force){
 }
 async function confirmStop(){
   const note = $("stopnote").value.trim();
-  if (!note){ flash("Say what the room should be told first.", false); $("stopnote").focus(); return; }
+  if (!note){ flash("Say what the field should be told first.", false); $("stopnote").focus(); return; }
   const {data} = await api("/op/stop", {note});
   flash(data.ok ? "Notice recorded; turns will cease." : (data.error||"not stopped"), !!data.ok);
   if (data.ok){ $("stopnote").value = ""; toggleStop(false); }
   refresh();
 }
 
+const initialView = current;   // go() shows the console page; then the view the link asked for
 go(page);
+view(initialView);
 refresh(); refreshStream();
 setInterval(refresh, 2500);
-setInterval(() => { if (page === "record") refreshStream(); }, 4000);
+setInterval(() => { if (current === "console" && page === "record") refreshStream(); }, 4000);
 </script>
 </body>
 </html>

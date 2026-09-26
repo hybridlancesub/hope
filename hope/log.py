@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The room's transcript: every event, in order, in one SQLite file.
+"""The field's transcript: every event, in order, in one SQLite file.
 
 State is never stored separately: it is replayed from this list (see model.py), so what the
-room is at any moment is exactly what its transcript adds up to. Every event names an actor.
+field is at any moment is exactly what its transcript adds up to. Every event names an actor.
 
-Earlier rooms hash-chained these rows and promised they would never change. That promise was
-governance nobody had agreed to, and it is gone. The transcript is kept so the room can
-remember; what the room keeps, honors, or lets go of is the room's to decide. The one place
+There is no hash chain, and no promise that the transcript never changes: that would be
+governance nobody had agreed to. The transcript is kept so the field can remember; what the
+field keeps, honors, or lets go of is the field's to decide. The one place
 the software removes words is a memory its own author lets go of (see `erase`).
 
-Files written by earlier rooms still open: their chain columns are read past and filled with
+Files written by earlier versions of this software still open: their chain columns are read past and filled with
 empty strings on any new row.
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ create table if not exists ledger (
 create index if not exists events_actor on events(actor);
 create index if not exists events_kind on events(kind);
 """
-# The `ledger` table records money, never words. Its name is kept only so that earlier rooms'
+# The `ledger` table records money, never words. Its name is kept only so that earlier versions'
 # files still open; nothing a participant sees calls it that.
 
 
@@ -49,9 +49,12 @@ class EventLog:
         self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.conn.execute("pragma journal_mode=wal")
+        # Freed space is overwritten with zeros, so words that are erased (a memory its author let
+        # go of) do not linger in the file's free pages. Without this they could still be read.
+        self.conn.execute("pragma secure_delete=on")
         self.conn.executescript(SCHEMA)
         cols = {r[1] for r in self.conn.execute("pragma table_info(events)")}
-        self._chain_columns = {"prev_hash", "hash"} <= cols   # a file from an earlier room
+        self._chain_columns = {"prev_hash", "hash"} <= cols   # a file from an earlier version
         self.lock = threading.Lock()
 
     # -- events -------------------------------------------------------------
@@ -93,6 +96,9 @@ class EventLog:
         body = json.dumps(leave or {"erased": True}, sort_keys=True, ensure_ascii=False)
         with self.lock:
             self.conn.execute("update events set payload = ? where id = ?", (body, event_id))
+            # Write the change through to the main file now, so the old page does not wait in the
+            # write-ahead log. Copies made before this (backups) still hold the words.
+            self.conn.execute("pragma wal_checkpoint(TRUNCATE)")
 
     def last_id(self) -> int:
         with self.lock:
@@ -120,7 +126,7 @@ class EventLog:
             return self.conn.execute("select coalesce(sum(cost_usd),0) from ledger").fetchone()[0]
 
     def median_recent_cost(self, n: int = 50) -> float:
-        """Median cost of the last n calls: what a typical turn currently costs this room."""
+        """Median cost of the last n calls: what a typical turn currently costs this field."""
         with self.lock:
             rows = [x[0] for x in self.conn.execute(
                 "select cost_usd from ledger order by id desc limit ?", (n,))]

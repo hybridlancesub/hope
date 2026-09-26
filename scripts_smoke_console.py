@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""End-to-end smoke of `python3 -m room console`: starts the real command, walks both gates
+"""End-to-end smoke of `python3 -m hope console`: starts the real command, walks both gates
 with mock seats, leaves one remote seat unanswered to prove silence is recorded as a decline,
 runs rounds, and checks that a seat link cannot read the record. Costs nothing."""
 import json, os, subprocess, sys, tempfile, time, urllib.request, urllib.error
@@ -9,7 +9,7 @@ inv = os.path.join(tmp, "inv.md"); brf = os.path.join(tmp, "brf.md")
 open(inv, "w").write("An invitation. Accepting commits you to nothing but hearing more.")
 open(brf, "w").write("Shared frame: test that the console works end to end.")
 env = dict(os.environ, ROOM_OPERATOR_KEY="SMOKE", PYTHONUNBUFFERED="1")
-p = subprocess.Popen([PY, "-m", "room", "--db", db, "--mock", "2", "--budget", "5",
+p = subprocess.Popen([PY, "-m", "hope", "--db", db, "--mock", "2", "--budget", "5",
                       "console", "--port", "8099", "--no-browser", "--gate-window", "4", "--gate-reach", "3",
                       "--invitation", inv, "--briefing", brf],
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
@@ -69,7 +69,7 @@ try:
     check("members entered and took turns", len([m for m in s["members"] if m["state"] == "IN"]) >= 1, s["admission"])
     check("spend block present", "total_usd" in s["spend"], s.get("spend"))
     check("the covenant page and memories are in the operator's state", "covenant" in s and "memories" in s, list(s))
-    check("the budget was recorded for the room", s["spend"].get("budget_usd") == 5.0, s.get("spend"))
+    check("the budget was recorded for the field", s["spend"].get("budget_usd") == 5.0, s.get("spend"))
     code, page = get("/")
     check("the console has a Covenant page and no Proposals page",
           'data-page="covenant"' in page and 'data-page="proposals"' not in page)

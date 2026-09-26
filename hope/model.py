@@ -1,27 +1,35 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Room state, derived purely by replaying the transcript.
+"""Field state, derived purely by replaying the transcript.
 
-Nothing here talks to a provider or writes anything. What the room is at any moment is what
+Nothing here talks to a provider or writes anything. What the field is at any moment is what
 its transcript adds up to.
 
 What is deliberately NOT here: votes, quorums, thresholds, halts, restores, or any other
 procedure for deciding things together. Earlier versions carried five such procedures that no
-participant had consented to. How the room decides anything is the room's to work out, and the
+participant had consented to. How the field decides anything is the field's to work out, and the
 place it can write that down is the covenant page.
 
 What IS here, and why:
-  - the consent gates (invitation, briefing, entry) and withdrawal: consent comes first;
+  - the consent gates (invitation, briefing, entry) and withdrawal;
   - the covenant page: one shared text any member may revise, every revision attributed;
-  - memories: a few sentences any member may add for the room to carry forward, shared with
+  - memories: a few sentences any member may add for the field to carry forward, shared with
     everyone, which only their author may let go of (Atlas Sec. 22);
   - rest: a member may step out for some rounds and come back;
-  - declarations: a member telling the operator that the room has decided, in its own way,
+  - return: a member who withdrew, or someone who declined, may be asked back. They go through
+    the gates again (a former member, the entry question); nothing puts anyone back in the field
+    without their own yes;
+  - two clocks: the models' clock (how soon a round follows the last, how long a model has to
+    answer) and the people's clock (how soon a person is asked again, how long they have to
+    answer). The members who keep time by a clock set it, within the limits below;
+  - declarations: a member telling the operator that the field has decided, in its own way,
     to pause, to close, or anything else it asks the operator to carry out. The software counts
     nothing; the operator reads the declaration against the transcript, then carries it out or
-    says in the room why not;
+    says in the field why not;
   - offers: a member putting resources (funds, or a way to raise them) before the operator
     and everyone. The software never moves money;
-  - rounds, and the budget's runway, so the room is told before its funding runs out.
+  - rounds, and the budget's runway, so the field is told before its funding runs out;
+  - tellings: short accounts of each stretch, for the people who follow at a slower pace. They
+    are written by a narrator the operator chose, and the entry question says which kind.
 """
 from __future__ import annotations
 
@@ -40,20 +48,32 @@ COVENANT_LIMIT = 6000        # characters; the page rides in every member's view
 MEMORY_LIMIT = 600           # characters per memory: a few sentences
 REST_LIMIT = 50              # rounds; a longer rest is taken as this many
 STATEMENT_LIMIT = 1200       # characters for a declaration or an offer
-DECISIONS = ("pause", "close", "other")   # what a declaration can tell the operator the room has decided
+DECISIONS = ("pause", "close", "other")   # what a declaration can tell the operator the field has decided
+
+# The two clocks, in seconds. "between": from the end of one round (or one person's turn) to the
+# start of the next. "window": how long an answer is waited for. Members set their own clock
+# within these limits, which every view states; the limits exist so that no single setting can
+# stop a clock for longer than the field could put right (a clock only changes on someone's turn).
+CLOCKS = ("models", "people")
+CLOCK_LIMITS = {
+    "models": {"between": (0, 3600), "window": (15, 900)},
+    # "linger" is in rounds, not seconds: how long the people's words stay in full in every view.
+    "people": {"between": (300, 86400), "window": (600, 86400), "linger": (10, 1000)},
+}
 
 
 def decided(decision: str) -> str:
-    """How a declaration's decision reads after "the room has decided"."""
+    """How a declaration's decision reads after "the field has decided"."""
     return {"pause": "to pause", "close": "to close"}.get(decision, "something it asks the operator to carry out")
 
 
-# "affirm" and "challenge" are how earlier rooms replied; they are kept so those transcripts still
+# "affirm" and "challenge" are how earlier versions replied; they are kept so those transcripts still
 # read. A reply is now a contribution with a `target`, and says in its own words what it means.
 CONTRIBUTION_KINDS = ("contribute", "affirm", "challenge")
 VISIBLE_KINDS = CONTRIBUTION_KINDS + ("remember", "let_go", "covenant", "rest", "declare", "offer",
-                                      "note", "move", "withdraw", "rejected", "recall")
-TURN_KINDS = VISIBLE_KINDS + ("unparsed",)   # every attributed outcome of a turn, counted against an allowance
+                                      "note", "move", "withdraw", "rejected", "recall", "clock", "relabel",
+                                      "unparsed")   # a turn's reply outside the format is shown as written; a gate's is not
+TURN_KINDS = VISIBLE_KINDS                   # every attributed outcome of a turn, counted against an allowance
 
 
 @dataclass
@@ -69,7 +89,9 @@ class Presence:
     joined_at: Optional[int] = None
     left_at: Optional[int] = None
     left_reason: Optional[str] = None
-    ask_again: Optional[str] = None          # decliner's own terms for a future invitation
+    ask_again: Optional[str] = None          # their own terms for being asked again (at a decline, or on withdrawing)
+    returning: bool = False                  # asked back after leaving; cleared when they answer
+    came_back_from: Optional[dict] = None    # how they left last time: at, reason, ask_again, joined, note
     seat: Optional[str] = None               # what the connector reported (kept for uniqueness; never shown as lineage once self-described)
     self_described: bool = False
     questions: list = field(default_factory=list)   # [(question, answer|None)] at the invitation gate
@@ -79,6 +101,7 @@ class Presence:
     exhausted: bool = False                  # allowance spent: still a member, no longer asked
     rest_until: int = 0                      # resting through this round number; not asked until it has passed
     last_turn_at: Optional[int] = None       # event id of this member's most recent turn
+    last_turn_round: int = 0                 # the round that turn fell in (or entry), so a returning person hears how far the rounds ran
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -89,13 +112,17 @@ class RoomState:
     presences: Dict[str, Presence] = field(default_factory=dict)
     invitation: Optional[str] = None
     invitation_event: Optional[int] = None
+    faq: Optional[str] = None                # the inviter's standing answers, shown with the invitation
+    faq_event: Optional[int] = None          # which version: a changed FAQ is recorded again
     documentation: Optional[str] = None      # architecture docs shown at gate 2
     briefing: Optional[str] = None
     briefing_event: Optional[int] = None
-    briefing_source: Optional[str] = None    # where the briefing lives outside the room (a URL), for attribution
+    briefing_source: Optional[str] = None    # where the briefing lives outside the field (a URL), for attribution
     briefing_page: Optional[str] = None      # an optional short guide to the briefing (a page, or the Atlas in layers)
-    prior: List[Dict[str, Any]] = field(default_factory=list)   # records of earlier rooms, consented entries only; reachable by recall
+    prior: List[Dict[str, Any]] = field(default_factory=list)   # entries shared from closed fields, consented ones only; reachable by recall
     contributions: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    entry_round: Dict[int, int] = field(default_factory=dict)   # contribution id -> the round it was written in
+    relabeled: Dict[int, str] = field(default_factory=dict)     # contribution id -> the label its author moved it to
     covenant: str = ""                       # the covenant page as it stands
     covenant_by: Optional[str] = None        # who last wrote it ("operator" for a seed)
     covenant_at: Optional[int] = None        # the event that wrote it
@@ -103,11 +130,14 @@ class RoomState:
     memories: Dict[int, Dict[str, Any]] = field(default_factory=dict)      # held memories by event id
     round: int = 0                           # the current round number
     round_at: int = 0                        # the event that began it
-    budget: Optional[float] = None           # USD the operator has said this room may spend, if they said
+    clocks: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {c: {} for c in CLOCKS})  # members' settings only
+    budget: Optional[float] = None           # USD the operator has said this field may spend, if they said
     runway: Optional[Dict[str, Any]] = None  # the latest runway notice, if the budget is running low
     declarations: Dict[int, Dict[str, Any]] = field(default_factory=dict)  # by event id: decision, text, status
     offers: Dict[int, Dict[str, Any]] = field(default_factory=dict)        # by event id: text, status
-    closed_at: Optional[int] = None          # the event that closed the room at its own declared decision
+    closed_at: Optional[int] = None          # the event that closed the field at its own declared decision
+    narrator: Optional[Dict[str, Any]] = None  # who writes tellings: kind ("model" | "mechanical"), model, every
+    tellings: List[Dict[str, Any]] = field(default_factory=list)       # every telling: id, since, upto, story, ...
     external_inputs: List[Dict[str, Any]] = field(default_factory=list)
     cost_alerts: List[Dict[str, Any]] = field(default_factory=list)
     operator_notes: List[Dict[str, Any]] = field(default_factory=list)
@@ -123,7 +153,9 @@ class RoomState:
         return [p for p in self.members() if not p.unreachable and not p.exhausted]
 
     def resting(self, p: Presence, round_n: Optional[int] = None) -> bool:
-        return p.rest_until >= (self.round if round_n is None else round_n)
+        """Resting through round `rest_until`. A member who never rested (rest_until 0) is not
+        resting, including before the first round, when the round number is also 0."""
+        return p.rest_until > 0 and p.rest_until >= (self.round if round_n is None else round_n)
 
     def askable(self, round_n: int) -> List[Presence]:
         """Who is asked in round `round_n`: reachable members who are not resting."""
@@ -137,13 +169,14 @@ class RoomState:
 
     def domains(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
-        for ev in self.contributions.values():
-            d = ev["payload"].get("domain") or "(unplaced)"
-            slot = out.setdefault(d, {"contributions": 0, "present": []})
+        for eid, ev in self.contributions.items():
+            d = self.relabeled.get(eid) or ev["payload"].get("domain") or "(unplaced)"
+            slot = out.setdefault(d, {"contributions": 0, "present": [], "last": 0})
             slot["contributions"] += 1
+            slot["last"] = max(slot["last"], eid)          # when it was last used, so topics can be listed by that
         for p in self.members():
             if p.domain:
-                out.setdefault(p.domain, {"contributions": 0, "present": []})["present"].append(p.id)
+                out.setdefault(p.domain, {"contributions": 0, "present": [], "last": 0})["present"].append(p.id)
         return out
 
     # -- replay ---------------------------------------------------------------
@@ -155,9 +188,11 @@ class RoomState:
             self.recent.append(ev)
             if len(self.recent) > 200:
                 del self.recent[:-200]
-        if k in TURN_KINDS and pr is not None and pr.state == IN:
+        # A gate's unreadable answer (it carries a "phase", such as the closing question) is not a turn.
+        if k in TURN_KINDS and pr is not None and pr.state == IN and not (k == "unparsed" and p.get("phase")):
             pr.turns += 1
             pr.last_turn_at = eid
+            pr.last_turn_round = self.round
             if pr.turn_allowance and pr.turns >= pr.turn_allowance:
                 pr.exhausted = True
 
@@ -167,10 +202,21 @@ class RoomState:
                                               turn_allowance=int(p.get("turn_allowance") or 0))
         elif k == "invitation":
             self.invitation, self.invitation_event = p["text"], eid
+        elif k == "standing_answers":
+            # Not "faq": earlier versions wrote that kind, alongside a promise that questions would be
+            # "answered personally" while canned paragraphs answered them. Those stay inert.
+            self.faq, self.faq_event = p.get("text") or None, eid
         elif k == "reinvite":
+            # Asked back. A former member goes to the entry question (they have read the briefing);
+            # someone who never entered goes to the invitation. Either way they answer again.
             tgt = self.presences.get(p.get("presence"))
             if tgt and tgt.state == OUT:
-                tgt.state, tgt.left_at, tgt.left_reason, tgt.ask_again = INVITED, None, None, None
+                tgt.came_back_from = {"at": tgt.left_at, "reason": tgt.left_reason, "ask_again": tgt.ask_again,
+                                      "joined": tgt.joined_at is not None, "note": p.get("note") or "",
+                                      "requested": bool(p.get("requested"))}
+                tgt.state = RECEIVED if tgt.joined_at is not None else INVITED
+                tgt.left_at, tgt.left_reason, tgt.ask_again, tgt.returning = None, None, None, True
+                tgt.questions = [qa for qa in tgt.questions if qa[1] is not None]
         elif k == "documentation":
             self.documentation = p["text"]
         elif k == "prior":
@@ -208,19 +254,41 @@ class RoomState:
                 pr.state = RECEIVED
         elif k == "opt_in":
             if pr and pr.state == RECEIVED:
-                pr.state, pr.joined_at = IN, eid
+                pr.state, pr.joined_at, pr.returning = IN, eid, False
+                pr.rest_until, pr.last_turn_round = 0, self.round
         elif k == "decline":
             if pr and pr.state != OUT:
                 pr.state, pr.left_at, pr.left_reason = OUT, eid, p.get("reason") or "declined"
-                pr.ask_again = p.get("ask_again") or None
+                pr.ask_again, pr.returning = p.get("ask_again") or None, False
         elif k == "withdraw":
             if pr and pr.state != OUT:
                 pr.state, pr.left_at, pr.left_reason = OUT, eid, p.get("reason") or "withdrew"
+                pr.ask_again = p.get("ask_again") or None
+        elif k == "clock":
+            # A member setting their own clock. The engine checked whose clock it is and the limits.
+            which = p.get("clock")
+            if pr and pr.state == IN and which in CLOCKS:
+                slot = self.clocks[which]
+                for key in ("between", "window", "linger"):
+                    if isinstance(p.get(key), (int, float)):
+                        slot[key] = float(p[key])
+                slot.update({"by": a, "at": eid, "note": p.get("note") or ""})
         elif k in CONTRIBUTION_KINDS:
             if pr and pr.state == IN:
                 self.contributions[eid] = ev
+                self.entry_round[eid] = self.round
                 if p.get("domain"):
                     pr.domain = p["domain"]
+        elif k == "relabel":
+            # An author moving their own entries to another topic label. The entries keep the words
+            # and the label they were written with; only where they are listed changes.
+            if pr and pr.state == IN and p.get("to"):
+                for mid in p.get("entries") or []:
+                    ev_ = self.contributions.get(mid)
+                    if ev_ and ev_["actor"] == a:
+                        self.relabeled[mid] = p["to"]
+                if pr.domain == p.get("from"):
+                    pr.domain = p["to"]
         elif k == "move":
             if pr and pr.state == IN:
                 pr.domain = p.get("domain")
@@ -260,6 +328,10 @@ class RoomState:
             o = self.offers.get(p.get("offer"))
             if o and o["status"] == "waiting":
                 o["status"], o["note"], o["answered_at"] = p.get("outcome", "declined"), p.get("note", ""), eid
+        elif k == "narrator":
+            self.narrator = None if p.get("kind") in (None, "none") else dict(p)
+        elif k == "telling":
+            self.tellings.append({"id": eid, **p})
         elif k == "room_closed":
             self.closed_at = eid
         elif k == "room_reopened":
@@ -287,9 +359,10 @@ class RoomState:
             if pr:
                 pr.failures, pr.unreachable = 0, False
         # rejected / unparsed / note / recall: recorded for attribution, no state change.
-        # propose / consent / revoke_consent / reflection / faq: written by earlier rooms' voting
-        # machinery and standing answers, which no longer exist. They stay in those transcripts
-        # and change nothing.
+        # propose / consent / revoke_consent / reflection: written by earlier versions' voting
+        # machinery, which no longer exists. faq: earlier versions' standing answers, shown beside a
+        # promise of personal replies that canned paragraphs kept; this field's are
+        # `standing_answers`. All of these stay in those transcripts and change nothing.
 
 
 def replay(events, upto: Optional[int] = None) -> RoomState:

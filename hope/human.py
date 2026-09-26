@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A human seat. One person, one presence, the same gates and the same actions as every
-other participant. The connector prints the room's view to the terminal and reads a reply
-from stdin; if no reply arrives within the turn timeout, the turn is recorded as pass.
+other participant. The connector prints the field's view to the terminal and reads a reply
+from stdin; if no reply arrives before the turn's window closes (the people's clock), nothing is
+written as theirs.
 
 The reply format is plain text, translated to the same JSON actions models send:
 
@@ -9,22 +10,28 @@ The reply format is plain text, translated to the same JSON actions models send:
     @domain <text>                  contribute in a domain
     [handle] <text>                 a short title first, in square brackets, works with the two above
     #123 <text>                     reply to entry 123 (say in your own words how)
-    remember <text>                 add a memory for the room to carry forward (#ids in it become refs)
+    remember <text>                 add a memory for the field to carry forward (#ids in it become refs)
     let go 123                      let go of a memory you added; its words are removed
     covenant <text>                 replace the covenant page with <text> (the whole page)
     rest 3 [reason]                 step out for 3 rounds; you are not asked until they pass
-    declare close <how> [#ids]      tell the operator the room has decided to close (or: declare pause ...,
+    relabel <label> -> <label>      move your own entries from one topic label to another
+    clock between 30m window 2h linger 200 [why]
+                                    set the people's clock: how soon you are all asked again after a
+                                    turn, how long you have to answer (seconds, or 90s, 30m, 2h), and
+                                    for how many rounds your words stay in full in every view
+    declare close <how> [#ids]      tell the operator the field has decided to close (or: declare pause ...,
                                     declare other ... for anything else it asks the operator to carry out),
                                     saying how, in the way its covenant describes; #ids become citations
     offer <text>                    put an offer of resources before the operator and everyone
     recall [briefing|transcript|memory|covenant|prior] <words>
                                     re-read matching passages (shown next turn; briefing if unnamed)
     pass
-    withdraw [reason]
+    withdraw [reason] [/ when it would be fair to ask you back]
     question <text>                 (invitation gate only)
     yes [statement] | no [reason]   (at either gate; "no ... / ask again when ..." records terms)
+    share | share #12 #15 | no      (the closing question: everything, only those entries, or nothing)
 
-The room has no voting commands. To ask the room to decide something, say so in words.
+The field has no voting commands. To ask the field to decide something, say so in words.
 """
 from __future__ import annotations
 
@@ -37,7 +44,7 @@ import threading
 import time
 from typing import List, Optional
 
-from .connector import Reply, Seat
+from .connector import Reply, Seat, no_reply
 
 _print_lock = threading.Lock()
 
@@ -46,14 +53,17 @@ class HumanConnector:
     """A person's seat. Two modes:
 
     - terminal (default): the prompt and the view print here; you answer on stdin.
-    - inbox (inbox=path): the room runs in the background; when it is your turn it waits
+    - inbox (inbox=path): the field runs in the background; when it is your turn it waits
       for a line to appear in the inbox file. You speak from ANY terminal with the `say`
       command (or by appending a line yourself). No tmux, no attached session; if no line
-      arrives within the turn timeout, the turn is recorded as pass, exactly as before.
+      arrives before the window closes, nothing is written as yours.
+
+    `turn_timeout` is the window of an ordinary turn. The engine sets it from the people's clock
+    before each turn; gates have no window here, since the person is at this terminal.
     """
 
     def __init__(self, name: str, hails_from: str, people: str = "human",
-                 turn_timeout: float = 180.0, infile=None, outfile=None, inbox: str = None):
+                 turn_timeout: float = 900.0, infile=None, outfile=None, inbox: str = None):
         self.seat = Seat(id="human__" + _slug(name), name=name, hails_from=hails_from, people=people,
                          model="human", pricing={"prompt": 0.0, "completion": 0.0})
         self.turn_timeout = turn_timeout
@@ -70,9 +80,11 @@ class HumanConnector:
         return [self.seat]
 
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:
-        gate = "accept_invitation" in system.lower()
-        delivery = '"received"' in system.lower()
-        entry = ("opt_in" in system.lower()) and not gate and not delivery
+        low = system.lower()
+        gate = "accept_invitation" in low
+        delivery = '"received"' in low
+        share = '"share"' in low
+        entry = ("opt_in" in low) and not gate and not delivery
         with _print_lock:
             self._say("\n" + "=" * 78)
             self._say(system.strip())
@@ -85,18 +97,22 @@ class HumanConnector:
                 self._say("Acknowledge receipt (received [note] | no [reason]). You are not being asked to enter yet:")
             elif entry:
                 self._say("Your answer (yes [statement] | no [reason]):")
+            elif share:
+                self._say("Your answer (share | share #12 #15 | no [reason]). No answer shares nothing:")
             else:
-                limit = f"{self.turn_timeout:.0f}s, " if self.turn_timeout else ""
-                self._say(f"Your action ({limit}blank or timeout = pass). Type 'help' for the format:")
+                limit = f"window {self.turn_timeout:.0f}s; " if self.turn_timeout else ""
+                self._say(f"Your action ({limit}blank = pass; no answer writes nothing as yours). Type 'help' for the format:")
             self._say("> ", end="")
-            line = self._read_line(self.turn_timeout if not (gate or entry or delivery) else None)
+            line = self._read_line(None if (gate or entry or delivery or share) else self.turn_timeout)
         if line is None:
-            self._say("\n(no reply; recorded as pass)")
-            return Reply(json.dumps({"action": "pass"}))
+            if share:
+                return Reply(json.dumps({"action": "decline", "reason": "no answer, which this question treats as declining to share"}))
+            self._say("\n(no reply in time; nothing is written as yours)")
+            return no_reply()
         if line.strip().lower() == "help":
             self._say(__doc__)
             return self.ask(seat, system, messages)
-        return Reply(json.dumps(translate(line, gate=gate, entry=entry, delivery=delivery)))
+        return Reply(json.dumps(translate(line, gate=gate, entry=entry, delivery=delivery, share=share)))
 
     def close(self) -> None:
         pass
@@ -134,9 +150,29 @@ class HumanConnector:
             time.sleep(0.5)
 
 
-def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: bool = False) -> dict:
-    s = line.strip()
+_ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[@-_]")
+_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def visible_text(text: str) -> str:
+    """What a person (or a model) actually wrote, without terminal escape codes and control
+    characters, so noise pasted from a terminal never becomes words anyone is said to have said."""
+    return _CONTROLS.sub("", _ESCAPES.sub("", text or "")).strip()
+
+
+def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: bool = False,
+              share: bool = False) -> dict:
+    s = visible_text(line)
     low = s.lower()
+    if share:
+        # The closing question: everything, only the entries named, or nothing. Anything else is
+        # not an answer to it, so the engine asks once more and then takes it as nothing shared.
+        if low.startswith("no"):
+            return {"action": "decline", "reason": s[2:].strip()}
+        if low.startswith("share"):
+            ids = [int(x) for x in re.findall(r"#?(\d+)", s[5:])]
+            return {"action": "share", "scope": "some", "events": ids} if ids else {"action": "share", "scope": "all"}
+        return {"action": "unreadable", "text": s}
     if delivery:
         if low.startswith("no"):
             return {"action": "decline", "reason": s[2:].strip()}
@@ -164,7 +200,32 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     if not s or low == "pass":
         return {"action": "pass"}
     if low.startswith("withdraw"):
-        return {"action": "withdraw", "reason": s[8:].strip()}
+        reason, _, again = s[8:].partition("/")
+        d = {"action": "withdraw", "reason": reason.strip()}
+        if again.strip():
+            d["ask_again"] = again.strip()
+        return d
+    if low.startswith("relabel "):
+        rest = s[8:]
+        src, sep, dst = rest.partition("->")
+        if not sep:
+            src, sep, dst = rest.rpartition(" to ")
+        return {"action": "relabel", "from": src.strip(), "to": dst.strip()}
+    if low == "clock" or low.startswith("clock "):
+        words = s[5:].split()
+        d, note = {"action": "clock"}, []
+        i = 0
+        while i < len(words):
+            w = words[i].lower().rstrip(":")
+            if w in ("between", "every", "window", "linger") and i + 1 < len(words):
+                d[w if w in ("window", "linger") else "between"] = words[i + 1]
+                i += 2
+            else:
+                note.append(words[i])
+                i += 1
+        if note:
+            d["note"] = " ".join(note)
+        return d
     if low.startswith("remember "):
         text = s[9:].strip()
         return {"action": "remember", "text": text, "refs": [int(x) for x in re.findall(r"#(\d+)", text)]}
@@ -192,7 +253,7 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     if low.startswith("move "):
         return {"action": "move", "domain": s[5:].strip()}
     if s[0] in "#+-" and len(s) > 1 and s[1].isdigit():
-        # "#123 text" is a reply; "+123"/"-123" were earlier rooms' affirm/challenge and are replies now too
+        # "#123 text" is a reply; "+123"/"-123" were earlier versions' affirm/challenge and are replies now too
         num, _, text = s[1:].partition(" ")
         domain, text = _domain_prefix(text)
         title, text = _title_prefix(text)
@@ -200,7 +261,8 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         return {**d, "title": title} if title else d
     domain, text = _domain_prefix(s)
     title, text = _title_prefix(text)
-    d = {"action": "contribute", "domain": domain, "content": text.strip()}
+    # plain words: kept as said, and if they read like another action, a hint follows next turn
+    d = {"action": "contribute", "domain": domain, "content": text.strip(), "plain": True}
     return {**d, "title": title} if title else d
 
 

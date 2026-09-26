@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""What one room may carry from another: only what was consented to, entry by entry.
+"""What one field may carry from another: only what was consented to, entry by entry.
 
-`consented(log)` reads a closed room's `share_consent` events and returns the entries whose
-authors said yes (all, or the specific ids they named). Nothing else leaves that room: not the
-decliners' words, not the unasked, not the operator's notes, not the room's proposals. Each
+`consented(log)` reads a closed field's `share_consent` events and returns the entries whose
+authors said yes (all, or the specific ids they named). Nothing else leaves that field: not the
+decliners' words, not the unasked, not the operator's notes, not the field's proposals. Each
 entry carries the id of the consent event that permits it, so the permission is checkable."""
 from __future__ import annotations
 

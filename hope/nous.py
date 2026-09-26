@@ -6,10 +6,10 @@ Credentials, in order:
      endpoint (default https://inference-api.nousresearch.com/v1). Nothing else is needed.
   2. Otherwise Hermes' own resolver, borrowed from the Hermes install (~/.hermes, or
      HERMES_HOME), so token rotation stays Hermes' business.
-The room itself has no Hermes dependency.
+The software itself has no Hermes dependency.
 
 The Nous API does not (as of September 2026) let an inference key read the account's balance,
-so the room cannot see how much money is left. The operator states a --budget instead.
+so the field cannot see how much money is left. The operator states a --budget instead.
 
 Roster filter: drop embeddings, `:batch`, `~latest` aliases, and regional/free duplicates
 (`:US`, `:free`) whose base id is also listed.
@@ -44,7 +44,7 @@ PROVIDER_LABELS = {
 def _hermes_venv_python() -> str:
     home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
     venv = os.path.join(home, "hermes-agent", "venv")
-    # venvs lay themselves out differently per platform. Everything else in the room is plain
+    # venvs lay themselves out differently per platform. Everything else in the field is plain
     # stdlib and runs anywhere; this resolver was the only thing tying it to one kind of host.
     for rel in (("bin", "python"), ("bin", "python3"), ("Scripts", "python.exe")):
         cand = os.path.join(venv, *rel)
@@ -63,7 +63,7 @@ class NousCredentials:
     def __init__(self):
         self._key = os.environ.get("NOUS_API_KEY", "").strip() or None
         self._base = (os.environ.get("NOUS_BASE_URL", "").strip() or DEFAULT_BASE_URL) if self._key else None
-        self._exp = float("inf") if self._key else 0.0   # a Portal key does not expire on the room's clock
+        self._exp = float("inf") if self._key else 0.0   # a Portal key does not expire on the field's clock
 
     def _resolve(self):
         code = ("from hermes_cli.auth_nous import resolve_nous_runtime_credentials as r;"
@@ -89,7 +89,7 @@ class NousCredentials:
 
 def fetch_models(base_url: str, api_key: str) -> List[dict]:
     req = urllib.request.Request(base_url.rstrip("/") + "/models",
-                                 headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json", "User-Agent": "hermes-room/0.1"})
+                                 headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json", "User-Agent": "hermes-field/0.1"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read()).get("data", [])
 

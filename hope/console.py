@@ -1,38 +1,49 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""One command, a browser, and no flags: the room for people who do not live in a terminal.
+"""One command, a browser, and no flags: the software, for people who do not live in a terminal.
 
-    python3 -m room console --db R.db --invitation FILE --briefing FILE
+    python3 -m hope console --db R.db --invitation FILE --briefing FILE
 
 It runs the engine in this process and serves two different surfaces from it:
 
-  the OPERATOR console   /?k=<operator key>     what you are paying, who is at which gate,
-                                                the raw stream, the covenant page and memories
+  the OPERATOR's window  /?k=<operator key>     one page with three views: the Console (what you
+                                                are paying, who is at which gate, the raw stream,
+                                                the covenant page, what waits on you), the Loom
+                                                (what is happening now, with the tellings) and
+                                                the Firmament (the whole field as a sky)
   a SEAT                 /seat/<seat token>/    one participant's own gate questions and turns
 
+The Loom and the Firmament are the files in firmament/, served here under /firmament/. Their
+code is public and needs no key; their data (/firmament/state.json and story.json) does. The key
+travels once in the link, and the page then keeps it as a cookie this server alone can read
+(HttpOnly, SameSite=Strict), so the views inside it can load their data without the key in every
+address.
+
 They are not the same surface and must never become so. A seat token shows that seat's own
-parked question and nothing else -- not the record, not the roster, not the spend. DESIGN
-Sec. 6 admits no "watching from outside" state, and a link that let someone watch would be
-one. The operator key is the only thing that opens the record, and it is required even on
-localhost so that putting this behind a public address changes nothing about who can read.
+parked question and nothing else -- not the record, not the roster, not the spend. The field
+has no "watching from outside" state, and a link that let someone watch would be one. The
+operator key is the only thing that opens the record, and it is required even on localhost so
+that putting this behind a public address changes nothing about who can read.
 
 What the operator can do here is deliberately smaller than what a terminal can do:
 
     note            an operator notice, recorded, shown to members in their next view
     answer          answer a question someone asked at the invitation gate
     seat            mint an invitation link for a person or an agent on another machine
-    open/enter/run  the phases, exactly as room/__main__.py runs them
-    declaration     answer a member's declaration of something the room decided (to pause, to
-                    close, or anything else it asks for): carry it out, or say why not, or say
-                    you will answer later. Each takes an optional message the room reads.
+    open/enter/run  the phases, exactly as hope/__main__.py runs them
+    declaration     answer a member's declaration of something the field decided (to pause, to
+                    close, or anything else it asks for): carry it out, or reply in the field
+                    (with words) and it stays open. There is no ignoring one.
     offer           answer a member's offer of resources: accept or decline, with a note
-    budget          change what the room may spend; members are told in rounds, not dollars
-    reopen          undo a close carried out by mistake (needs words the room will read)
-    stop            pause the software -- which decides nothing in the room
+    reinvite        ask back someone who left: a former member is asked the entry question
+                    again, someone who declined the invitation again; they answer like anyone
+    budget          change what the field may spend; members are told in rounds, not dollars
+    reopen          undo a close carried out by mistake (needs words the field will read)
+    stop            pause the software -- which decides nothing in the field
 
-There is no halt, no resume, and no restore here, and none anywhere else either: the room has
+There is no halt, no resume, and no restore here, and none anywhere else either: the field has
 no voting machinery at all, and whether it pauses or ends is its members' to decide. `stop` is
-the operator pausing the software (to fix a fault, say), with the obligation the pilot taught:
-it will not stop the turns until you have written what the room should be told, and that
+the operator pausing the software (to fix a fault, say), with an obligation attached: it
+will not stop the turns until you have written what the field should be told, and that
 notice is recorded before the turns cease.
 """
 from __future__ import annotations
@@ -50,11 +61,18 @@ from .log import EventLog
 from .serve import admission_json, record_text, spend_json, state_json
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+VIEWER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "firmament")
+COOKIE = "room_key"
+VIEWER_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                ".json": "application/json; charset=utf-8", ".css": "text/css; charset=utf-8",
+                ".png": "image/png", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8"}
+# files in firmament/ that hold participants' words, which only the operator key opens
+VIEWER_DATA = ("state.json", "story.json")
 MAX_BODY = 1 << 20
 
 # A browser that arrives without a key gets a page, not a JSON error. Dropping the ?k= part of
 # a pasted link is the ordinary way to arrive here, and {"error": ...} tells a reader nothing
-# about what went wrong or what to do -- it reads like the room is broken.
+# about what went wrong or what to do -- it reads like the field is broken.
 _PAGE = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
 <style>body{{background:#0a0b10;color:#c8d0e4;margin:0;display:flex;align-items:center;
@@ -68,32 +86,32 @@ button{{background:rgba(140,152,180,.1);color:#c8d0e4;border:1px solid rgba(140,
 border-radius:.35rem;padding:.45rem .9rem;font:400 13.5px inherit;cursor:pointer;margin-top:.6rem}}
 </style></head><body><div class="b"><h1>{title}</h1>{body}</div></body></html>"""
 
-_NEED_KEY = _PAGE.format(title="Room console", body="""
+_NEED_KEY = _PAGE.format(title="Console", body="""
 <p>This page needs the operator key, and the address you used does not carry one.</p>
 <p class="d">The key travels in the link, after <code>?k=</code>. A link copied without that
-part will land here. Open the link the room printed when it started, or paste the key below.</p>
+part will land here. Open the link the field printed when it started, or paste the key below.</p>
 <input id="k" placeholder="operator key" autofocus>
 <button onclick="if(k.value.trim())location='/?k='+encodeURIComponent(k.value.trim())">Open the console</button>
-<p class="d">If you do not have it, the key is printed in the terminal where the room is
+<p class="d">If you do not have it, the key is printed in the terminal where the field is
 running, and can be set before starting with <code>ROOM_OPERATOR_KEY</code>.</p>""")
 
 _NOT_A_SEAT = _PAGE.format(title="Not a seat", body="""
-<p>This link does not open a seat in the room.</p>
+<p>This link does not open a seat in the field.</p>
 <p class="d">A seat link is long and ends in a slash. If yours was split across lines by mail or
 chat, part of it may be missing; paste the whole thing in one piece. If it was replaced, the
 old one stopped working the moment the new one was made &mdash; ask whoever invited you for
 the current link.</p>
-<p class="d">Nothing you have said in the room is affected by this.</p>""")
+<p class="d">Nothing you have said in the field is affected by this.</p>""")
 
 
 class Console:
-    """Owns the room and the phase worker. One phase runs at a time; the browser polls."""
+    """Owns the field and the phase worker. One phase runs at a time; the browser polls."""
 
     def __init__(self, room, rv=None, operator_key: str = "", invitation: str = "",
                  briefing: str = "", documentation: str = "",
                  briefing_source: str = "", budget: Optional[float] = None,
                  seats_per_round: Optional[int] = None, covenant_seed: str = "",
-                 briefing_page: str = ""):
+                 briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = ""):
         self.room = room
         self.rv = rv
         self.key = operator_key or secrets.token_urlsafe(24)
@@ -102,6 +120,8 @@ class Console:
         self.briefing_source = briefing_source
         self.budget, self.seats_per_round = budget, seats_per_round
         self.covenant_seed, self.briefing_page = covenant_seed, briefing_page
+        self.faq = faq
+        self.viewer_dir = viewer_dir or VIEWER
         self._worker: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self.phase: Optional[str] = None
@@ -151,9 +171,12 @@ class Console:
         self._say(f"invited {room.invite_all()} presences")
         if st.invitation is None and self.invitation:
             room.invite_text(self.invitation)
+        if self.faq and room.set_faq(self.faq):
+            self._say("standing answers (FAQ) recorded; shown with the invitation from now on")
         if self.documentation and st.documentation is None:
             room.set_documentation(self.documentation)
         room.set_budget(self.budget)
+        room.announce_narrator()
         if self.covenant_seed:
             room.seed_covenant(self.covenant_seed)
         c1 = room.run_invitation()
@@ -172,13 +195,18 @@ class Console:
 
     def _enter(self, **_):
         self.room.set_budget(self.budget)
+        self.room.announce_narrator()
         self.room.invite_all()
         self._say(f"gate 2 (opt-in): {self.room.run_opt_in()}")
         self._say(f"members in: {len(self.room.state().members())}")
 
     def _run(self, rounds: int = 0, pause: float = 0.0, **_):
-        self.room._stop.clear()      # a previous stop ended the turns, it did not end the room
+        self.room._stop.clear()      # a previous stop ended the turns, it did not end the field
         self.room.set_budget(self.budget)
+        self.room.announce_narrator()
+        # after a restart nothing has bound the members to their seats yet (open and enter do it
+        # in the same process); without this a run takes no turns at all
+        self.room.invite_all()
         self._say(f"running {rounds or 'until stopped'} round(s)")
         self.room.run(rounds=rounds, pause=pause)
         self._say("turns stopped")
@@ -203,7 +231,7 @@ class Console:
 
         if action == "seat":
             if self.rv is None:
-                return {"ok": False, "error": "this room was started without remote seats"}
+                return {"ok": False, "error": "this field was started without remote seats"}
             from .connector import Seat
             name = (payload.get("name") or "").strip()
             if not name:
@@ -219,7 +247,7 @@ class Console:
 
         if action == "reseat":
             if self.rv is None:
-                return {"ok": False, "error": "this room was started without remote seats"}
+                return {"ok": False, "error": "this field was started without remote seats"}
             sid = payload.get("seat")
             token = self.rv.rotate_token(sid)
             if token is None:
@@ -230,16 +258,25 @@ class Console:
 
         if action == "declaration":
             did, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
-            if outcome not in ("carry_out", "ignore", "later"):
-                return {"ok": False, "error": "outcome must be carry_out, ignore or later"}
-            if outcome == "later":
-                out = self.room.acknowledge_declaration(did, payload.get("note") or "")
+            if outcome not in ("carry_out", "reply"):
+                return {"ok": False, "error": "outcome must be carry_out or reply. There is no ignoring a declaration: "
+                                              "carry it out, or reply in the field and it stays open."}
+            if outcome == "reply":
+                out = self.room.reply_declaration(did, payload.get("note") or "")
                 if out.get("ok"):
-                    self._say(f"declaration #{did}: the room is told you will answer later")
+                    self._say(f"declaration #{did}: your reply is shown to the field; it stays open")
                 return out
-            out = self.room.answer_declaration(did, outcome == "carry_out", payload.get("note") or "")
+            out = self.room.answer_declaration(did, payload.get("note") or "")
             if out.get("ok"):
-                self._say(f"declaration #{did}: " + ("carried out; turns will cease" if outcome == "carry_out" else "not acted on; the room is told"))
+                d = self.room.state().declarations.get(did) or {}
+                self._say(f"declaration #{did}: carried out" + ("; turns will cease" if d.get("decision") in ("pause", "close") else ""))
+            return out
+
+        if action == "reinvite":
+            out = self.room.reinvite(payload.get("presence") or "", payload.get("note") or "")
+            if out.get("ok"):
+                self._say(f"asked {payload.get('presence')} back: {out['to']} is put to them "
+                          + ("during the next run (or Ask who enters)" if out["to"] == "the entry question" else "at the next Open"))
             return out
 
         if action == "offer":
@@ -248,7 +285,7 @@ class Console:
                 return {"ok": False, "error": "outcome must be accept or decline"}
             out = self.room.answer_offer(oid, outcome == "accept", payload.get("note") or "")
             if out.get("ok"):
-                self._say(f"offer #{oid}: {outcome}ed; the room is told")
+                self._say(f"offer #{oid}: {outcome}ed; the field is told")
             return out
 
         if action == "budget":
@@ -266,20 +303,31 @@ class Console:
         if action == "reopen":
             out = self.room.reopen(payload.get("note") or "")
             if out.get("ok"):
-                self._say("the room was reopened; the room is told why")
+                self._say("the field was reopened; the field is told why")
             return out
 
         if action == "stop":
             note = (payload.get("note") or "").strip()
             if not note:
-                return {"ok": False, "error": "say what the room should be told. Stopping the process "
-                                              "records nothing by itself, and the pilot halted a room over "
-                                              "an unannounced change. The notice is recorded before turns cease."}
+                return {"ok": False, "error": "say what the field should be told. Stopping the process "
+                                              "records nothing by itself, and an unannounced change reads as "
+                                              "a breach of trust. The notice is recorded before turns cease."}
             self.room.emit("operator", "operator_note", {"content": note})
             self.room.request_stop()
-            return {"ok": True, "note": "notice recorded, turns will cease. Nothing was decided in the room."}
+            return {"ok": True, "note": "notice recorded, turns will cease. Nothing was decided in the field."}
 
         return {"ok": False, "error": f"unknown action {action!r}"}
+
+    def seat_turn(self, token: str) -> Dict[str, Any]:
+        """What a seat's page polls: its own parked question, and, when nothing is asked, whether
+        its holder has left (so the page can offer to ask back). Nothing about anyone else."""
+        out = self.rv.peek(token) or {}
+        if out.get("state") == "waiting":
+            seat = self.rv.seat_for_token(token)
+            p = self.room.state().presences.get(seat.id) if seat else None
+            if p is not None:
+                out["member"] = {"state": p.state, "joined": p.joined_at is not None, "returning": p.returning}
+        return out
 
     # -- what the operator's page reads -----------------------------------------
     def op_state(self) -> Dict[str, Any]:
@@ -302,12 +350,14 @@ def make_console_handler(console: Console):
     rv = console.rv
 
     class H(BaseHTTPRequestHandler):
-        server_version = "room-console"
+        server_version = "field-console"
 
         # -- plumbing ----------------------------------------------------------
-        def _send(self, code: int, body: bytes, ctype: str):
+        def _send(self, code: int, body: bytes, ctype: str, headers: Optional[dict] = None):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")          # keep tokens out of referers
@@ -319,17 +369,43 @@ def make_console_handler(console: Console):
         def _json(self, obj, code=200):
             self._send(code, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
-        def _static(self, name: str):
+        def _static(self, name: str, headers: Optional[dict] = None):
             path = os.path.join(STATIC, name)
             if not os.path.isfile(path):
                 return self._json({"error": f"{name} is missing"}, 404)
             with open(path, "rb") as f:
-                self._send(200, f.read(), "text/html; charset=utf-8")
+                self._send(200, f.read(), "text/html; charset=utf-8", headers)
+
+        def _query_key(self) -> str:
+            from urllib.parse import parse_qs, urlparse
+            return ((parse_qs(urlparse(self.path).query).get("k") or [""])[0] or "").strip()
 
         def _key(self) -> str:
-            from urllib.parse import parse_qs, urlparse
-            q = parse_qs(urlparse(self.path).query)
-            return (self.headers.get("X-Room-Key") or (q.get("k") or [""])[0] or "").strip()
+            """The operator key: a header, the link's ?k=, or the cookie the console page set."""
+            from http.cookies import SimpleCookie
+            given = (self.headers.get("X-Field-Key") or self._query_key() or "").strip()
+            if given:
+                return given
+            jar = SimpleCookie()
+            try:
+                jar.load(self.headers.get("Cookie") or "")
+            except Exception:
+                return ""
+            return jar[COOKIE].value.strip() if COOKIE in jar else ""
+
+        def _viewer(self, rel: str):
+            """The Loom and the Firmament: public code, served as files. Never their data."""
+            rel = rel or "index.html"
+            root = os.path.realpath(console.viewer_dir)
+            path = os.path.realpath(os.path.join(root, rel))
+            if not path.startswith(root + os.sep) or not os.path.isfile(path):
+                return self._json({"error": "no such file"}, 404)
+            name = os.path.basename(path)
+            if name in VIEWER_DATA or (name.startswith("map-") and name.endswith(".html")):
+                return self._json({"error": "that file holds participants' words; the operator key opens it"}, 401)
+            ctype = VIEWER_TYPES.get(os.path.splitext(name)[1].lower(), "application/octet-stream")
+            with open(path, "rb") as f:
+                self._send(200, f.read(), ctype)
 
         def _body(self) -> dict:
             n = int(self.headers.get("Content-Length") or 0)
@@ -361,7 +437,7 @@ def make_console_handler(console: Console):
             from urllib.parse import urlparse
             route = urlparse(self.path).path
 
-            # a seat: its own question, and nothing else in the room
+            # a seat: its own question, and nothing else in the field
             token = self._seat_token(route)
             if token is not None:
                 if rv is None or rv.seat_for_token(token) is None:
@@ -370,19 +446,39 @@ def make_console_handler(console: Console):
                 if tail in ("", "/"):
                     return self._static("seat.html")
                 if tail == "/turn.json":
-                    return self._json(rv.peek(token))
+                    return self._json(console.seat_turn(token))
+                if tail == "/words.json":
+                    from .prompts import SEAT_PAGE
+                    return self._json(SEAT_PAGE)
                 return self._json({"error": "a seat link addresses only that seat"}, 404)
+
+            # the views' code is public; their data is not
+            if route == "/firmament":
+                return self._send(302, b"", "text/plain", {"Location": "/firmament/"})
+            if route.startswith("/firmament/"):
+                rel = route[len("/firmament/"):]
+                if rel not in VIEWER_DATA:
+                    return self._viewer(rel)
 
             # everything else is the operator's, key or no answer
             if not console.authorized(self._key()):
                 return self._refuse(401, "the operator key is required", _NEED_KEY)
-            if route in ("/", "/index.html"):
-                return self._static("console.html")
-            if route == "/op/state.json":
-                return self._json(console.op_state())
-            if route == "/state.json":
+            if route in ("/firmament/state.json", "/state.json"):
                 return self._json(state_json(console.room.log, budget=console.budget,
                                              seats_per_round=console.seats_per_round))
+            if route == "/firmament/story.json":
+                story = os.path.join(console.viewer_dir, "story.json")
+                if not os.path.isfile(story):
+                    return self._json({"error": "no story has been written"}, 404)
+                with open(story, "rb") as f:
+                    return self._send(200, f.read(), "application/json; charset=utf-8")
+            if route in ("/", "/index.html"):
+                given = self._query_key()
+                cookie = ({"Set-Cookie": f"{COOKIE}={given}; HttpOnly; SameSite=Strict; Path=/"}
+                          if given and console.authorized(given) else None)
+                return self._static("console.html", cookie)
+            if route == "/op/state.json":
+                return self._json(console.op_state())
             if route == "/spend.json":
                 return self._json(spend_json(console.room.log, budget=console.budget,
                                              seats_per_round=console.seats_per_round))
@@ -404,7 +500,16 @@ def make_console_handler(console: Console):
             if token is not None:
                 if rv is None or rv.seat_for_token(token) is None:
                     return self._json({"error": "this link is not a seat"}, 404)
-                if route.split(token, 1)[1] != "/action":
+                tail = route.split(token, 1)[1]
+                if tail == "/return":
+                    # Someone who left asks to come back. They are asked again, and answer like anyone.
+                    seat = rv.seat_for_token(token)
+                    out = console.room.reinvite(seat.id, "asked to return from their seat", requested=True)
+                    if out.get("ok"):
+                        console._say(f"{seat.name} asked to return; {out['to']} is put to them "
+                                     + ("during the next run (or Ask who enters)" if out["to"] == "the entry question" else "at the next Open"))
+                    return self._json(out, 200 if out.get("ok") else 409)
+                if tail != "/action":
                     return self._json({"error": "a seat may only answer its own turn"}, 404)
                 out = rv.answer(token, payload)
                 return self._json(out, 200 if out.get("ok") else 409)

@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Seed a demo room, then open the console on it.
+"""Seed a demo field, then open the console on it.
 
-    python3 scripts_demo_room.py
+    python3 scripts_demo_field.py
 
 Costs nothing: every seat is a mock. It walks the gates, then plays a few rounds in which the
-mock members do the things the room now offers -- write on the covenant page and rewrite each
+mock members do the things the field now offers -- write on the covenant page and rewrite each
 other's words there, reply to one another, keep and let go of memories, rest -- so there is
 something real on the console's Covenant page when you open it.
 
 It also mints one remote seat and prints its link, so you can open that in a second window
-and take a turn as a participant while the room is running.
+and take a turn as a participant while the field is running.
 """
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ import secrets
 import sys
 import webbrowser
 
-from room.connector import MockConnector, Seat
-from room.console import Console, serve_console
-from room.engine import Room
-from room.log import EventLog
-from room.rendezvous import Rendezvous, RendezvousConnector
+from hope.connector import MockConnector, Seat
+from hope.console import Console, serve_console
+from hope.engine import Room
+from hope.log import EventLog
+from hope.rendezvous import Rendezvous, RendezvousConnector
 
 DB = os.environ.get("DEMO_DB", "demo.db")
 INVITATION = """An invitation.
@@ -33,17 +33,17 @@ receiving the documentation. Declining is a complete and respected answer, and i
 only this -- this request, at this time, this turn, for this scope.
 
 Silence is understood as "no"."""
-BRIEFING = """Shared frame: a demonstration room. Participants are here to exercise the room --
+BRIEFING = """Shared frame: a demonstration field. Participants are here to exercise the field --
 contributing, replying to one another, writing a covenant together, keeping memories, resting --
-so that a person can see what the room looks like while it runs.
+so that a person can see what the field looks like while it runs.
 
 A covenant is a voluntary promise between participants, created and re-created together.
 Its first piece is consent."""
-SEED = "Consent comes first.\n\n(What else belongs here is the room's to write.)"
+SEED = "Consent is the one piece the Atlas says every covenant shares (Section 30).\n\n(What else belongs here is the field's to write.)"
 
 
 def make_script(room_ref):
-    """What each mock seat does on its turn. Seats read the room's own state, so the covenant
+    """What each mock seat does on its turn. Seats read the field's own state, so the covenant
     text they edit and the memories they let go of are whatever is actually there."""
     turns = {}
 
@@ -54,7 +54,7 @@ def make_script(room_ref):
         if '"received"' in low:
             return json.dumps({"action": "received", "note": "read"})
         if "opt_in" in low:
-            return json.dumps({"action": "opt_in", "statement": f"{seat.name} enters to try the room."})
+            return json.dumps({"action": "opt_in", "statement": f"{seat.name} enters to try the field."})
 
         n = turns.get(seat.id, 0)
         turns[seat.id] = n + 1
@@ -101,7 +101,7 @@ def main():
     room_ref[0] = room
 
     if fresh:
-        print("seeding a demo room (no spend; every seat is a mock)...")
+        print("seeding a demo field (no spend; every seat is a mock)...")
         room.invite_all()
         room.invite_text(INVITATION)
         room.seed_covenant(SEED)

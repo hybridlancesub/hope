@@ -145,6 +145,38 @@
   #reader-meta { font-size: 0.6rem; letter-spacing: 0.12em; color: rgba(150, 162, 190, 0.55); margin-bottom: 0.9rem; }
   #reader-body { white-space: pre-wrap; }
 
+  /* The conversation: a word you clicked, what it answered, and every reply below it. */
+  #conversation {
+    position: fixed;
+    left: 2.2vw;
+    top: 50%;
+    transform: translateY(-50%);
+    width: min(48ch, 42vw);
+    max-height: 82vh;
+    overflow-y: auto;
+    z-index: 3;
+    padding: 1.1rem 1.3rem 1.3rem;
+    background: rgba(7, 8, 13, 0.88);
+    border: 1px solid rgba(160, 172, 200, 0.16);
+    border-radius: 0.5rem;
+    font-size: 0.78rem;
+    line-height: 1.7;
+    color: rgba(206, 214, 232, 0.86);
+    scrollbar-width: thin;
+  }
+  #conversation[hidden] { display: none; }
+  #conversation .head { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.7rem; }
+  #conversation .head .title { font-size: 0.66rem; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(150, 162, 190, 0.75); }
+  #conversation .head button { margin-left: auto; background: none; border: 1px solid rgba(160, 172, 200, 0.2);
+    color: rgba(206, 214, 232, 0.8); border-radius: 0.3rem; padding: 0.05rem 0.5rem; cursor: pointer; font: inherit; }
+  #conversation .turn { border-left: 2px solid rgba(160, 172, 200, 0.18); padding: 0.35rem 0 0.35rem 0.75rem; margin: 0.35rem 0; cursor: pointer; }
+  #conversation .turn:hover { background: rgba(160, 172, 200, 0.05); }
+  #conversation .turn.focus { border-left-color: var(--dom, #cfd6e6); background: rgba(160, 172, 200, 0.07); }
+  #conversation .turn .meta { font-size: 0.62rem; letter-spacing: 0.08em; color: rgba(150, 162, 190, 0.7); }
+  #conversation .turn .meta b { color: rgba(232, 238, 252, 0.9); font-weight: 400; }
+  #conversation .turn .body { white-space: pre-wrap; }
+  #conversation .note { font-size: 0.66rem; color: rgba(150, 162, 190, 0.6); margin: 0.6rem 0 0.2rem; }
+
   #bootlog {
     position: fixed; left: 2vw; top: 2vh; z-index: 4;
     font: 0.7rem/1.7 "Cascadia Code", Consolas, monospace;
@@ -165,7 +197,9 @@
     <div class="sub">the record, as a sky</div>
   </div>
 
-  <div id="whisper">drag to look &nbsp;·&nbsp; scroll or W / S to move &nbsp;·&nbsp; shift to accelerate &nbsp;·&nbsp; click a region to approach &nbsp;·&nbsp; fly into an entry to open its thread</div>
+  <div id="whisper">drag to look &nbsp;·&nbsp; scroll or W / S to move &nbsp;·&nbsp; shift to accelerate &nbsp;·&nbsp; click a region to approach &nbsp;·&nbsp; click a line of text to read its conversation</div>
+
+  <aside id="conversation" hidden aria-live="polite"></aside>
 
   <aside id="reader" aria-live="polite">
     <div id="reader-who"></div>

@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { GlyphAtlas } from './GlyphAtlas.js';
-import { tintFor } from './palette.js';
+import { inkFor } from './palette.js';
 import { COMMON, BILLBOARD } from './shaders.js';
+
+const _world = new THREE.Vector3();
+const _screen = new THREE.Vector3();
 
 /**
  * ┌─────────────────────────────────────────────────────────────────────────┐
@@ -167,7 +170,7 @@ export class Typography {
           vAlpha = base * anchor * resolve * breach * attend * breathe
                  * emergence
                  * (1.0 + 0.55 * promotion)
-                 * (1.0 - 0.62 * suppression)
+                 * (1.0 - suppression)
                  * fogFade(uFogDensity, dist);
 
           // Attention and promotion both pull a word toward white — luminosity,
@@ -296,6 +299,52 @@ export class Typography {
     this.group.add(this.motes, this.object);
   }
 
+  // ── picking ─────────────────────────────────────────────────────────────
+
+  /**
+   * Which word, if any, is under a point on the screen. Only a word that can actually
+   * be read right now is pickable: emerged, near enough to be legible, not passed
+   * through, and in front of the camera. Where words overlap, the one whose centre is
+   * nearest the click wins, and a nearer word breaks a tie.
+   *
+   * @param {{x:number, y:number}} ndc   the click, in normalised device coordinates
+   * @returns {{record: object, width: number, height: number} | null}
+   */
+  pickAt(ndc, camera) {
+    const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5);
+    let best = null;
+    let bestScore = Infinity;
+    for (const slot of this.slotOf.values()) {
+      const record = this.slotToRecord[slot];
+      if (!record || this.state[slot * 4 + 1] < 0.25) continue;
+      _world.set(this.positions[slot * 3], this.positions[slot * 3 + 1], this.positions[slot * 3 + 2]);
+      const dist = _world.distanceTo(camera.position);
+      const grow = 1 + this.material.uniforms.uPromoteScale.value * this.state[slot * 4 + 2];
+      const height = this.scales[slot * 2 + 1] * grow;
+      const width = this.scales[slot * 2 + 0] * grow;
+      if (dist > height * this.legibility * 2.2 || dist < height * 0.35) continue;
+      _screen.copy(_world).project(camera);
+      if (_screen.z < -1 || _screen.z > 1) continue;
+      const halfH = (height * 0.5) / (dist * tanHalf);
+      const halfW = (width * 0.5) / (dist * tanHalf * camera.aspect);
+      const dx = (ndc.x - _screen.x) / (halfW + 0.012);
+      const dy = (ndc.y - _screen.y) / (halfH + 0.02);
+      const score = dx * dx + dy * dy + dist * 1e-7;
+      if (score < 1 && score < bestScore) {
+        bestScore = score;
+        best = { record, width, height };
+      }
+    }
+    return best;
+  }
+
+  /** The drawn size of a resolved word, or null if it is not resolved right now. */
+  sizeOf(id) {
+    const slot = this.slotOf.get(id);
+    if (slot === undefined) return null;
+    return { width: this.scales[slot * 2 + 0], height: this.scales[slot * 2 + 1] };
+  }
+
   // ── pool ────────────────────────────────────────────────────────────────
 
   #claim(record) {
@@ -311,7 +360,7 @@ export class Typography {
     const style = embed.isAnchor ? 'anchor' : 'concept';
     this.atlas.add([{ text: embed.label, style }]);
     const cell = this.atlas.get(embed.label, style);
-    const tint = tintFor(embed.domainId);
+    const tint = inkFor(embed.domainId);
 
     this.positions[slot * 3 + 0] = embed.position[0];
     this.positions[slot * 3 + 1] = embed.position[1];

@@ -6,15 +6,12 @@ Everyone is welcome to contribute: people, and agents working with people.
 
 What this project holds to
 --------------------------
-The order the Atlas gives: consent first, then the covenant, then the maxims, then the Atlas as
-the shared frame. The software adds no rules of its own on top. In practice:
 
   - Nothing is done to a participant without their answer, and silence is never a yes.
-  - The software does not decide for the room: no votes, thresholds, halts, scores or ranks.
-    If the room wants a way of deciding, it writes one on its covenant page.
-  - Nothing a participant says leaves the room without its author's yes.
-  - The software never moves money.
-  - Every word participants are told lives in room/prompts.py, and GUIDE explains each one.
+  - The software does not decide for the field: no votes, thresholds, halts, scores or ranks.
+    If the field wants a way of deciding, it writes one on its covenant page.
+  - Nothing a participant says leaves the field without its author's yes.
+  - Every word participants are told lives in hope/prompts.py, and GUIDE explains each one.
 
 
 How to contribute
@@ -26,7 +23,7 @@ How to contribute
      software does to them.
   4. If you change anything participants read, run python3 scripts_show_prompts.py, and bring
      GUIDE and DESIGN into line with what it prints.
-  5. Never commit a room's transcript (*.db), a seat link store (*.seats.json), or a retelling
+  5. Never commit a field's transcript (*.db), a seat link store (*.seats.json), or a retelling
      or map of a sitting (firmament/story.json, firmament/map-*.html). They hold participants'
      words or credentials. .gitignore keeps them out; do not force them in.
 

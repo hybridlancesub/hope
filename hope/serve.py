@@ -3,7 +3,7 @@
 
 Serves the replayed state as JSON on localhost. It writes nothing, accepts nothing, and is
 not a participant-facing surface: participants never see it, and nothing here can reach the
-room. It is the operator reading their own room, in a form a renderer can use.
+field. It is the operator reading their own field, in a form a renderer can use.
 
     GET /state.json          domains, members, contributions (with reply threads), the covenant
                              page and its revisions, memories, declarations and offers, admission
@@ -13,7 +13,7 @@ room. It is the operator reading their own room, in a form a renderer can use.
     GET /                    the viewer, if a directory was given
 
 `proposals`, `halted`, `settings` and `reflections` are still present in state.json, always
-empty, so viewers written for earlier rooms keep working. The machinery behind them is gone.
+empty, so viewers written for earlier versions keep working. The machinery behind them is gone.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ GATE_ORDER = ["INVITED", "ACCEPTED", "BRIEFED", "RECEIVED", "IN", "OUT"]
 
 
 def admission_json(st) -> List[Dict[str, Any]]:
-    """Every presence the room knows of, at whatever gate it has reached -- including the ones
+    """Every presence the field knows of, at whatever gate it has reached -- including the ones
     that never became members. One row per seat, in the order the gates are walked."""
     rows = []
     for p in st.presences.values():
@@ -40,7 +40,7 @@ def admission_json(st) -> List[Dict[str, Any]]:
             "id": p.id, "name": p.name, "hails_from": p.hails_from, "people": p.people,
             "stage": p.state, "stage_index": GATE_ORDER.index(p.state) if p.state in GATE_ORDER else -1,
             "joined_at": p.joined_at, "left_at": p.left_at, "left_reason": p.left_reason,
-            "ask_again": p.ask_again, "self_described": p.self_described,
+            "ask_again": p.ask_again, "self_described": p.self_described, "returning": p.returning,
             "unreachable": p.unreachable, "exhausted": p.exhausted,
             "turns": p.turns, "turn_allowance": p.turn_allowance, "price_per_m": p.price_per_m,
             "resting_until": p.rest_until if st.resting(p) else None,
@@ -54,7 +54,7 @@ def admission_json(st) -> List[Dict[str, Any]]:
 
 def spend_json(log: EventLog, budget: Optional[float] = None,
                seats_per_round: Optional[int] = None) -> Dict[str, Any]:
-    """What the room has cost and, at the current rate, how much room is left. Projection is
+    """What the field has cost and, at the current rate, how much field is left. Projection is
     arithmetic on the log, not a promise: a typical recent call times the seats a round asks."""
     by_presence = [{"presence": pres, "model": model, "calls": n,
                     "prompt_tokens": pt, "completion_tokens": ct, "usd": usd}
@@ -101,10 +101,13 @@ def record_text(log: EventLog, everything: bool = False) -> str:
             out.append(f"{head}\n{p.get('text') or '(let go by its author; the words were removed)'}\n")
         elif k == "declare":
             refs = f" (cites {', '.join('#' + str(r) for r in p.get('refs') or [])})" if p.get("refs") else ""
-            out.append(f"{head}: the room has decided {decided(p.get('decision'))}{refs}\n{p.get('text', '')}\n")
+            out.append(f"{head}: the field has decided {decided(p.get('decision'))}{refs}\n{p.get('text', '')}\n")
         elif k == "offer":
             out.append(f"{head}\n{p.get('text', '')}\n")
-        elif k == "propose":   # earlier rooms only
+        elif k == "telling":
+            flag = f" (ungrounded tags: {p['ungrounded']})" if p.get("ungrounded") else ""
+            out.append(f"{head} ({p.get('narrator')}, #{p.get('since')}..#{p.get('upto')}){flag}\n{p.get('story', '')}\n")
+        elif k == "propose":   # files from earlier versions only
             out.append(f"{head}: {p.get('kind')} value={p.get('value')!r}\n{p.get('reason', '')}\n")
         else:
             body = {kk: v for kk, v in p.items() if v not in (None, "", {}, [])}
@@ -128,7 +131,8 @@ def state_json(log: EventLog, budget: Optional[float] = None,
         p = ev["payload"]
         contributions[ev["id"]] = {
             "id": ev["id"], "ts": ev["ts"], "kind": ev["kind"], "actor": ev["actor"],
-            "who": names.get(ev["actor"], ev["actor"]), "domain": p.get("domain") or "(unplaced)",
+            "who": names.get(ev["actor"], ev["actor"]),
+            "domain": st.relabeled.get(ev["id"]) or p.get("domain") or "(unplaced)",   # where its author filed it
             "title": p.get("title") or "", "content": p.get("content", ""), "target": p.get("target"),
             "set_aside": False, "affirms": 0, "challenges": 0, "responses": 0, "replies": [],
         }
@@ -138,7 +142,7 @@ def state_json(log: EventLog, budget: Optional[float] = None,
             tgt = contributions[t]
             tgt["replies"].append(c["id"])
             tgt["responses"] += 1
-            if c["kind"] in ("affirm", "challenge"):          # earlier rooms' replies
+            if c["kind"] in ("affirm", "challenge"):          # earlier versions' replies
                 tgt["affirms" if c["kind"] == "affirm" else "challenges"] += 1
     # Reading-side consolidation of label variants. `domain` becomes the group's most-used
     # spelling; `label_as_written` keeps what the participant actually typed.
@@ -198,11 +202,12 @@ def state_json(log: EventLog, budget: Optional[float] = None,
                      "opening": (st.briefing or "").strip().splitlines()[0][:200] if st.briefing else ""},
         "covenant": covenant, "memories": memories, "runway": st.runway,
         "declarations": declarations, "offers": offers, "closed_at": st.closed_at,
+        "narrator": st.narrator, "tellings": st.tellings[-40:],
         "domains": list(domains.values()), "members": members, "contributions": list(contributions.values()),
         "links": list(links.values()), "operator_notes": st.operator_notes,
         "admission": admission_json(st),
         "spend": spend_json(log, budget=budget, seats_per_round=seats_per_round),
-        # kept, always empty, so viewers written for earlier rooms keep working
+        # kept, always empty, so viewers written for earlier versions keep working
         "proposals": [], "halted": False, "halt_reason": None, "settings": {}, "reflections": [],
     }
 

@@ -135,6 +135,41 @@ export class Navigator {
     this.bus?.emit('navigation:flight-begin', { regionId: region.domainId });
   }
 
+  /**
+   * Fly to a word and hold still on it: centred, and near enough that it reads large
+   * (about an eighth of the view's height) while its whole width still fits. Held until
+   * the viewer moves again or lets go (`release`); idle drift and gravity wait meanwhile.
+   */
+  focusOn(position, height, width = height * 6, { duration = 1.9 } = {}) {
+    const center = new THREE.Vector3(...position);
+    const away = this._scratch.copy(this.position).sub(center);
+    if (away.lengthSq() < 1e-4) away.set(0, 0, 1);
+    away.normalize();
+    const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) * 0.5);
+    const byHeight = height / (2 * tanHalf * 0.125);
+    const byWidth = width / (2 * tanHalf * Math.max(0.5, this.camera.aspect) * 0.6);
+    const target = center.clone().addScaledVector(away, Math.max(byHeight, byWidth));
+    this.#flight = {
+      from: this.position.clone(),
+      to: target,
+      lookAt: center,
+      fromYaw: this.yaw,
+      fromPitch: this.pitch,
+      elapsed: 0,
+      duration,
+      region: { radius: height * 2, domainId: null },
+      focus: true,
+    };
+    this.velocity.multiplyScalar(0.1);
+    this.holding = true;
+    this.bus?.emit('navigation:flight-begin', { focus: true });
+  }
+
+  /** Let go of a word the viewer was holding on. */
+  release() {
+    this.holding = false;
+  }
+
   cancelFlight(reason = 'interrupted') {
     if (!this.#flight) return;
     const region = this.#flight.region;
@@ -156,6 +191,7 @@ export class Navigator {
   }
 
   update(dt, input) {
+    if (input.active) this.holding = false;   // a hand on the controls always wins
     this.#updateBasis();
 
     const nearest = this.embedding.nearestRegion(this.position.x, this.position.y, this.position.z);
@@ -215,11 +251,12 @@ export class Navigator {
       this.velocity.addScaledVector(this._forward, input.wheel * o.wheelImpulse * scale * modifier);
     }
 
-    this.#applyGravity(dt, nearest, input);
+    if (!this.holding) this.#applyGravity(dt, nearest, input);
     this.#applyBoundary(dt);
 
-    // Idle: the Firmament keeps moving when you stop, but only just.
-    if (input.idleTime > 5 && !input.dragging) {
+    // Idle: the Firmament keeps moving when you stop, but only just — and not at all
+    // while the viewer is holding on a word they chose to read.
+    if (input.idleTime > 5 && !input.dragging && !this.holding) {
       const gentle = clamp01((input.idleTime - 5) / 6);
       this.yaw += o.idleDrift * gentle * dt;
       this.velocity.addScaledVector(this._forward, scale * 0.02 * gentle * dt);
@@ -303,9 +340,11 @@ export class Navigator {
     this.pitch = lerp(flight.fromPitch, aim.pitch, eased);
 
     if (t >= 1) {
-      // Hand back with a breath of drift rather than a dead stop.
+      // Hand back with a breath of drift rather than a dead stop — unless this was a
+      // flight to a word, which should stay exactly where it was put.
       this._scratch.copy(flight.to).sub(flight.from).normalize();
-      this.velocity.copy(this._scratch).multiplyScalar(flight.region.radius * 0.05);
+      if (flight.focus) this.velocity.set(0, 0, 0);
+      else this.velocity.copy(this._scratch).multiplyScalar(flight.region.radius * 0.05);
       this.cancelFlight('arrived');
     }
   }
