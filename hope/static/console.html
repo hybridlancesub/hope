@@ -183,6 +183,15 @@
   <section class="page on" data-page="record">
     <h2>The record, as it lands</h2>
     <p class="lede">Every event in order, nothing summarized. This is the raw stream.</p>
+    <div class="muted" id="witnessbox" style="margin:.4rem 0 .8rem">
+      <span id="witnessline">Witness: not checked yet.</span>
+      <button class="b" data-tip="Walk the whole transcript: every entry against its fingerprint, and the tree they make. Memories let go of by their authors are listed as erasures, not hidden. Changes nothing." onclick="checkTranscript()">Check the transcript</button>
+      <details style="margin-top:.4rem"><summary>Check an earlier fingerprint</summary>
+        <div class="row"><input id="wupto" placeholder="entry number" style="width:9rem">
+          <input id="wfp" placeholder="fingerprint, e.g. 7f3a 9c1e 2b04 18d5" style="width:18rem">
+          <button class="b" data-tip="Does the transcript up to that entry still have this fingerprint? Anyone who kept a WITNESS line from a member's view, or a published checkpoint, can have it checked here." onclick="checkFingerprint()">Check</button></div>
+      </details>
+    </div>
     <pre class="stream" id="stream">…</pre>
     <div class="row">
       <label class="muted" data-tip="Keep the view pinned to the newest events as they arrive. Turn this off to scroll back through earlier ones without being pulled forward again."><input type="checkbox" id="follow" checked style="width:auto"> stay at the newest</label>
@@ -517,6 +526,21 @@ async function replyDecl(){
   flash(data.ok ? "Your reply is shown to the field. The declaration stays open." : (data.error||"not recorded"), !!data.ok);
   if (data.ok) hideDecl();
   refresh();
+}
+async function checkTranscript(){
+  const {data: v} = await api("/op/witness.json");
+  if (!v || v.error){ flash((v && v.error) || "could not check", false); return; }
+  $("witnessline").textContent = (v.ok ? `Intact: ${v.entries} entries, each matching its fingerprint. `
+                                       : `NOT intact: ${v.problem}. `)
+    + `The transcript up to #${v.upto} has the fingerprint ${v.fingerprint}.`
+    + (v.erased && v.erased.length ? ` Erased at their authors' request: ${v.erased.map(i => "#" + i).join(", ")}.` : "")
+    + (v.witnessed_from > 1 ? ` Witnessing began at #${v.witnessed_from}.` : "");
+}
+async function checkFingerprint(){
+  const {data} = await api("/op/check", {upto: $("wupto").value.trim(), fingerprint: $("wfp").value.trim()});
+  if (data.error){ flash(data.error, false); return; }
+  flash(data.matches ? `It matches: the transcript up to #${data.upto} is as it was.`
+                     : `It does not match. The transcript up to #${data.upto} now has the fingerprint ${data.fingerprint}.`, !!data.matches);
 }
 async function askBack(id, name){
   const note = prompt(`Ask ${name} back? They are asked again and answer like anyone. An optional note they will read, e.g. why now:`, "");

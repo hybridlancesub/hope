@@ -102,7 +102,7 @@ def main(argv):
         show("EVERY TURN: the member instructions (system prompt)", prompts.SYSTEM_MEMBER)
     if want in ("all", "view"):
         show("ONE TURN: what Mock 0 is shown (a sample field of four mock members)",
-             prompts.turn_user(prompts.room_view(st, recent_n=20, pace=room.pace(st)), p, st, ""))
+             prompts.turn_user(prompts.room_view(st, recent_n=20, pace=room.pace(st), witness=room.log.witness()), p, st, ""))
     if want in ("all", "telling"):
         show("A TELLING: the software's own account of that field (a model narrator would write it in prose)",
              st.tellings[-1]["story"] if st.tellings else "(none)")

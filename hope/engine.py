@@ -62,7 +62,12 @@ class Room:
                  recent_n: int = 20, runway_notice: int = 3, narrator=None, tell_every: int = 1,
                  human_every: float = 300.0, split_tempo: bool = True,
                  headlines: int = prompts.HEADLINES_DEFAULT, human_window: float = 900.0,
-                 round_gap: float = 0.0, linger_rounds: int = 100, linger_budget: int = 8000):
+                 round_gap: float = 0.0, linger_rounds: int = 100, linger_budget: int = 8000,
+                 publish_checkpoints: str = "", published_at: str = ""):
+        # Where the operator writes the transcript's checkpoints for publishing outside the field,
+        # and where they say it is published. Declared at entry before anyone is asked (announce_witnessing).
+        self.publish_checkpoints = publish_checkpoints or ""
+        self.published_at = (published_at or ("a file the operator publishes" if publish_checkpoints else "")).strip()
         # The operator's starting settings for the two clocks. A member's setting replaces them.
         self.clock_start = {"models": {"between": float(round_gap), "window": float(round_deadline)},
                             "people": {"between": float(human_every), "window": float(human_window),
@@ -327,6 +332,26 @@ class Room:
         if now != st.narrator and (now or st.narrator):
             self.emit(OPERATOR, "narrator", now or {"kind": "none"})
 
+    def announce_witnessing(self) -> None:
+        """Record where the transcript's fingerprints are published outside the field, if they are,
+        so the entry question says so truthfully before anyone enters. Recorded only when it changes."""
+        st = self.state()
+        now = {"where": self.published_at} if self.published_at else None
+        if now != st.witness_published and (now or st.witness_published):
+            self.emit(OPERATOR, "witness_publication", now or {"where": ""})
+
+    def publish_checkpoint(self) -> None:
+        """Append the transcript's current checkpoint to the operator's publishing file. It carries
+        no one's words: the log's name, its size, and the root of its tree (the C2SP format)."""
+        if not self.publish_checkpoints:
+            return
+        w = self.log.witness()
+        try:
+            with open(self.publish_checkpoints, "a", encoding="utf-8") as f:
+                f.write(f"{w['checkpoint']}{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} up to #{w['upto']}\n\n")
+        except OSError as e:
+            self.alert(f"could not write the checkpoint to {self.publish_checkpoints}: {e}")
+
     def mark_briefed(self) -> None:
         for p in self.state().presences.values():
             if p.state == ACCEPTED:
@@ -351,7 +376,7 @@ class Room:
         return self._gate(pending, prompts.SYSTEM_ENTRY,
                           lambda p: prompts.opt_in_user(st.briefing, p, st.documentation or "", notes.get(p.id, ""),
                                                         page=st.briefing_page or "", budget=st.budget,
-                                                        narrator=st.narrator),
+                                                        narrator=st.narrator, published=st.witness_published),
                           ENTRY_ACTIONS, "opt_in", "opt_in", "no explicit opt-in received")
 
     def _gate(self, pending, system, user_fn, allowed, yes_kind, phase, silent_reason, yes_field="statement") -> Dict[str, int]:
@@ -513,7 +538,7 @@ class Room:
         if self.seats_per_round and len(members) > self.seats_per_round:
             members = self._pick_rotation(members)
         pace = self.pace(st)
-        view = prompts.room_view(st, recent_n=self.recent_n, headlines=self.headlines, pace=pace)
+        view = prompts.room_view(st, recent_n=self.recent_n, headlines=self.headlines, pace=pace, witness=self.log.witness())
         window = pace["models"]["window"]
         people = [p for p in members if self._human_tempo(p.id)]    # in rounds only when the field has one tempo
         if people:
@@ -617,7 +642,7 @@ class Room:
         pace = self.pace(st)
         window = pace["people"]["window"]
         self._set_window(pid, window)
-        view = prompts.room_view(st, recent_n=self.recent_n, headlines=self.headlines, pace=pace)
+        view = prompts.room_view(st, recent_n=self.recent_n, headlines=self.headlines, pace=pace, witness=self.log.witness())
         msg = prompts.turn_user(view, p, st, self.recalled.pop(pid, ""), catch_up=self._catch_up(st, p),
                                 open_until=time.time() + window, rounds_since=max(0, st.round - p.last_turn_round))
         try:
@@ -1017,6 +1042,7 @@ class Room:
                 msg += f"; ~${left:.2f} left" + (f" = ~{int(left // est)} more rounds like this" if est > 0 else "")
             self.alert(msg)
             self._tell_if_due()
+            self.publish_checkpoint()
             if ended:
                 break
             if rounds and r >= rounds:

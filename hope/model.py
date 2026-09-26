@@ -137,6 +137,7 @@ class RoomState:
     offers: Dict[int, Dict[str, Any]] = field(default_factory=dict)        # by event id: text, status
     closed_at: Optional[int] = None          # the event that closed the field at its own declared decision
     narrator: Optional[Dict[str, Any]] = None  # who writes tellings: kind ("model" | "mechanical"), model, every
+    witness_published: Optional[Dict[str, Any]] = None  # where the operator publishes fingerprints, if anywhere
     tellings: List[Dict[str, Any]] = field(default_factory=list)       # every telling: id, since, upto, story, ...
     external_inputs: List[Dict[str, Any]] = field(default_factory=list)
     cost_alerts: List[Dict[str, Any]] = field(default_factory=list)
@@ -330,6 +331,8 @@ class RoomState:
                 o["status"], o["note"], o["answered_at"] = p.get("outcome", "declined"), p.get("note", ""), eid
         elif k == "narrator":
             self.narrator = None if p.get("kind") in (None, "none") else dict(p)
+        elif k == "witness_publication":
+            self.witness_published = dict(p) if p.get("where") else None
         elif k == "telling":
             self.tellings.append({"id": eid, **p})
         elif k == "room_closed":

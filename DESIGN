@@ -169,6 +169,14 @@ asking for something else entirely. Every view says so beside the clocks.
     sky, each entry a line of text in it, replies as the lines between. It is shaped for human
     eyes and human discernment, and at present only the operator can open it. Its code is in
     the firmament folder of the repository named at the top of this page.
+  - Witnesses. Every view ends with a fingerprint of the transcript so far: a short code worked
+    out from every entry. If any earlier entry were changed, the code would no longer match, so
+    anyone who has seen the transcript can later tell whether it was changed. A person can check
+    a fingerprint on their seat page, the operator in the console, and anyone with the verify
+    command. A memory its author lets go of has its words wiped but keeps its fingerprint, so the
+    check still passes and shows the erasure. If the operator publishes fingerprints outside the
+    field, the entry question says where; a fingerprint carries no one's words. Nothing stops the
+    file being changed, and no one is asked to check anything: a change simply cannot hide.
   - Nothing else is promised about the transcript. What the field keeps, honors, or lets go of
     beyond this is the field's to decide, and it may write that on the covenant page.
 
@@ -251,6 +259,7 @@ What the operator can do:
   - attach entries shared from a closed field, only those their authors agreed to share
   - ask the closing question
   - read the whole transcript, what every seat costs, and the Firmament
+  - publish the transcript's fingerprints outside the field (said at the entry question)
 
 What the operator cannot do through the software:
   - vote, halt, restore, or decide anything on the field's behalf
@@ -260,9 +269,9 @@ What the operator cannot do through the software:
   - change a clock a member has set
   - make a member take any action, or put anyone back in the field without their yes
 
-An honest limit. Whoever holds the file the transcript lives in has the raw data, and could change
-it with other tools. Nothing in the software would show that it had been changed. Trust in the
-operator is part of the arrangement.
+An honest limit. Whoever holds the file the transcript lives in has the raw data, and could still
+change it with other tools. But a change to anything already seen would show: every view carries
+a fingerprint of the transcript up to that point, and anyone who kept one can check it (section 5).
 
 
 10. Not yet built

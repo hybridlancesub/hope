@@ -15,6 +15,7 @@ import unittest
 from hope.connector import MockConnector, Reply
 from hope.engine import Room
 from hope.log import EventLog
+from hope import prompts
 from hope.model import IN, OUT, BRIEFED, INVITED, ACCEPTED, RECEIVED, COVENANT_LIMIT, MEMORY_LIMIT
 
 INVITE = "You are invited to a field built on consent. Hearing more commits you to nothing."
@@ -1746,6 +1747,20 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual((code, out.get("to")), (200, "the entry question"))
         self.assertEqual(self._post("/op/reinvite", {"presence": "mock-1"}, key="OPKEY")[0], 400)
 
+    # the transcript's fingerprint is for everyone, people with a seat link included ---------------------
+    def test_a_seat_can_see_and_check_the_fingerprint(self):
+        con, room, log = self._up()
+        code, body = self._get(f"/seat/{self.seat_token}/witness.json")
+        w = json.loads(body)
+        self.assertEqual(code, 200)
+        self.assertEqual(set(w), {"upto", "fingerprint"}, "a fingerprint and a number, and no one's words")
+        code, out = self._post(f"/seat/{self.seat_token}/check", {"upto": w["upto"], "fingerprint": w["fingerprint"]})
+        self.assertTrue(out["matches"])
+        code, out = self._post(f"/seat/{self.seat_token}/check", {"upto": w["upto"], "fingerprint": "0000 0000 0000 0000"})
+        self.assertFalse(out["matches"])
+        code, out = self._get("/op/witness.json", key="OPKEY")
+        self.assertTrue(json.loads(out)["ok"])
+
 
 class ViewerTest(unittest.TestCase):
     """The operator's read-only window: who is at which gate, and what the field is costing."""
@@ -2499,6 +2514,121 @@ class TruthTest(unittest.TestCase):
         from hope.__main__ import cmd_serve
         with self.assertRaises(SystemExit):
             cmd_serve(argparse.Namespace(db=os.path.join(self.tmp, "x.db"), port=0, viewer=None, bind="0.0.0.0"))
+
+
+class WitnessTest(unittest.TestCase):
+    """Anyone who has seen the transcript can later tell whether it was changed."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _field(self, db="w.db", **kw):
+        room = Room(EventLog(os.path.join(self.tmp, db)), [MockConnector(2, scripted({}))],
+                    alert_fn=lambda m: None, parallel=2, **kw)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        return room
+
+    def test_the_tree_is_hashed_as_transparency_logs_hash_theirs(self):
+        import hashlib
+        from hope.log import _node
+        def mth(leaves):                       # RFC 6962, section 2.1, as written
+            if len(leaves) == 1:
+                return leaves[0]
+            k = 1
+            while k * 2 < len(leaves):
+                k *= 2
+            return _node(mth(leaves[:k]), mth(leaves[k:]))
+        log = EventLog(os.path.join(self.tmp, "rfc.db"))
+        for i in range(17):
+            log.append("a", "contribute", {"content": f"entry {i}"})
+            leaves = [bytes.fromhex(l) for (l,) in log.conn.execute("select leaf from events order by id")]
+            self.assertEqual(log.root_at(i + 1)[1], mth(leaves), f"size {i + 1}")
+
+    def test_a_changed_entry_is_found_by_verify(self):
+        room = self._field()
+        self.assertTrue(room.log.verify()["ok"])
+        room.log.conn.execute("update events set payload = ? where id = 3", (json.dumps({"text": "forged"}),))
+        r = room.log.verify()
+        self.assertFalse(r["ok"])
+        self.assertIn("#3", r["problem"])
+
+    def test_an_old_fingerprint_no_longer_matches_after_even_a_careful_change(self):
+        from hope.log import leaf_hash, payload_hash
+        room = self._field()
+        seen = room.log.witness()                       # what a member's view carried
+        room.round()
+        self.assertTrue(room.log.check(seen["upto"], seen["fingerprint"])["matches"], "untouched, it still matches")
+        eid, ts, actor, kind = room.log.conn.execute("select id, ts, actor, kind from events where id = 2").fetchone()
+        body = json.dumps({"text": "a different invitation"})
+        ph = payload_hash(body)                          # someone careful enough to redo every hash
+        room.log.conn.execute("update events set payload=?, payload_hash=?, leaf=? where id=?",
+                              (body, ph, leaf_hash(eid, ts, actor, kind, ph).hex(), eid))
+        again = EventLog(room.log.path)
+        self.assertTrue(again.verify()["ok"], "careful enough to pass verify")
+        self.assertFalse(again.check(seen["upto"], seen["fingerprint"])["matches"], "but not the fingerprint a witness kept")
+
+    def test_letting_go_keeps_the_fingerprints_whole_and_names_the_erasure(self):
+        room = self._field()
+        room._apply_action("mock-0", json.dumps({"action": "remember", "text": "carry this forward"}))
+        mid = max(room.state().memories)
+        seen = room.log.witness()
+        room._apply_action("mock-0", json.dumps({"action": "let_go", "memory": mid}))
+        r = room.log.verify()
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["erased"], [mid])
+        self.assertTrue(room.log.check(seen["upto"], seen["fingerprint"])["matches"], "a consented erasure changes no fingerprint")
+        room.log.conn.execute("update events set payload = ? where id = 3", (json.dumps({"erased": True}),))
+        self.assertIn("no let_go by its author", room.log.verify()["problem"], "an erasure nobody asked for is named")
+
+    def test_every_view_ends_with_the_fingerprint_in_plain_words(self):
+        room = self._field()
+        seen = {}
+        inner = room.connectors[0].script
+        room.connectors[0].script = lambda seat, system, messages: (seen.setdefault(seat.id, messages[-1]["content"])
+                                                                    and inner(seat, system, messages))
+        room.round()
+        view = seen["mock-0"]
+        self.assertRegex(view, r"WITNESS: the transcript up to #\d+ has the fingerprint [0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4}\.")
+        self.assertIn("if any earlier entry were changed, it would no longer match", view)
+        self.assertIn("Every view ends with a fingerprint", prompts.SYSTEM_ENTRY)
+
+    def test_the_checkpoint_follows_the_standard_format(self):
+        import base64
+        room = self._field()
+        origin, size, root, end = room.log.witness()["checkpoint"].split("\n")
+        self.assertTrue(origin.startswith("hope.field/"))
+        self.assertEqual(int(size), room.log.witness()["size"])
+        self.assertEqual(len(base64.b64decode(root)), 32)
+        self.assertEqual(end, "", "a checkpoint body ends with a newline")
+
+    def test_publishing_fingerprints_is_declared_at_entry_and_written_after_each_round(self):
+        path = os.path.join(self.tmp, "published.txt")
+        room = Room(EventLog(os.path.join(self.tmp, "pub.db")), [MockConnector(1, scripted({}))],
+                    alert_fn=lambda m: None, parallel=1, publish_checkpoints=path,
+                    published_at="https://example.org/field-fingerprints")
+        room.announce_witnessing()
+        seen = {}
+        inner = room.connectors[0].script
+        room.connectors[0].script = lambda seat, system, messages: (seen.setdefault(system[:20], messages[-1]["content"])
+                                                                    and inner(seat, system, messages))
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        entry = [m for m in seen.values() if "Do you enter?" in m][0]
+        self.assertIn("publishes them outside the field, at: https://example.org/field-fingerprints", entry)
+        self.assertIn("carries no one's words", entry)
+        room.run(rounds=1)
+        with open(path, encoding="utf-8") as f:
+            self.assertIn(room.log.origin(), f.read())
+
+    def test_a_second_process_on_the_file_keeps_the_fingerprint_true(self):
+        path = os.path.join(self.tmp, "two.db")
+        a, b = EventLog(path), EventLog(path)
+        a.append("x", "contribute", {"content": "from the running field"})
+        b.append("operator", "operator_note", {"content": "from a second terminal"})
+        a.append("x", "contribute", {"content": "and the field again"})
+        self.assertEqual(a.witness()["fingerprint"], b.witness()["fingerprint"])
+        self.assertEqual(a.witness()["fingerprint"], EventLog(path).verify()["fingerprint"])
 
 
 if __name__ == "__main__":

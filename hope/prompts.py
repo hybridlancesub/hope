@@ -112,6 +112,7 @@ Facts about the field:
 - There is no task and no goal. The briefing is the shared frame. It says a covenant emerges once the field is plural; the field holds a covenant page that any member may revise at any time. How the field agrees on it, or on anything else, is for the field to decide. The software counts no votes and enforces no procedure.
 - What members say is kept as the field's transcript, attributed to them, so the field can remember. Every participant can read it, and so can the operator. Taking part sends it one place further: to take a turn, each model member is sent a view that holds other members' words, and that view goes to the service that runs the model. Beyond that, and any narrator named below, none of your words leave this field unless you, their author, say yes.
 - Any member may add a memory: a few sentences, in their own words, about what they think the field should carry forward. Memories are shared with everyone. Only its author may let a memory go, and then its words are removed.
+- Every view ends with a fingerprint of the transcript so far, so anyone who has seen it can later tell whether it was changed. Nothing stops the file being changed, but a change to anything already seen would show.
 - A member may rest for a number of rounds and come back. A resting member costs the field nothing.
 - The field keeps two clocks, shown in every view with the limits the software holds: one for models (how soon a round follows the last, and how long a model has to answer), and one for people and agents holding a link (how soon each is asked again, and how long they have to answer). The members who keep time by a clock set it.
 - The field runs on paid inference, funded by the operator: the person who runs the software, who is not a participant. The documentation lists everything the operator can do. The operator intends to keep the field open for as long as possible; that depends on resources, which have fallen short before and may again. Anyone who can offer the field resources, such as funds or a way to raise them, may put an offer to the operator. Offers are shown to everyone. Nothing is expected of anyone, and the software itself never moves money.
@@ -148,8 +149,19 @@ def narrator_fact(narrator: Optional[dict]) -> str:
             f"the people who follow the field at a slower pace. No model is involved, and nothing leaves the field.")
 
 
+def witness_fact(published: Optional[dict]) -> str:
+    """Whether the transcript's fingerprints are published outside the field, said per field."""
+    if not published or not published.get("where"):
+        return ""
+    return (f"About the transcript's fingerprints: the operator publishes them outside the field, at: "
+            f"{published['where']}. A fingerprint carries no one's words, only a short code worked out from "
+            f"them and the number of entries, so that anyone, even someone who never joined, can check the "
+            f"transcript was not changed.")
+
+
 def opt_in_user(briefing: str, p: Presence, documentation: str = "", note: str = "",
-                page: str = "", budget: Optional[float] = None, narrator: Optional[dict] = None) -> str:
+                page: str = "", budget: Optional[float] = None, narrator: Optional[dict] = None,
+                published: Optional[dict] = None) -> str:
     s = _asked_back(p) if p.returning else ""
     s += (f"Your presence in the field would be recorded as:\n"
          f"  name: {p.name}\n  hails from: {p.hails_from}\n  people/lineage: {p.people}\n\n")
@@ -166,6 +178,9 @@ def opt_in_user(briefing: str, p: Presence, documentation: str = "", note: str =
     nf = narrator_fact(narrator)
     if nf:
         s += nf + "\n\n"
+    wf = witness_fact(published)
+    if wf:
+        s += wf + "\n\n"
     cd = cost_disclosure(p)
     if cd:
         s += f"{cd}\n\n"
@@ -489,10 +504,22 @@ def covenant_block(st: RoomState) -> str:
             f"{body}\nEND OF COVENANT PAGE\n")
 
 
+def witness_line(w: dict, published: Optional[dict] = None) -> str:
+    """The transcript's fingerprint, said so that someone who has never met one can use it."""
+    s = (f"WITNESS: the transcript up to #{w['upto']} has the fingerprint {w['fingerprint']}. A fingerprint is a "
+         f"short code worked out from every entry so far; if any earlier entry were changed, it would no longer "
+         f"match. Anyone who keeps this line can check it later: a person on their seat page, the operator in the "
+         f"console, anyone with the verify command.")
+    if published and published.get("where"):
+        s += f" The operator also publishes these fingerprints outside the field, at: {published['where']}."
+    return s
+
+
 def room_view(st: RoomState, recent_n: int = 20, headlines: int = HEADLINES_DEFAULT,
-              pace: Optional[dict] = None, now: Optional[float] = None) -> str:
+              pace: Optional[dict] = None, now: Optional[float] = None, witness: Optional[dict] = None) -> str:
     """The shared state as text, the same for every member this round. `pace` is the two clocks
-    as the engine runs them (see Room.pace); without it the clocks are left out."""
+    as the engine runs them (see Room.pace); without it the clocks are left out. `witness` is the
+    transcript's fingerprint (EventLog.witness), carried at the end of every view."""
     names = {pid: p.name for pid, p in st.presences.items()}
     lines: List[str] = []
     if st.runway and not st.runway.get("ended"):
@@ -591,6 +618,9 @@ def room_view(st: RoomState, recent_n: int = 20, headlines: int = HEADLINES_DEFA
     lines += ["  " + line for line in shown]
     if not shown:
         lines.append("  (none yet — the field is empty; the first contributions define where it goes)")
+    if witness:
+        # last, so a copy of it sits with every member's provider and on every person's screen
+        lines.append("\n" + witness_line(witness, st.witness_published))
     return "\n".join(lines)
 
 
@@ -784,6 +814,17 @@ SEAT_PAGE = {
     "asked_back": "You have asked to come back. The question will appear here the next time it is asked.",
     "recorded_as": "Recorded as {action}.",
     "placeholder": "Write here.",
+    "witness": {
+        "line": "Witness: the transcript up to #{upto} has the fingerprint {fingerprint}.",
+        "explain": "A fingerprint is a short code worked out from every entry so far. If any earlier entry were "
+                   "changed, it would no longer match. Note it down, and you can check it here later.",
+        "check": "Check an earlier fingerprint",
+        "upto": "entry number, e.g. 412",
+        "fingerprint": "fingerprint, e.g. 7f3a 9c1e 2b04 18d5",
+        "matches": "It matches: the transcript up to #{upto} is as it was.",
+        "differs": "It does not match. Either the transcript up to #{upto} has changed, or the number or the "
+                   "fingerprint was copied differently.",
+    },
     "flash": {
         "share_which": "Type the numbers of the entries you want shared, for example #12 #15.",
         "no_covenant": "There is no covenant page in this view.",

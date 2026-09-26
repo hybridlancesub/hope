@@ -177,6 +177,7 @@ class Console:
             room.set_documentation(self.documentation)
         room.set_budget(self.budget)
         room.announce_narrator()
+        room.announce_witnessing()
         if self.covenant_seed:
             room.seed_covenant(self.covenant_seed)
         c1 = room.run_invitation()
@@ -196,6 +197,7 @@ class Console:
     def _enter(self, **_):
         self.room.set_budget(self.budget)
         self.room.announce_narrator()
+        self.room.announce_witnessing()
         self.room.invite_all()
         self._say(f"gate 2 (opt-in): {self.room.run_opt_in()}")
         self._say(f"members in: {len(self.room.state().members())}")
@@ -204,6 +206,7 @@ class Console:
         self.room._stop.clear()      # a previous stop ended the turns, it did not end the field
         self.room.set_budget(self.budget)
         self.room.announce_narrator()
+        self.room.announce_witnessing()
         # after a restart nothing has bound the members to their seats yet (open and enter do it
         # in the same process); without this a run takes no turns at all
         self.room.invite_all()
@@ -450,6 +453,10 @@ def make_console_handler(console: Console):
                 if tail == "/words.json":
                     from .prompts import SEAT_PAGE
                     return self._json(SEAT_PAGE)
+                if tail == "/witness.json":
+                    # the transcript's fingerprint: a short code and a number, no one's words
+                    w = console.room.log.witness()
+                    return self._json({"upto": w["upto"], "fingerprint": w["fingerprint"]})
                 return self._json({"error": "a seat link addresses only that seat"}, 404)
 
             # the views' code is public; their data is not
@@ -479,6 +486,8 @@ def make_console_handler(console: Console):
                 return self._static("console.html", cookie)
             if route == "/op/state.json":
                 return self._json(console.op_state())
+            if route == "/op/witness.json":
+                return self._json(console.room.log.verify())
             if route == "/spend.json":
                 return self._json(spend_json(console.room.log, budget=console.budget,
                                              seats_per_round=console.seats_per_round))
@@ -509,6 +518,13 @@ def make_console_handler(console: Console):
                         console._say(f"{seat.name} asked to return; {out['to']} is put to them "
                                      + ("during the next run (or Ask who enters)" if out["to"] == "the entry question" else "at the next Open"))
                     return self._json(out, 200 if out.get("ok") else 409)
+                if tail == "/check":
+                    # does an old fingerprint still match? Answers yes or no, and reveals no words
+                    try:
+                        r = console.room.log.check(int(payload.get("upto")), str(payload.get("fingerprint") or ""))
+                    except (TypeError, ValueError):
+                        return self._json({"error": "give the entry number and the fingerprint from the old line"}, 400)
+                    return self._json({"matches": r["matches"], "upto": r["upto"]})
                 if tail != "/action":
                     return self._json({"error": "a seat may only answer its own turn"}, 404)
                 out = rv.answer(token, payload)
@@ -521,6 +537,11 @@ def make_console_handler(console: Console):
                                           rounds=int(payload.get("rounds") or 0),
                                           pause=float(payload.get("pause") or 0.0))
                 return self._json(out, 200 if out.get("ok") else 409)
+            if route == "/op/check":
+                try:
+                    return self._json(console.room.log.check(int(payload.get("upto")), str(payload.get("fingerprint") or "")))
+                except (TypeError, ValueError):
+                    return self._json({"error": "give the entry number and the fingerprint from the old line"}, 400)
             if route.startswith("/op/"):
                 out = console.op(route[len("/op/"):], payload)
                 return self._json(out, 200 if out.get("ok") else 400)

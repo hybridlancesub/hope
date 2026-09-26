@@ -64,6 +64,7 @@
   <h1>Your seat</h1>
   <div class="who" id="who">&nbsp;</div>
   <div id="main"></div>
+  <div id="witness" class="muted" style="margin-top:2.2rem;font-size:.8rem"></div>
 </div>
 
 <div class="dock" id="dock" hidden><div class="inner">
@@ -271,9 +272,41 @@ async function askBack(){
   poll();
 }
 
+// The transcript's fingerprint: a short code and a number, never anyone's words. Shown so a
+// person can note it and check it later, here, without reading any code.
+let witnessShown = "";
+async function witness(){
+  try {
+    const r = await fetch(BASE + "witness.json", {cache:"no-store"});
+    if (!r.ok) return;
+    const w = await r.json(), t = W.witness;
+    const line = t.line.replace("{upto}", w.upto).replace("{fingerprint}", w.fingerprint);
+    if (line === witnessShown) return;
+    witnessShown = line;
+    $("witness").innerHTML = `<div>${esc(line)}</div><div>${esc(t.explain)}</div>
+      <details style="margin-top:.4rem"><summary>${esc(t.check)}</summary>
+        <div class="row"><input id="wupto" placeholder="${esc(t.upto)}" style="width:10rem">
+        <input id="wfp" placeholder="${esc(t.fingerprint)}" style="width:16rem">
+        <button id="wgo">${esc(t.check)}</button></div><div class="flash" id="wflash"></div></details>`;
+    $("wgo").onclick = checkWitness;
+  } catch(e){ /* the field may not be running */ }
+}
+async function checkWitness(){
+  const t = W.witness, upto = $("wupto").value.trim(), fingerprint = $("wfp").value.trim();
+  try {
+    const r = await fetch(BASE + "check", {method: "POST", headers: {"Content-Type": "application/json"},
+                                         body: JSON.stringify({upto, fingerprint})});
+    const out = await r.json(), f = $("wflash");
+    if (out.error){ f.textContent = out.error; f.className = "flash bad"; return; }
+    f.textContent = (out.matches ? t.matches : t.differs).replace("{upto}", out.upto);
+    f.className = "flash " + (out.matches ? "ok" : "bad");
+  } catch(e){ /* nothing to say if the field is not reachable */ }
+}
+
 async function poll(){
   try {
     await words();
+    witness();
     const r = await fetch(BASE + "turn.json", {cache:"no-store"});
     if (r.ok) paint(await r.json());
   } catch(e){ /* the field may simply not be running; keep watching */ }

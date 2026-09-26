@@ -92,6 +92,7 @@ def _room(args, connectors=None, narrator=None):
     room = Room(log, connectors or [], alert_every_usd=args.alert_every, parallel=args.parallel,
                 round_deadline=args.round_deadline, seats_per_round=args.seats_per_round,
                 human_window=args.human_timeout, linger_rounds=args.linger, linger_budget=args.linger_budget,
+                publish_checkpoints=args.publish_checkpoints or "", published_at=args.published_at or "",
                 recent_n=args.recent, headlines=args.headlines, runway_notice=args.runway_notice,
                 narrator=narrator, tell_every=args.tell_every, human_every=args.human_every,
                 split_tempo=not args.same_tempo,
@@ -131,6 +132,7 @@ def cmd_open(args):
         room.set_documentation(open(args.documentation).read())
     room.set_budget(args.budget)
     room.announce_narrator()
+    room.announce_witnessing()
     if args.covenant_seed:
         if room.seed_covenant(open(args.covenant_seed, encoding="utf-8").read()):
             print("covenant page seeded with a starting text")
@@ -164,6 +166,7 @@ def cmd_enter(args):
     room.invite_all()
     room.set_budget(args.budget)
     room.announce_narrator()
+    room.announce_witnessing()
     if not room.state().budget:
         print("note: no --budget is recorded, so the entry question tells participants the field will NOT be "
               "warned before its funding runs out. Pass --budget USD to change that.", file=sys.stderr)
@@ -179,6 +182,7 @@ def cmd_run(args):
     room.alert = _print_alert
     room.set_budget(args.budget)
     room.announce_narrator()
+    room.announce_witnessing()
     room.invite_all()  # re-binds seats to existing presences; no new invites for known ids
     st = room.state()
     if not st.budget:
@@ -351,6 +355,30 @@ def cmd_cost(args):
     print(f"{'TOTAL':45s} {'':5s} {'':9s} {'':9s} {room.log.total_cost():9.4f}")
 
 
+def cmd_verify(args):
+    """Check the whole transcript against its fingerprints, or one old fingerprint against the
+    transcript as it stood then. Plain words, for anyone."""
+    log = EventLog(args.db)
+    if args.upto is not None:
+        r = log.check(args.upto, args.fingerprint or "")
+        print(("It matches. " if r["matches"] else "It does NOT match. ")
+              + f"The transcript up to #{r['upto']} has the fingerprint {r['fingerprint']}.")
+        return
+    r = log.verify()
+    if r["ok"]:
+        print(f"Intact: {r['entries']} entries, and every one still matches its fingerprint.")
+    else:
+        print(f"NOT intact: {r['problem']}.")
+    print(f"The transcript up to #{r['upto']} has the fingerprint {r['fingerprint']}.")
+    if r["erased"]:
+        print(f"Memories let go of by their authors (words wiped, fingerprints kept): "
+              + ", ".join(f"#{i}" for i in r["erased"]))
+    if r["witnessed_from"] > 1:
+        print(f"Witnessing began at #{r['witnessed_from']}: a change made to an earlier entry before then would not show.")
+    print("Checkpoint (the standard format public witness networks read):")
+    print(r["checkpoint"].rstrip())
+
+
 def cmd_export(args):
     """The record as plain text, in order, nothing summarized. For reading, not for the field.
 
@@ -510,6 +538,11 @@ def main(argv=None):
     ap.add_argument("--linger-budget", type=int, default=8000,
                     help="characters of the people's lingering words each view carries, newest first; what does not fit "
                          "is named by #id in the view, for recall. A cost, so the operator's")
+    ap.add_argument("--publish-checkpoints", default=None,
+                    help="a file to append the transcript's checkpoint to after each round, for publishing outside the "
+                         "field. Carries no one's words. Declared at entry (with --published-at)")
+    ap.add_argument("--published-at", default=None,
+                    help="where the checkpoints are published, as participants will read it at entry (a web address, say)")
     ap.add_argument("--same-tempo", action="store_true",
                     help="put people in the models' rounds (rounds then wait for them)")
     ap.add_argument("--mock", type=int, default=0)
@@ -553,6 +586,10 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=8080); s.add_argument("--viewer", default=None, help="directory of the viewer to serve at /; default firmament/")
     s.add_argument("--bind", default="127.0.0.1", help="a loopback address (127.0.0.1 or ::1); anything else is refused"); s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("say"); s.add_argument("--inbox", required=True); s.add_argument("--text", default=None); s.set_defaults(fn=cmd_say)
+    s = sub.add_parser("verify", help="check the transcript against its fingerprints, or one old fingerprint")
+    s.add_argument("--upto", type=int, default=None, help="an entry number from an old WITNESS line")
+    s.add_argument("--fingerprint", default=None, help="the fingerprint that line gave")
+    s.set_defaults(fn=cmd_verify)
     s = sub.add_parser("export"); s.add_argument("--out", default=None); s.add_argument("--everything", action="store_true", help="include connector events and full texts"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("input"); s.add_argument("--source", required=True); s.add_argument("--text", required=True); s.set_defaults(fn=cmd_input)
     s = sub.add_parser("console", help="one command and a browser: gates, transcript, covenant, spend, remote seats")

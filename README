@@ -132,6 +132,26 @@ today's turn and reach ten times as far; the same reach in full would cost about
 summarized, and the field's own choice of what to carry forward is still its memories (Atlas
 Sec. 22): shared, attributed, and letting one go is its author's alone.
 
+Witnesses
+---------
+Every event stores a fingerprint of its words and a leaf. The leaves form a Merkle tree, hashed
+as RFC 6962 transparency logs hash theirs; its root is the transcript's fingerprint. Every view
+ends with it ("WITNESS: the transcript up to #N has the fingerprint ..."), so a copy sits with
+every model's provider and on every person's screen. A change to any earlier entry changes every
+fingerprint after it. Nothing stops a change, and no one is asked to check; a change cannot hide.
+
+    python3 -m hope --db R.db verify                               every entry, and the tree
+    python3 -m hope --db R.db verify --upto N --fingerprint "..."    an old WITNESS line
+    --publish-checkpoints FILE --published-at WHERE                  append the checkpoint (C2SP format:
+                                                                     origin, size, root) after each round,
+                                                                     for publishing; declared at entry
+
+A memory its author lets go of keeps its fingerprint, so the tree stays whole and verify names the
+erasure. Files from earlier versions are given fingerprints when first opened, and verify says
+where witnessing began. Entries from a second process on the same file (a `note` from another
+terminal) are folded in, in order. Checkpoints are unsigned for now. Signing, so public witness
+networks can countersign, comes when hope connects to one.
+
 The runway
 ----------
 With --budget, after each round the engine estimates the next round's cost (the dearest of the
@@ -364,6 +384,8 @@ Attribution           every event names its actor; `rejected`/`unparsed` keep at
                       actions that changed nothing. Nothing is written as a member's that they did not
                       do: a turn that closes unanswered is the software's `no_reply`, not their pass.
 Recoverable state     model.replay(events, upto): state is a pure function of the transcript.
+Witnesses             log.py leaf_hash / root_at / check / verify (RFC 6962 hashing, C2SP checkpoint);
+                      prompts.witness_line ends every view; the seat page and the console can check.
 
 Identity              connector.Seat -> `invite` event {id, name, hails_from, people}; self-description
                       at the invitation replaces the gateway's string; the id stays unique.
