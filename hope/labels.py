@@ -7,7 +7,7 @@ only lets the view point one out, and an author may move their own entries (the 
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List
 
 STOP = {"the", "of", "and", "a", "an", "this", "for", "in", "on", "vs", "versus"}
 
@@ -37,6 +37,39 @@ def near(a: str, b: str) -> bool:
     if not wa or not wb:
         return False
     return len(wa & wb) / len(wa | wb) >= 0.5
+
+
+# -- domains nest, by name ---------------------------------------------------------------
+# "timing / clocks" is the domain "clocks" inside "timing". A path is its normalised segments
+# joined by "/", so "Timing/Clocks" and "timing / clock" are one place; the root, the field
+# itself, is "". Domains flow down, as folders do: what is in "timing / clocks" is also in
+# "timing", and what belongs to "timing" (its covenant page, following it) reaches all of it.
+
+def segments(label: str) -> List[str]:
+    """The label's parts, each on one line, as its author wrote them."""
+    return [" ".join(s.split()) for s in str(label or "").split("/") if s.strip()]
+
+
+def display(label: str) -> str:
+    return " / ".join(segments(label))
+
+
+def path(label: str) -> str:
+    return "/".join(normalize(s) for s in segments(label))
+
+
+def parents(p: str) -> List[str]:
+    """A path and every domain above it, outermost first; the root is not among them."""
+    parts = [x for x in (p or "").split("/") if x]
+    return ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+
+def under(p: str, q: str) -> bool:
+    """Whether path p is q or nested inside it. Everything is under the root only in the tree:
+    the root's channel holds what was written without a domain."""
+    if not q:
+        return not p
+    return p == q or p.startswith(q + "/")
 
 
 def canonical(labels: Iterable[str], counts: Dict[str, int]) -> Dict[str, str]:

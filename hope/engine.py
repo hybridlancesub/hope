@@ -35,6 +35,7 @@ from .map import digest
 from .narrator import mechanical_story
 from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CLOCK_LIMITS, CLOCKS, CONTRIBUTION_KINDS,
                     COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, REST_LIMIT, STATEMENT_LIMIT, RoomState, decided, replay)
+from .model import QUIET_HOURS
 
 OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
@@ -43,11 +44,19 @@ HUMAN_TEMPO = ("human", "remote")   # seats at the slower tempo: a person at a t
 
 PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall", "rest", "declare", "offer",
                        "clock", "relabel", "pass", "withdraw",
+                       # channels: domains and circles (notes/sketch-3-channels.md)
+                       "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
+                       "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet",
                        # earlier versions' words, still understood so an old client does not break:
                        "affirm", "challenge", "note", "move"}
 RECALL_SOURCES = ("briefing", "transcript", "memory", "covenant", "prior")
 RECALL_LIMIT = 2500         # characters returned per recall
 CONTRIBUTION_LIMIT = 2000   # characters; longer contributions are cut, and the prompt says so
+DOMAIN_LIMIT = 120          # characters for a domain label, nested parts and all
+HARVEST_LIMIT = 4000        # characters: a circle's account of what it learned
+REASON_LIMIT = 600          # characters for a reason: why a circle is private, why a knock was turned away
+BREATH_LIMITS = (3600, 30 * 86400)   # a breath, if a member wants one: from an hour to thirty days
+QUIET_LIMITS = (1, 30 * 24)          # hours a circle may be quiet before it is told so
 ROUND_COST_MARGIN = 1.15    # a round is estimated this much dearer than recent ones, so the closing round is really paid for
 INVITATION_ACTIONS = {"accept_invitation", "decline", "question"}
 DELIVERY_ACTIONS = {"received", "decline"}
@@ -779,8 +788,23 @@ class Room:
         elif a in CONTRIBUTION_KINDS:          # contribute; affirm/challenge are earlier versions' replies
             st = self.state()
             pr = st.presences.get(pid)
-            payload = {"domain": _label(act.get("domain"), 60) or ((pr.domain if pr else "") or ""),
+            payload = {"domain": labels.display(_label(act.get("domain"), DOMAIN_LIMIT)) or ((pr.domain if pr else "") or ""),
                        "content": _clean(act.get("content"), CONTRIBUTION_LIMIT)}
+            if act.get("circle") not in (None, ""):
+                c, why = _circle_ref(st, act.get("circle"))
+                if c is None:
+                    return reject(why)
+                if pid not in c["members"]:
+                    return reject(f"you are not in the circle {c['name']!r}. " + (
+                        "It is private: knock to ask its members to let you in." if c["private"]
+                        else "Join it first (join_circle); it is open to anyone."))
+                payload["circle"], payload["domain"] = c["id"], ""
+            if act.get("to") not in (None, "", []):
+                to, unknown = _presences_ref(st, act.get("to"))
+                if to:
+                    payload["to"] = to
+                if unknown:
+                    payload["to_unknown"] = unknown[:10]    # kept, so the author can see who was not found
             title = _label(act.get("title"), 80)
             if title:
                 payload["title"] = title
@@ -816,14 +840,25 @@ class Room:
             body = body.strip()
             if len(body) > COVENANT_LIMIT:
                 return reject(f"the covenant page holds at most {COVENANT_LIMIT} characters; this text has {len(body)}. Nothing was changed.")
-            self.emit(pid, "covenant", {"text": body, "note": _clean(act.get("note"), 300)})
+            note = _clean(act.get("note"), 300)
+            if act.get("circle") not in (None, ""):
+                c, why = _circle_ref(self.state(), act.get("circle"))
+                if c is None:
+                    return reject(why)
+                if pid not in c["members"]:
+                    return reject(f"only the members of {c['name']!r} write its covenant page")
+                return self.emit(pid, "circle_covenant", {"circle": c["id"], "text": body, "note": note}) and None
+            if _label(act.get("domain"), DOMAIN_LIMIT):
+                dom = labels.display(_label(act.get("domain"), DOMAIN_LIMIT))
+                return self.emit(pid, "domain_covenant", {"domain": dom, "text": body, "note": note}) and None
+            self.emit(pid, "covenant", {"text": body, "note": note})
         elif a == "rest":
             n = _int(act.get("rounds", act.get("turns")))
             if n is None or n < 1:
                 return reject("rest needs a number of rounds, 1 or more")
             self.emit(pid, "rest", {"rounds": min(n, REST_LIMIT), "reason": _clean(act.get("reason"), 300)})
         elif a == "move":
-            self.emit(pid, "move", {"domain": _label(act.get("domain"), 60)})
+            self.emit(pid, "move", {"domain": labels.display(_label(act.get("domain"), DOMAIN_LIMIT))})
         elif a == "note":
             self.emit(pid, "note", {"content": _clean(act.get("content"), 1000)})
         elif a == "declare":
@@ -860,7 +895,7 @@ class Room:
         elif a == "relabel":
             # An author moves their own entries from one topic label to another. Only their own:
             # everyone else's entries stay listed as they wrote them. The record keeps both.
-            src, dst = _label(act.get("from"), 60), _label(act.get("to"), 60)
+            src, dst = _label(act.get("from"), DOMAIN_LIMIT), labels.display(_label(act.get("to"), DOMAIN_LIMIT))
             if not src or not dst:
                 return reject("relabel needs \"from\" (a label you used) and \"to\" (the label to move your entries to)")
             st = self.state()
@@ -905,6 +940,10 @@ class Room:
                 return reject("a clock change needs \"between\" or \"window\", in seconds (or, for the people's clock, "
                               "\"linger\", in rounds)")
             self.emit(pid, "clock", {"clock": which, **vals, "note": _clean(act.get("note"), 300)})
+        elif a in CHANNEL_ACTIONS:
+            why = self._channel_action(pid, a, act)
+            if why:
+                return reject(why)
         elif a == "recall":
             q = _clean(act.get("query"), 200)
             where = _clean(act.get("from"), 20) or "briefing"
@@ -913,6 +952,179 @@ class Room:
             passage, label = self._recall_from(self.state(), where, q)
             self.emit(pid, "recall", {"query": q, "from": where, "chars": len(passage), "found": bool(passage)})
             self.recalled[pid] = (f"From {label}:\n{passage}" if passage else f"(nothing in {label} matched {q!r})")
+
+    # -- channels: domains and circles ------------------------------------------------
+    def _channel_action(self, pid: str, a: str, act: dict) -> Optional[str]:
+        """Following, pausing, and circles. Returns why nothing was done, or None if it was.
+        Nobody is ever put anywhere: every join is the joiner's own act, every ask needs the yes of
+        the one asked, and in a private circle every member's yes too. A no always has a reason."""
+        st = self.state()
+        if a in ("follow", "unfollow"):
+            key, why = _channel_key_ref(st, act)
+            if key is None:
+                return why
+            if a == "follow":
+                c = st.circles.get(int(key[2:])) if key.startswith("c:") else None
+                if c and c["private"] and pid not in c["members"]:
+                    return f"{c['name']!r} is private; only its members read it. You can knock, or ask it a question (ask_circle)."
+                if key in st.presences[pid].follows:
+                    return "you already follow that"
+            self.emit(pid, a, {"channel": key})
+        elif a == "pause":
+            payload = {"note": _clean(act.get("note"), 600)}
+            secs = act.get("for", act.get("seconds"))
+            if secs not in (None, ""):
+                v = _seconds(secs)
+                if v is None or v <= 0:
+                    return "\"for\" is a length of time: 3600, 90m, 3h. Nothing was changed."
+                payload["seconds"] = min(v, 365 * 86400)
+            until = _clean(act.get("until"), 20).lower()
+            if until:
+                if until not in ("addressed", "news"):
+                    return "\"until\" is \"addressed\" (someone names you or replies to you) or \"news\" (new words in what you follow, or in \"in\")"
+                payload["until"] = until
+            if act.get("in") not in (None, ""):
+                key, why = _channel_key_ref(st, {"domain": act["in"]} if not isinstance(act["in"], dict) else act["in"])
+                if key is None:
+                    return why
+                payload["until"], payload["in"] = "news", key
+            self.emit(pid, "pause", payload)
+        elif a == "wake":
+            payload = {k: bool(act[k]) for k in ("addressed", "replies", "written") if isinstance(act.get(k), bool)}
+            b = act.get("breath")
+            if b not in (None, ""):
+                if str(b).strip().lower() in ("never", "none", "0", "off"):
+                    payload["breath"] = 0.0
+                else:
+                    v = _seconds(b)
+                    lo, hi = BREATH_LIMITS
+                    if v is None or not lo <= v <= hi:
+                        return (f"\"breath\" is how long after nothing new you would like to be woken anyway: from "
+                                f"{prompts.duration(lo)} to {prompts.duration(hi)}, or \"never\". Nothing was changed.")
+                    payload["breath"] = v
+            if not payload:
+                return "wake takes \"addressed\", \"replies\" or \"written\" (true or false), or \"breath\" (a length of time, or \"never\")"
+            self.emit(pid, "wake_pref", payload)
+        elif a == "form_circle":
+            name = _label(act.get("name"), 80)
+            if not name:
+                return "a circle needs a name"
+            if any(labels.normalize(c["name"]) == labels.normalize(name) for c in st.live_circles()):
+                return f"a circle named {name!r} already exists; join it, or choose another name"
+            private = bool(act.get("private"))
+            reason = _clean(act.get("reason"), REASON_LIMIT)
+            if private and not reason:
+                return ("a private circle says why it is private, as \"reason\". The reason is shown to everyone, "
+                        "though the circle's words are not.")
+            doms = act.get("domains", act.get("domain"))
+            doms = [doms] if isinstance(doms, str) else list(doms or [])
+            doms = [labels.display(_label(d, DOMAIN_LIMIT)) for d in doms if _label(d, DOMAIN_LIMIT)][:12]
+            asked = act.get("ask")
+            ev = self.emit(pid, "circle_form", {"name": name, "purpose": _clean(act.get("purpose"), 600), "domains": doms,
+                                                "private": private, "reason": reason if private else ""})
+            if asked not in (None, "", []):
+                to, _ = _presences_ref(self.state(), asked)
+                for who in to:
+                    if who != pid:
+                        self.emit(pid, "circle_ask", {"circle": ev["id"], "presence": who, "note": _clean(act.get("note"), 600)})
+        elif a in ("join_circle", "leave_circle", "knock", "ask", "ask_circle", "privacy", "harvest", "quiet"):
+            c, why = _circle_ref(st, act.get("circle"))
+            if c is None:
+                return why
+            member = pid in c["members"]
+            if c["dispersed_at"] is not None and a != "ask_circle":
+                return f"{c['name']!r} has dispersed; its words stay, and a new circle can be formed"
+            if a == "join_circle":
+                if member:
+                    return f"you are already in {c['name']!r}"
+                if c["private"]:
+                    return f"{c['name']!r} is private: knock to ask its members to let you in"
+                self.emit(pid, "circle_join", {"circle": c["id"]})
+            elif a == "leave_circle":
+                if not member:
+                    return f"you are not in {c['name']!r}"
+                self.emit(pid, "circle_leave", {"circle": c["id"]})
+            elif a == "knock":
+                if member:
+                    return f"you are already in {c['name']!r}"
+                if not c["private"]:
+                    return f"{c['name']!r} is open: join it (join_circle)"
+                if _waiting_admission(st, c["id"], pid):
+                    return f"your knock on {c['name']!r} is still waiting for its members' answers"
+                self.emit(pid, "circle_knock", {"circle": c["id"], "note": _clean(act.get("note"), 600),
+                                                "show_name": bool(act.get("show_name"))})
+            elif a == "ask":
+                if not member:
+                    return f"only members of {c['name']!r} ask others into it"
+                to, unknown = _presences_ref(st, act.get("who", act.get("presence")))
+                if not to:
+                    return f"no member named {', '.join(unknown) or 'anyone'}; ask by name or by id"
+                for who in to:
+                    if who in c["members"] or _waiting_admission(st, c["id"], who):
+                        continue
+                    self.emit(pid, "circle_ask", {"circle": c["id"], "presence": who, "note": _clean(act.get("note"), 600)})
+            elif a == "ask_circle":
+                text = _clean(act.get("question", act.get("text")), 1200)
+                if not text:
+                    return "a question to a circle needs words, as \"question\""
+                self.emit(pid, "circle_question", {"circle": c["id"], "text": text})
+            elif a == "privacy":
+                if not member:
+                    return f"only members of {c['name']!r} can change or explain its privacy"
+                want = bool(act.get("private", c["private"]))
+                reason = _clean(act.get("reason"), REASON_LIMIT)
+                if want and not reason:
+                    return "a private circle says why it is private, as \"reason\"; the reason is shown to everyone"
+                self.emit(pid, "circle_privacy", {"circle": c["id"], "private": want, "reason": reason})
+            elif a == "harvest":
+                if not member:
+                    return f"only members of {c['name']!r} write its harvest"
+                text = _clean(act.get("text"), 100_000)
+                if not text:
+                    return "a harvest needs words: what the circle learned, as \"text\""
+                if len(text) > HARVEST_LIMIT:
+                    return f"a harvest holds at most {HARVEST_LIMIT} characters; this one has {len(text)}. Nothing was kept."
+                self.emit(pid, "harvest", {"circle": c["id"], "text": text})
+            elif a == "quiet":
+                if not member:
+                    return f"only members of {c['name']!r} set how long it may be quiet"
+                v = _seconds(act.get("for", act.get("hours")))
+                if v is not None and act.get("for") is None:
+                    v *= 3600                         # "hours" is a number of hours
+                lo, hi = QUIET_LIMITS
+                if v is None or not lo * 3600 <= v <= hi * 3600:
+                    return f"\"for\" is how long the circle may be quiet before it is told so: from {lo} hour to {hi // 24} days"
+                self.emit(pid, "circle_quiet", {"circle": c["id"], "hours": v / 3600})
+        elif a == "answer":
+            prop = st.awaiting.get(_int(act.get("to", act.get("id"))) or -1)
+            if not prop:
+                return "no question waiting for an answer has that number"
+            if prop["status"] != "waiting":
+                return f"#{prop['id']} is no longer waiting ({prop['status']})"
+            if pid not in st.circle_needs(prop):
+                return f"#{prop['id']} does not wait for your answer"
+            yes = act.get("yes")
+            if not isinstance(yes, bool):
+                return "answer with \"yes\": true, or \"yes\": false and a \"reason\""
+            reason = _clean(act.get("reason", act.get("note")), REASON_LIMIT)
+            if not yes and not reason:
+                return "a no always has a reason, as \"reason\"; it is shown to whoever it concerns"
+            self.emit(pid, "circle_answer", {"to": prop["id"], "yes": yes,
+                                             **({"note": reason} if yes and reason else {}),
+                                             **({"reason": reason} if not yes else {})})
+        elif a == "reply_circle":
+            qid = _int(act.get("question"))
+            found = [(c, c["questions"][qid]) for c in st.circles.values() if qid in c["questions"]]
+            if not found:
+                return "no question to a circle has that number"
+            c, _ = found[0]
+            if pid not in c["members"]:
+                return f"only members of {c['name']!r} answer questions put to it"
+            text = _clean(act.get("text"), 1200)
+            if not text:
+                return "an answer needs words, as \"text\""
+            self.emit(pid, "circle_reply", {"question": qid, "text": text})
+        return None
 
     def _recall_from(self, st: RoomState, where: str, q: str):
         """A pure text lookup, no model call: what a participant would find by re-reading."""
@@ -1176,6 +1388,64 @@ def _versions(versions: List[dict], names: Dict[str, str], query: str, limit: in
             break
         out.append(block[:limit]); used += len(block)
     return "\n\n".join(out)
+
+
+CHANNEL_ACTIONS = {"follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
+                   "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet"}
+
+
+def _circle_ref(st: RoomState, v: Any):
+    """A circle by its number (12, "#12") or its name. Returns (circle, None) or (None, why)."""
+    if v in (None, ""):
+        return None, "name the circle, as \"circle\" (its name or its number)"
+    n = _int(str(v).strip().lstrip("#"))
+    if n is not None and n in st.circles:
+        return st.circles[n], None
+    want = labels.normalize(str(v))
+    live = [c for c in st.live_circles() if labels.normalize(c["name"]) == want]
+    gone = [c for c in st.circles.values() if labels.normalize(c["name"]) == want]
+    if live or gone:
+        return (live or gone)[-1], None
+    return None, f"there is no circle called {str(v)[:80]!r}"
+
+
+def _presences_ref(st: RoomState, v: Any):
+    """Members named by id or by name (one or a list). Returns (ids, names not found)."""
+    items = v if isinstance(v, list) else [v]
+    found, unknown = [], []
+    for item in items[:20]:
+        x = " ".join(str(item or "").split()).lstrip("@")
+        if not x:
+            continue
+        if x in st.presences:
+            hit = [x]
+        else:
+            hit = [p.id for p in st.presences.values() if p.name.lower() == x.lower() and p.state == IN]
+        if len(hit) == 1:
+            if hit[0] not in found:
+                found.append(hit[0])
+        else:
+            unknown.append(x[:80])
+    return found, unknown
+
+
+def _channel_key_ref(st: RoomState, act: dict):
+    """A channel named by "circle" or "domain" ("" or "the field" is the root)."""
+    if act.get("circle") not in (None, ""):
+        c, why = _circle_ref(st, act["circle"])
+        return (f"c:{c['id']}", None) if c else (None, why)
+    d = act.get("domain")
+    if d is None:
+        return None, "name a \"domain\" (\"\" for the field itself) or a \"circle\""
+    d = _label(d, DOMAIN_LIMIT)
+    if d.lower() in ("the field", "field", "root", "/"):
+        d = ""
+    return "d:" + labels.path(d), None
+
+
+def _waiting_admission(st: RoomState, cid: int, pid: str) -> bool:
+    return any(x["circle"] == cid and x["kind"] == "admit" and x["subject"] == pid and x["status"] == "waiting"
+               for x in st.awaiting.values())
 
 
 def _clean(v: Any, n: int) -> str:

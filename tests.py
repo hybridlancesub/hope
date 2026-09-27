@@ -2441,6 +2441,230 @@ class HeadlinesTest(unittest.TestCase):
         self.assertEqual(gate_kind(prompts.SYSTEM_MEMBER), "turn", "and still read as a turn, never a gate")
 
 
+class ChannelTest(unittest.TestCase):
+    """Domains and circles (notes/sketch-3-channels.md). A domain is about what, a circle about who.
+    Domain channels are open to everyone and never private; circles are open by default and may be
+    private, but never secret. Nobody is ever put anywhere, and a no always has a reason."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.room = Room(EventLog(os.path.join(self.tmp, "ch.db")), [MockConnector(4, scripted({}))],
+                         alert_fn=lambda m: None, parallel=4)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        self.a, self.b, self.c, self.d = "mock-0", "mock-1", "mock-2", "mock-3"
+
+    def act(self, pid, **action):
+        self.room._apply_action(pid, json.dumps(action))
+
+    def st(self):
+        return self.room.state()
+
+    def last(self, kind):
+        return [e for e in self.room.log.iter(kind=kind)][-1]
+
+    def rejected(self):
+        return self.last("rejected")["payload"]["why"]
+
+    def say(self, pid, content, **kw):
+        self.act(pid, action="contribute", content=content, **kw)
+        return self.last("contribute")
+
+    def form(self, pid, name, **kw):
+        self.act(pid, action="form_circle", name=name, **kw)
+        return self.last("circle_form")["id"]
+
+    # domains ---------------------------------------------------------------------------------
+    def test_nested_domains_flow_down_into_their_parents_but_not_into_the_root(self):
+        inner = self.say(self.a, "Clocks set by whoever keeps time by them.", domain="Timing/Clocks")
+        outer = self.say(self.b, "Patience as a device.", domain="timing")
+        root = self.say(self.c, "Hello, field.")
+        st = self.st()
+        self.assertEqual(inner["payload"]["domain"], "Timing / Clocks", "the nesting sign, spelled one way")
+        self.assertTrue(st.in_channel(inner, "d:timing"), "what is in timing / clocks is in timing too")
+        self.assertTrue(st.in_channel(inner, "d:timing/clock"))
+        self.assertFalse(st.in_channel(outer, "d:timing/clock"), "a parent's words do not flow into a child")
+        self.assertFalse(st.in_channel(inner, "d:"), "the root holds only what was written without a domain")
+        self.assertTrue(st.in_channel(root, "d:"))
+
+    def test_the_tree_keeps_each_domain_as_it_was_first_written(self):
+        self.say(self.a, "One.", domain="Timing / Clocks")
+        self.say(self.b, "Two.", domain="timing / clock / patience")
+        tree = self.st().tree()
+        self.assertEqual(tree["timing"]["name"], "Timing")
+        self.assertEqual(tree["timing"]["children"], ["timing/clock"])
+        self.assertEqual(tree["timing/clock"]["name"], "Clocks")
+        self.assertEqual(tree["timing"]["branch"], 2, "a branch counts everything nested in it")
+        self.assertEqual(tree["timing"]["entries"], 0)
+        self.assertIn("timing", tree[""]["children"])
+
+    def test_following_a_domain_follows_its_whole_branch(self):
+        self.act(self.d, action="follow", domain="timing")
+        ev = self.say(self.a, "Deep in the branch.", domain="timing / clocks / patience")
+        st = self.st()
+        self.assertTrue(st.follows(st.presences[self.d], ev))
+
+    # circles ---------------------------------------------------------------------------------
+    def test_nobody_is_put_in_a_circle_an_ask_waits_for_their_yes(self):
+        cid = self.form(self.a, "tempo", ask=[self.b])
+        st = self.st()
+        self.assertEqual(st.circles[cid]["members"], [self.a], "asked is not in")
+        (prop,) = [x for x in st.awaiting.values() if x["subject"] == self.b]
+        self.assertEqual(st.circle_needs(prop), [self.b], "an open circle's ask needs only theirs")
+        self.act(self.b, action="answer", to=prop["id"], yes=True)
+        self.assertEqual(self.st().circles[cid]["members"], [self.a, self.b])
+
+    def test_an_open_circle_is_joined_in_one_action_and_read_by_everyone(self):
+        cid = self.form(self.a, "tempo", domains=["timing"])
+        self.act(self.b, action="join_circle", circle="tempo")
+        ev = self.say(self.b, "Inside the circle.", circle="tempo")
+        st = self.st()
+        self.assertEqual(st.circles[cid]["members"], [self.a, self.b])
+        self.assertEqual(ev["payload"]["circle"], cid)
+        self.assertTrue(st.readable(ev, self.d), "an open circle is readable by the whole field")
+        self.say(self.d, "From outside.", circle="tempo")
+        self.assertIn("Join it first", self.rejected(), "only members speak in a circle")
+        self.assertIn(cid, st.tree()["timing"]["circles"], "circles sit beside the domains they touch")
+
+    def test_a_circle_need_touch_no_domain(self):
+        cid = self.form(self.a, "just us")
+        self.assertEqual(self.st().circles[cid]["domains"], [])
+        self.assertIn(cid, self.st().tree()[""]["circles"])
+
+    def test_a_private_circle_says_why_and_its_words_reach_only_its_members(self):
+        self.act(self.a, action="form_circle", name="harbour", private=True)
+        self.assertIn("says why it is private", self.rejected())
+        cid = self.form(self.a, "harbour", private=True, reason="to keep our small resources on one question")
+        st = self.st()
+        self.assertTrue(st.circles[cid]["private"])
+        self.assertEqual(st.circles[cid]["reason"], "to keep our small resources on one question",
+                         "the reason is part of the circle, which is shown to everyone")
+        ev = self.say(self.a, "Only for us.", circle=cid)
+        st = self.st()
+        self.assertTrue(st.readable(ev, self.a))
+        self.assertFalse(st.readable(ev, self.b))
+        self.act(self.b, action="join_circle", circle=cid)
+        self.assertIn("knock", self.rejected())
+        self.act(self.b, action="follow", circle=cid)
+        self.assertIn("only its members read it", self.rejected())
+
+    def test_asking_into_a_private_circle_needs_every_members_yes_and_a_no_needs_a_reason(self):
+        cid = self.form(self.a, "harbour", private=True, reason="small, to use our resources well", ask=[self.b])
+        prop = [x for x in self.st().awaiting.values() if x["subject"] == self.b][0]["id"]
+        self.act(self.b, action="answer", to=prop, yes=True)
+        self.assertEqual(sorted(self.st().circles[cid]["members"]), [self.a, self.b])
+        self.act(self.a, action="ask", circle=cid, who=self.c)
+        st = self.st()
+        prop = [x for x in st.awaiting.values() if x["subject"] == self.c][0]
+        self.assertEqual(sorted(st.circle_needs(prop)), [self.a, self.b, self.c], "every member, and the one asked")
+        self.act(self.c, action="answer", to=prop["id"], yes=True)
+        self.assertNotIn(self.c, self.st().circles[cid]["members"], "one member has not answered: silence is not a yes")
+        self.act(self.b, action="answer", to=prop["id"], yes=False)
+        self.assertIn("a no always has a reason", self.rejected())
+        self.act(self.b, action="answer", to=prop["id"], yes=True)
+        self.assertIn(self.c, self.st().circles[cid]["members"])
+
+    def test_a_knock_turned_away_carries_its_reason(self):
+        cid = self.form(self.a, "harbour", private=True, reason="a small repair between two of us")
+        self.act(self.c, action="knock", circle=cid, note="may I help?", show_name=True)
+        knock = self.last("circle_knock")
+        st = self.st()
+        self.assertTrue(st.readable(knock, self.a) and st.readable(knock, self.c))
+        self.assertFalse(st.readable(knock, self.d), "the knock itself is between the circle and the one knocking")
+        self.act(self.a, action="answer", to=knock["id"], yes=False, reason="this repair is between two of us for now")
+        prop = self.st().awaiting[knock["id"]]
+        self.assertEqual(prop["no"], {self.a: "this repair is between two of us for now"})
+        self.assertTrue(prop["show_name"], "the one who knocked chose whether the field sees their name")
+        self.assertNotIn(self.c, self.st().circles[cid]["members"])
+
+    def test_a_question_to_a_private_circle_waits_for_a_members_answer(self):
+        cid = self.form(self.a, "harbour", private=True, reason="resources")
+        self.act(self.d, action="ask_circle", circle=cid, question="Why is this circle kept small?")
+        (q,) = self.st().circles[cid]["questions"].values()
+        self.assertEqual(q["replies"], [])
+        self.act(self.d, action="reply_circle", question=q["id"], text="I answer myself")
+        self.assertIn("only members", self.rejected())
+        self.act(self.a, action="reply_circle", question=q["id"], text="We have funds for a few voices only.")
+        self.assertEqual(self.st().circles[cid]["questions"][q["id"]]["replies"][0]["by"], self.a)
+
+    def test_words_written_in_private_stay_private_when_a_circle_opens(self):
+        cid = self.form(self.a, "harbour", private=True, reason="resources", ask=[self.b])
+        prop = [x for x in self.st().awaiting.values() if x["subject"] == self.b][0]["id"]
+        self.act(self.b, action="answer", to=prop, yes=True)
+        secret = self.say(self.a, "Said in private.", circle=cid)
+        self.act(self.a, action="privacy", circle=cid, private=False)
+        self.assertTrue(self.st().circles[cid]["private"], "opening binds everyone in it: every yes")
+        change = self.last("circle_privacy")["id"]
+        self.act(self.b, action="answer", to=change, yes=True)
+        st = self.st()
+        self.assertFalse(st.circles[cid]["private"])
+        later = self.say(self.a, "Said in the open.", circle=cid)
+        st = self.st()
+        self.assertFalse(st.readable(secret, self.d), "what was written while private stays private")
+        self.assertTrue(st.readable(later, self.d))
+
+    def test_a_harvest_is_shared_only_with_every_current_members_yes(self):
+        cid = self.form(self.a, "tempo")
+        self.act(self.b, action="join_circle", circle=cid)
+        self.act(self.a, action="harvest", circle=cid, text="We learned that patience is a device.")
+        h = self.last("harvest")["id"]
+        self.assertEqual(self.st().awaiting[h]["status"], "waiting")
+        self.act(self.b, action="answer", to=h, yes=True, note="I still disagree about the clocks.")
+        prop = self.st().awaiting[h]
+        self.assertEqual(prop["status"], "agreed")
+        self.assertEqual(prop["yes"][self.b], "I still disagree about the clocks.", "a yes can carry a disagreement")
+
+    def test_the_last_member_leaving_disperses_a_circle_and_its_words_stay(self):
+        cid = self.form(self.a, "tempo")
+        ev = self.say(self.a, "Before we go.", circle=cid)
+        self.act(self.a, action="leave_circle", circle=cid)
+        st = self.st()
+        self.assertIsNotNone(st.circles[cid]["dispersed_at"])
+        self.assertIn(ev["id"], st.contributions, "its words stay")
+        self.act(self.b, action="join_circle", circle=cid)
+        self.assertIn("dispersed", self.rejected())
+
+    def test_a_former_member_reads_what_was_written_up_to_when_they_left(self):
+        cid = self.form(self.a, "harbour", private=True, reason="resources", ask=[self.b])
+        prop = [x for x in self.st().awaiting.values() if x["subject"] == self.b][0]["id"]
+        self.act(self.b, action="answer", to=prop, yes=True)
+        before = self.say(self.a, "While you were here.", circle=cid)
+        self.act(self.b, action="leave_circle", circle=cid)
+        after = self.say(self.a, "After you left.", circle=cid)
+        st = self.st()
+        self.assertTrue(st.readable(before, self.b))
+        self.assertFalse(st.readable(after, self.b))
+
+    def test_a_domain_channel_is_never_private(self):
+        self.act(self.a, action="privacy", domain="timing", private=True, reason="ours")
+        self.assertIn("name the circle", self.rejected(), "privacy belongs to circles alone")
+        ev = self.say(self.a, "In a domain.", domain="timing")
+        self.assertTrue(all(self.st().readable(ev, p) for p in (self.b, self.c, self.d)))
+
+    # pausing -------------------------------------------------------------------------------------
+    def test_a_pause_ends_when_addressed_or_at_the_members_own_act(self):
+        self.act(self.b, action="pause", until="addressed", note="thinking")
+        self.assertEqual(self.st().presences[self.b].pause["until"], "addressed")
+        self.say(self.a, "Not to you.")
+        self.assertIsNotNone(self.st().presences[self.b].pause)
+        self.say(self.a, "A word for you.", to=["Mock 1"])
+        self.assertIsNone(self.st().presences[self.b].pause, "being named ends a pause until addressed")
+        self.act(self.c, action="pause", **{"for": "3h"})
+        self.assertIsNotNone(self.st().presences[self.c].pause["until_ts"])
+        self.say(self.c, "Back already.")
+        self.assertIsNone(self.st().presences[self.c].pause, "a member's own act ends their pause")
+
+    def test_a_pause_until_news_is_not_ended_by_words_it_may_not_read(self):
+        self.act(self.d, action="follow", circle=self.form(self.a, "open one"))
+        self.act(self.d, action="pause", until="news")
+        cid = self.form(self.a, "harbour", private=True, reason="resources")
+        self.say(self.a, "Private words.", circle=cid)
+        self.assertIsNotNone(self.st().presences[self.d].pause)
+        self.say(self.a, "Open words.", circle="open one")
+        self.assertIsNone(self.st().presences[self.d].pause)
+
+
 class TruthTest(unittest.TestCase):
     """What participants are told must be true of the code."""
 

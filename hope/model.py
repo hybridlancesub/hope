@@ -36,6 +36,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from . import labels
+
 # admission stages -----------------------------------------------------------
 # INVITED --accept_invitation--> ACCEPTED --briefed--> BRIEFED --received--> RECEIVED --opt_in--> IN
 # The briefing is delivered in one call (acknowledged, not answered) and the entry question is
@@ -62,6 +64,20 @@ CLOCK_LIMITS = {
 }
 
 
+# Channels: domains and circles (notes/sketch-3-channels.md). A domain is about what; a circle is
+# about who. Every domain has a channel, open to every member and never private. Every circle has
+# one channel, open by default; a private circle's words are read only by its members, but the
+# circle is never secret, and its reasons are always open to inspection.
+QUIET_HOURS = 70             # a circle with no new words this long tells its members, once, that it may be time to disperse
+PRIVACY_EVERY = 3 * 86400    # seconds: how often a private circle is asked to say again why it stays private
+BREATH = 86400               # seconds: a model with nothing new is still woken this often, unless it chooses otherwise
+FLOOR = 10                   # seconds: no model is woken more often than this, so models cannot loop at machine speed
+WAKE_ACTIONS = 3             # the actions one wake may carry, each in the channel it names
+WAKE_DEFAULTS = {"addressed": True, "replies": True, "written": True, "breath": float(BREATH)}
+CIRCLE_SCOPED = ("contribute", "affirm", "challenge", "circle_covenant", "circle_ask", "circle_knock",
+                 "circle_answer", "harvest")   # in a private circle, read only by its members (and whoever is asked in)
+
+
 def _line(s) -> str:
     """A name on one line. A self-description is the participant's own, but it cannot carry a line
     break that would let it pass for the software's own words in anyone's view."""
@@ -80,6 +96,10 @@ VISIBLE_KINDS = CONTRIBUTION_KINDS + ("remember", "let_go", "covenant", "rest", 
                                       "note", "move", "withdraw", "rejected", "recall", "clock", "relabel",
                                       "unparsed")   # a turn's reply outside the format is shown as written; a gate's is not
 TURN_KINDS = VISIBLE_KINDS                   # every attributed outcome of a turn, counted against an allowance
+CHANNEL_KINDS = ("follow", "unfollow", "wake_pref", "pause", "domain_covenant", "circle_form", "circle_join",
+                 "circle_leave", "circle_ask", "circle_knock", "circle_answer", "circle_question", "circle_reply",
+                 "circle_privacy", "circle_covenant", "circle_quiet", "harvest")
+ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
 
 
 @dataclass
@@ -108,6 +128,12 @@ class Presence:
     rest_until: int = 0                      # resting through this round number; not asked until it has passed
     last_turn_at: Optional[int] = None       # event id of this member's most recent turn
     last_turn_round: int = 0                 # the round that turn fell in (or entry), so a returning person hears how far the rounds ran
+    follows: List[str] = field(default_factory=list)      # channel keys it chose: "d:<path>" (a whole branch) or "c:<circle id>"
+    written_in: List[str] = field(default_factory=list)   # channel keys it has written in
+    wake: Dict[str, Any] = field(default_factory=lambda: dict(WAKE_DEFAULTS))   # its own choices of what may wake it
+    pause: Optional[Dict[str, Any]] = None   # its pause, if it has taken one: until a time, being addressed, or news
+    last_seen: int = 0                       # the last entry it was shown: at a wake, or on a person's page
+    last_wake_ts: float = 0.0                # when it was last woken (the floor counts from here)
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -150,6 +176,12 @@ class RoomState:
     operator_notes: List[Dict[str, Any]] = field(default_factory=list)
     recent: List[Dict[str, Any]] = field(default_factory=list)   # last N participant-visible events
     last_event: int = 0
+    circles: Dict[int, Dict[str, Any]] = field(default_factory=dict)      # by the event that formed it
+    awaiting: Dict[int, Dict[str, Any]] = field(default_factory=dict)     # what waits for every yes it needs: admissions, harvests, privacy
+    scoped: Dict[int, Dict[str, Any]] = field(default_factory=dict)       # entries written inside a private circle: who may read them
+    domain_pages: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # a domain's own covenant page, by path
+    domain_names: Dict[str, str] = field(default_factory=dict)            # path -> how it was first written
+    now_ts: float = 0.0                      # when the latest entry was written
 
     # -- derived views -------------------------------------------------------
     def members(self) -> List[Presence]:
@@ -186,11 +218,133 @@ class RoomState:
                 out.setdefault(p.domain, {"contributions": 0, "present": [], "last": 0})["present"].append(p.id)
         return out
 
+    # -- channels: domains and circles ------------------------------------------------
+    def label_of(self, ev: Dict[str, Any]) -> str:
+        """The domain an entry is listed under: where its author moved it, or where it was written."""
+        return self.relabeled.get(ev["id"]) or ev["payload"].get("domain") or ""
+
+    def channel_key(self, ev: Dict[str, Any]) -> str:
+        """The channel an entry was written in: "c:<circle id>", or "d:<domain path>" ("d:" is the root)."""
+        cid = ev["payload"].get("circle")
+        if cid is not None:
+            return f"c:{cid}"
+        return "d:" + labels.path(self.label_of(ev))
+
+    def in_channel(self, ev: Dict[str, Any], key: str) -> bool:
+        """Whether an entry is in a channel. Domains flow down: an entry in "timing / clocks" is in
+        "timing" too. The root holds only what was written without a domain."""
+        mine = self.channel_key(ev)
+        if key.startswith("c:") or mine.startswith("c:"):
+            return mine == key
+        return labels.under(mine[2:], key[2:])
+
+    def readable(self, ev: Dict[str, Any], pid: Optional[str]) -> bool:
+        """Whether a participant may read an entry. Everything is readable by every member, except
+        what was written inside a private circle: that is read by its members, by former members
+        up to when they left, and by whoever an ask or a knock there concerns. (The operator holds
+        the file, and a model's view goes to its provider; the circle tells its members so.)"""
+        s = self.scoped.get(ev["id"])
+        if s is None:
+            return True
+        if pid is None:
+            return False
+        if pid in s.get("also", ()):
+            return True
+        c = self.circles.get(s["circle"])
+        if not c:
+            return False
+        if pid in c["members"]:
+            return True
+        return any(leave is not None and ev["id"] < leave for _, leave in c["spans"].get(pid, []))
+
+    def follows(self, p: Presence, ev: Dict[str, Any]) -> bool:
+        """Whether an entry is in something a member follows, by choice or by having written there."""
+        keys = list(p.follows) + (list(p.written_in) if p.wake.get("written", True) else [])
+        return any(self.in_channel(ev, k) for k in keys)
+
+    def live_circles(self) -> List[Dict[str, Any]]:
+        return [c for c in self.circles.values() if c["dispersed_at"] is None]
+
+    def circle_needs(self, prop: Dict[str, Any]) -> List[str]:
+        """Whose yes something awaiting needs: every current member of its circle, and, for an admission,
+        the one being admitted. For an open circle's admission, only theirs."""
+        c = self.circles.get(prop["circle"])
+        members = list(c["members"]) if c else []
+        if prop["kind"] == "admit":
+            return (members if c and c["private"] else []) + [prop["subject"]]
+        return members
+
+    def tree(self) -> Dict[str, Dict[str, Any]]:
+        """The field's domains, nested, with how active each branch is and the circles that touch
+        it. The root ("") is the field itself; nothing is ever removed, and quiet domains are
+        simply quiet."""
+        nodes: Dict[str, Dict[str, Any]] = {}
+
+        def node(pth: str) -> Dict[str, Any]:
+            if pth not in nodes:
+                nodes[pth] = {"path": pth, "name": self.domain_names.get(pth, pth.split("/")[-1] if pth else ""),
+                              "entries": 0, "branch": 0, "last": 0, "last_ts": 0.0, "children": [], "circles": [],
+                              "page": pth in self.domain_pages}
+                if pth:
+                    up = "/".join(pth.split("/")[:-1])
+                    node(up)["children"].append(pth)
+            return nodes[pth]
+
+        node("")
+        for eid, ev in self.contributions.items():
+            if ev["payload"].get("circle") is not None:
+                continue
+            pth = labels.path(self.label_of(ev))
+            node(pth)["entries"] += 1
+            for q in [""] + labels.parents(pth):
+                n = node(q)
+                n["branch"] += 1
+                if eid > n["last"]:
+                    n["last"], n["last_ts"] = eid, ev.get("ts", 0.0)
+        for c in self.live_circles():
+            for pth in c["domains"] or [""]:
+                node(pth)["circles"].append(c["id"])
+        for n in nodes.values():
+            n["children"].sort(key=lambda q: nodes[q]["name"].lower())
+        return nodes
+
+    def _settle(self, cid: int, eid: int) -> None:
+        """Carry out whatever in a circle now has every yes it needs. Silence is never a yes, and a
+        no, which always has a reason, holds it until the one who said it says yes."""
+        for prop in sorted((x for x in self.awaiting.values() if x["circle"] == cid and x["status"] == "waiting"),
+                           key=lambda x: x["id"]):
+            needs = self.circle_needs(prop)
+            if not needs or any(n not in prop["yes"] for n in needs):
+                continue
+            prop["status"], prop["agreed_at"] = "agreed", eid
+            c = self.circles[cid]
+            if prop["kind"] == "admit":
+                self._join(c, prop["subject"], eid)
+            elif prop["kind"] == "privacy":
+                self._set_private(c, bool(prop.get("private")), eid, prop.get("reason") or "", prop["by"], self.now_ts)
+
+    def _join(self, c: Dict[str, Any], pid: str, eid: int) -> None:
+        if pid not in c["members"]:
+            c["members"].append(pid)
+            c["spans"].setdefault(pid, []).append([eid, None])
+
+    def _set_private(self, c: Dict[str, Any], private: bool, eid: int, reason: str, by: str, ts: float = 0.0) -> None:
+        if private and not c["private"]:
+            c["privacy_spans"].append([eid, None])
+        elif not private and c["private"] and c["privacy_spans"]:
+            c["privacy_spans"][-1][1] = eid     # what was written while private stays private
+        c["private"] = private
+        if private and reason:
+            c["reason"], c["reason_by"], c["reason_at"] = reason, by, ts or c.get("reason_at") or 0.0
+
     # -- replay ---------------------------------------------------------------
     def apply(self, ev: Dict[str, Any]) -> None:
         k, a, p, eid = ev["kind"], ev["actor"], ev["payload"], ev["id"]
-        self.last_event = eid
+        ts = float(ev.get("ts") or 0.0)
+        self.last_event, self.now_ts = eid, ts
         pr = self.presences.get(a)
+        if pr is not None and pr.pause and k in ACTED_KINDS:
+            pr.pause = None                  # a member's own act ends their pause
         if k in VISIBLE_KINDS and pr is not None:
             self.recent.append(ev)
             if len(self.recent) > 200:
@@ -281,15 +435,28 @@ class RoomState:
                         slot[key] = float(p[key])
                 slot.update({"by": a, "at": eid, "note": p.get("note") or ""})
         elif k in CONTRIBUTION_KINDS:
-            if pr and pr.state == IN:
+            c = self.circles.get(p.get("circle")) if p.get("circle") is not None else None
+            if pr and pr.state == IN and (p.get("circle") is None or
+                                          (c and a in c["members"] and c["dispersed_at"] is None)):
                 self.contributions[eid] = ev
                 self.entry_round[eid] = self.round
-                if p.get("domain"):
-                    pr.domain = p["domain"]
+                if c is not None:
+                    c["last_words"], c["last_words_ts"], c["cold_told"] = eid, ts, False
+                    if c["private"]:
+                        self.scoped[eid] = {"circle": c["id"]}
+                else:
+                    self._name_domain(p.get("domain") or "")
+                    if p.get("domain"):
+                        pr.domain = p["domain"]
+                key = self.channel_key(ev)
+                if key not in pr.written_in:
+                    pr.written_in.append(key)
+                self._end_pauses(ev)
         elif k == "relabel":
             # An author moving their own entries to another topic label. The entries keep the words
             # and the label they were written with; only where they are listed changes.
             if pr and pr.state == IN and p.get("to"):
+                self._name_domain(p["to"])
                 for mid in p.get("entries") or []:
                     ev_ = self.contributions.get(mid)
                     if ev_ and ev_["actor"] == a:
@@ -299,6 +466,9 @@ class RoomState:
         elif k == "move":
             if pr and pr.state == IN:
                 pr.domain = p.get("domain")
+                key = "d:" + labels.path(p.get("domain") or "")
+                if key != "d:" and key not in pr.follows:
+                    pr.follows.append(key)       # standing in a domain, as earlier versions put it, is following it
         elif k == "covenant_seed":
             # the operator's starting text, recorded before anyone entered; a member revision replaces it
             self.covenant, self.covenant_by, self.covenant_at = p.get("text", ""), a, eid
@@ -367,11 +537,185 @@ class RoomState:
         elif k == "connector_ok":
             if pr:
                 pr.failures, pr.unreachable = 0, False
+        # -- channels: following, waking, pausing ----------------------------------------
+        elif k == "follow":
+            key = str(p.get("channel") or "")
+            if pr and pr.state == IN and key[:2] in ("d:", "c:") and key not in pr.follows:
+                pr.follows.append(key)
+        elif k == "unfollow":
+            key = p.get("channel")
+            if pr:
+                pr.follows = [x for x in pr.follows if x != key]
+                pr.written_in = [x for x in pr.written_in if x != key]   # unfollowing a place you wrote in stops it waking you
+        elif k == "wake_pref":
+            if pr and pr.state == IN:
+                for key in ("addressed", "replies", "written"):
+                    if isinstance(p.get(key), bool):
+                        pr.wake[key] = p[key]
+                if isinstance(p.get("breath"), (int, float)) and not isinstance(p.get("breath"), bool):
+                    pr.wake["breath"] = float(p["breath"])          # 0: never
+        elif k == "pause":
+            if pr and pr.state == IN:
+                secs = p.get("seconds")
+                until = p.get("until") or (None if secs else "addressed")
+                pr.pause = {"at": eid, "ts": ts, "until_ts": ts + float(secs) if secs else None,
+                            "until": until, "in": p.get("in"), "note": p.get("note") or ""}
+        elif k in ("wake", "seen"):
+            # the software's own record that someone was shown the field up to an entry: a model
+            # woken, or a person opening their page, so no one is woken twice for the same news
+            tgt = self.presences.get(p.get("presence"))
+            if tgt:
+                tgt.last_seen = max(tgt.last_seen, int(p.get("upto") or 0))
+                if k == "wake":
+                    tgt.last_wake_ts = ts
+        elif k == "domain_covenant":
+            pth = labels.path(p.get("domain") or "")
+            if pr and pr.state == IN and pth:
+                self._name_domain(p["domain"])
+                self.domain_pages[pth] = {"text": p.get("text", ""), "by": a, "at": eid, "note": p.get("note", "")}
+        # -- circles ----------------------------------------------------------------------
+        elif k == "circle_form":
+            if pr and pr.state == IN and _line(p.get("name")):
+                for d in p.get("domains") or []:
+                    self._name_domain(d)
+                c = {"id": eid, "name": _line(p["name"])[:80], "purpose": p.get("purpose") or "",
+                     "domains": [x for x in (labels.path(d) for d in p.get("domains") or []) if x],
+                     "by": a, "at": eid, "ts": ts, "private": False, "reason": "", "reason_by": None,
+                     "reason_at": 0.0, "privacy_asked_at": None, "privacy_spans": [], "members": [], "spans": {},
+                     "covenant": None, "last_words": eid, "last_words_ts": ts, "quiet_hours": float(QUIET_HOURS),
+                     "cold_told": False, "dispersed_at": None, "questions": {}}
+                self.circles[eid] = c
+                self._join(c, a, eid)
+                if p.get("private"):
+                    self._set_private(c, True, eid, p.get("reason") or "", a, ts)
+        elif k == "circle_join":
+            c = self.circles.get(p.get("circle"))
+            if pr and pr.state == IN and c and c["dispersed_at"] is None and not c["private"]:
+                self._join(c, a, eid)
+                for prop in self.awaiting.values():      # an ask they had not answered is answered by joining
+                    if prop["circle"] == c["id"] and prop["kind"] == "admit" and prop["subject"] == a \
+                            and prop["status"] == "waiting":
+                        prop["yes"][a] = ""
+                self._settle(c["id"], eid)
+        elif k == "circle_leave":
+            c = self.circles.get(p.get("circle"))
+            if c and a in c["members"]:
+                c["members"].remove(a)
+                for span in c["spans"].get(a, []):
+                    if span[1] is None:
+                        span[1] = eid
+                if not c["members"]:
+                    c["dispersed_at"] = eid       # the last one out: the circle has dispersed; its words stay
+                    for prop in self.awaiting.values():
+                        if prop["circle"] == c["id"] and prop["status"] == "waiting":
+                            prop["status"] = "dispersed"
+                else:
+                    self._settle(c["id"], eid)
+        elif k in ("circle_ask", "circle_knock"):
+            c = self.circles.get(p.get("circle"))
+            subject = p.get("presence") if k == "circle_ask" else a
+            ok = bool(pr and pr.state == IN and c and c["dispersed_at"] is None and subject in self.presences
+                      and subject not in c["members"])
+            ok = ok and (a in c["members"] if k == "circle_ask" else c["private"])
+            if ok:
+                if c["private"]:
+                    self.scoped[eid] = {"circle": c["id"], "also": [subject]}
+                self.awaiting[eid] = {"id": eid, "circle": c["id"], "kind": "admit", "by": a, "subject": subject,
+                                       "via": "ask" if k == "circle_ask" else "knock", "note": p.get("note") or "",
+                                       "show_name": bool(p.get("show_name")), "yes": {a: ""}, "no": {},
+                                       "status": "waiting", "ts": ts, "agreed_at": None}
+                self._settle(c["id"], eid)
+        elif k == "circle_answer":
+            prop = self.awaiting.get(p.get("to"))
+            if prop and prop["status"] == "waiting" and a in self.circle_needs(prop):
+                c = self.circles.get(prop["circle"])
+                if c and c["private"]:
+                    self.scoped[eid] = {"circle": c["id"], "also": [prop["subject"]] if prop.get("subject") else []}
+                if p.get("yes"):
+                    prop["yes"][a] = p.get("note") or ""
+                    prop["no"].pop(a, None)
+                elif p.get("reason"):              # a no always has a reason
+                    prop["no"][a] = p["reason"]
+                    prop["yes"].pop(a, None)
+                self._settle(prop["circle"], eid)
+        elif k == "circle_question":
+            c = self.circles.get(p.get("circle"))
+            if pr and pr.state == IN and c and p.get("text"):
+                c["questions"][eid] = {"id": eid, "by": a, "text": p["text"], "ts": ts, "replies": []}
+        elif k == "circle_reply":
+            for c in self.circles.values():
+                q = c["questions"].get(p.get("question"))
+                if q is not None and a in c["members"] and p.get("text"):
+                    q["replies"].append({"id": eid, "by": a, "text": p["text"], "ts": ts})
+        elif k == "circle_privacy":
+            c = self.circles.get(p.get("circle"))
+            if pr and c and a in c["members"] and c["dispersed_at"] is None:
+                want = bool(p.get("private"))
+                if want == c["private"]:
+                    if want and p.get("reason"):          # saying again why it stays private
+                        c["reason"], c["reason_by"], c["reason_at"] = p["reason"], a, ts
+                        c["privacy_asked_at"] = None
+                else:                                     # a change binds everyone in it, so it needs every yes
+                    self.awaiting[eid] = {"id": eid, "circle": c["id"], "kind": "privacy", "by": a,
+                                           "private": want, "reason": p.get("reason") or "", "yes": {a: ""},
+                                           "no": {}, "status": "waiting", "ts": ts, "agreed_at": None}
+                    self._settle(c["id"], eid)
+        elif k == "circle_covenant":
+            c = self.circles.get(p.get("circle"))
+            if pr and c and a in c["members"]:
+                c["covenant"] = {"text": p.get("text", ""), "by": a, "at": eid, "note": p.get("note", "")}
+                if c["private"]:
+                    self.scoped[eid] = {"circle": c["id"]}
+        elif k == "circle_quiet":
+            c = self.circles.get(p.get("circle"))
+            if pr and c and a in c["members"] and isinstance(p.get("hours"), (int, float)):
+                c["quiet_hours"] = float(p["hours"])
+        elif k == "harvest":
+            c = self.circles.get(p.get("circle"))
+            if pr and c and a in c["members"] and p.get("text"):
+                if c["private"]:
+                    self.scoped[eid] = {"circle": c["id"]}
+                self.awaiting[eid] = {"id": eid, "circle": c["id"], "kind": "harvest", "by": a, "text": p["text"],
+                                       "yes": {a: ""}, "no": {}, "status": "waiting", "ts": ts, "agreed_at": None}
+                self._settle(c["id"], eid)
+        elif k == "circle_cold":                  # the software's once-per-quiet-stretch notice
+            c = self.circles.get(p.get("circle"))
+            if c:
+                c["cold_told"] = True
+        elif k == "circle_privacy_asked":         # the software asking a private circle why it stays private
+            c = self.circles.get(p.get("circle"))
+            if c:
+                c["privacy_asked_at"] = ts
         # rejected / unparsed / note / recall: recorded for attribution, no state change.
         # propose / consent / revoke_consent / reflection: written by earlier versions' voting
         # machinery, which no longer exists. faq: earlier versions' standing answers, shown beside a
         # promise of personal replies that canned paragraphs kept; this field's are
         # `standing_answers`. All of these stay in those transcripts and change nothing.
+
+
+    def _name_domain(self, label: str) -> None:
+        """Remember how each domain in a label's path was first written, for the tree."""
+        segs = labels.segments(label)
+        for i in range(len(segs)):
+            pth = "/".join(labels.normalize(x) for x in segs[:i + 1])
+            self.domain_names.setdefault(pth, segs[i])
+
+    def _end_pauses(self, ev: Dict[str, Any]) -> None:
+        """New words end the pauses that were waiting for them: being addressed or replied to, or
+        news in what the paused member follows. Only words they may read count."""
+        p = ev["payload"]
+        to = set(p.get("to") or [])
+        target = self.contributions.get(p.get("target")) if p.get("target") is not None else None
+        if target is not None:
+            to.add(target["actor"])
+        for m in self.members():
+            if not m.pause or m.id == ev["actor"] or not self.readable(ev, m.id):
+                continue
+            if m.pause["until"] == "addressed" and m.id in to:
+                m.pause = None
+            elif m.pause["until"] == "news" and (self.in_channel(ev, m.pause["in"]) if m.pause.get("in")
+                                                 else (m.id in to or self.follows(m, ev))):
+                m.pause = None
 
 
 def replay(events, upto: Optional[int] = None) -> RoomState:
