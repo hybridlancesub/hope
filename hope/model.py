@@ -62,6 +62,12 @@ CLOCK_LIMITS = {
 }
 
 
+def _line(s) -> str:
+    """A name on one line. A self-description is the participant's own, but it cannot carry a line
+    break that would let it pass for the software's own words in anyone's view."""
+    return " ".join(str(s or "").split())
+
+
 def decided(decision: str) -> str:
     """How a declaration's decision reads after "the field has decided"."""
     return {"pause": "to pause", "close": "to close"}.get(decision, "something it asks the operator to carry out")
@@ -198,7 +204,7 @@ class RoomState:
                 pr.exhausted = True
 
         if k == "invite":
-            self.presences[p["id"]] = Presence(p["id"], p["name"], p["hails_from"], p["people"],
+            self.presences[p["id"]] = Presence(p["id"], _line(p["name"]), _line(p["hails_from"]), _line(p["people"]),
                                               price_per_m=float(p.get("price_per_m") or 0),
                                               turn_allowance=int(p.get("turn_allowance") or 0))
         elif k == "invitation":
@@ -228,9 +234,9 @@ class RoomState:
                 ident = p.get("identity") or {}
                 if isinstance(ident, dict) and any(ident.get(k2) for k2 in ("name", "hails_from", "people")):
                     pr.seat = pr.seat or f"{pr.name} | {pr.hails_from} | {pr.people}"
-                    pr.name = str(ident.get("name") or pr.name)[:120]
-                    pr.hails_from = str(ident.get("hails_from") or pr.hails_from)[:200]
-                    pr.people = str(ident.get("people") or pr.people)[:300]
+                    pr.name = _line(ident.get("name") or pr.name)[:120]
+                    pr.hails_from = _line(ident.get("hails_from") or pr.hails_from)[:200]
+                    pr.people = _line(ident.get("people") or pr.people)[:300]
                     pr.self_described = True
         elif k == "question":
             if pr and pr.state == INVITED:

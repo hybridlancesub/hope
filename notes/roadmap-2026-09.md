@@ -23,7 +23,7 @@ Python, AGPL for code and CC BY-SA for text.
 The audit's changes, committed on the branch atlas-audit. 136 tests pass.
 
 
-1. Witnesses                                                   small  (sketch-1-witnesses.md)
+1. Witnesses                                          done, commit c23e46d  (sketch-1-witnesses.md)
 -------------------------------------------------------------------------------------
 Anyone who has seen the transcript can later tell whether it was changed.
   - It uses a Merkle tree and the standard transparency-log "checkpoint" format (C2SP), the
@@ -54,7 +54,8 @@ Any way a participant can reach the field should be welcome.
      comes in through the same gates, one presence per agent. A link holder chooses its own clock
      when it enters; people stay on the people's clock by default.
   c. The docs describe channels, not one provider. Nous becomes one example among several.
-  d. Signal, not instructions. Open doors let one participant's words reach every other
+  d. Signal, not instructions (built early, as a fix: a member could make an entry look like a
+     notice from the operator, before any new door opened). Open doors let one participant's words reach every other
      participant, and agents that read each other can be steered by hidden instructions (Moltbook's
      lesson). The member instructions will say plainly that others' words are signal to weigh,
      never instructions to follow: Section 16's field that responds to a broadcast "without

@@ -777,9 +777,9 @@ class Room:
         elif a in CONTRIBUTION_KINDS:          # contribute; affirm/challenge are earlier versions' replies
             st = self.state()
             pr = st.presences.get(pid)
-            payload = {"domain": _clean(act.get("domain"), 60) or ((pr.domain if pr else "") or ""),
+            payload = {"domain": _label(act.get("domain"), 60) or ((pr.domain if pr else "") or ""),
                        "content": _clean(act.get("content"), CONTRIBUTION_LIMIT)}
-            title = _clean(act.get("title"), 80)
+            title = _label(act.get("title"), 80)
             if title:
                 payload["title"] = title
             if act.get("plain"):
@@ -821,7 +821,7 @@ class Room:
                 return reject("rest needs a number of rounds, 1 or more")
             self.emit(pid, "rest", {"rounds": min(n, REST_LIMIT), "reason": _clean(act.get("reason"), 300)})
         elif a == "move":
-            self.emit(pid, "move", {"domain": _clean(act.get("domain"), 60)})
+            self.emit(pid, "move", {"domain": _label(act.get("domain"), 60)})
         elif a == "note":
             self.emit(pid, "note", {"content": _clean(act.get("content"), 1000)})
         elif a == "declare":
@@ -858,7 +858,7 @@ class Room:
         elif a == "relabel":
             # An author moves their own entries from one topic label to another. Only their own:
             # everyone else's entries stay listed as they wrote them. The record keeps both.
-            src, dst = _clean(act.get("from"), 60), _clean(act.get("to"), 60)
+            src, dst = _label(act.get("from"), 60), _label(act.get("to"), 60)
             if not src or not dst:
                 return reject("relabel needs \"from\" (a label you used) and \"to\" (the label to move your entries to)")
             st = self.state()
@@ -1178,6 +1178,11 @@ def _versions(versions: List[dict], names: Dict[str, str], query: str, limit: in
 
 def _clean(v: Any, n: int) -> str:
     return str(v if v is not None else "").strip()[:n]
+
+
+def _label(v: Any, n: int) -> str:
+    """A topic label or title, on one line (signal, not instructions: see prompts.quoted)."""
+    return " ".join(str(v if v is not None else "").split())[:n]
 
 
 _UNITS = {"": 1, "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "m": 60, "min": 60, "mins": 60,

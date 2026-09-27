@@ -190,7 +190,7 @@ async function send(prefix){
     const start = v.findIndex(l => l.startsWith("COVENANT PAGE ("));
     const end = v.findIndex(l => l.startsWith("END OF COVENANT PAGE"));
     if (start < 0 || end < start){ flash(W.flash.no_covenant, false); return; }
-    const page = v.slice(start + 1, end).join("\n");
+    const page = v.slice(start + 1, end).map(l => l.replace(/^\| ?/, "")).join("\n");
     $("say").value = page === "(empty)" ? "" : page;
     $("say").focus();
     flash(W.flash.covenant_copied, true);
