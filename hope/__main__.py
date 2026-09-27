@@ -3,7 +3,10 @@
 participant unless seated through the gates. Brief, open, run, inspect.
 
   python3 -m hope open   --db FIELD.db --invitation FILE --briefing FILE [--faq FILE] [--documentation FILE=DESIGN]
-                         [--briefing-page FILE] [--covenant-seed FILE] [--mock N | --nous | --human "Name / from"]...
+                         [--briefing-page FILE] [--covenant-seed FILE]
+                         [--mock N | --provider NAME | --providers FILE | --human "Name / from"]...
+      providers: openrouter, nous, ollama, lmstudio, or any compatible service in a providers file
+      (see hope/providers.py). Keys are read from environment variables only.
       gate 1 (invitation), then delivery of documentation + briefing (acknowledged, not answered)
   python3 -m hope enter  --db FIELD.db [same connector flags]      after a pause: gate 2, the entry question
       --human seats a person who goes through the same gates and takes turns on stdin (see hope/human.py for the reply format)
@@ -49,15 +52,21 @@ def _connectors(args, allow_empty: bool = False):
     cs = []
     if args.mock:
         cs.append(MockConnector(args.mock))
-    if args.nous:
-        from . import nous
+    wanted = _providers(args)
+    if wanted:
+        from . import providers
         allow = {}
         for spec in args.allow or []:
             pat, _, n = spec.rpartition("=")
             if not pat or not n.isdigit():
                 sys.exit(f'--allow needs REGEX=TURNS, got {spec!r}')
             allow[pat] = int(n)
-        cs.append(nous.build(limit=args.limit, only=args.only, price_ceiling=args.price_ceiling, allow=allow))
+        for p in wanted:
+            try:
+                cs.append(providers.build(p, only=args.only, limit=args.limit,
+                                          price_ceiling=args.price_ceiling, allow=allow))
+            except RuntimeError as e:
+                sys.exit(str(e))
     if args.human:
         from .human import HumanConnector
         parts = [x.strip() for x in args.human.split("/")]
@@ -66,24 +75,47 @@ def _connectors(args, allow_empty: bool = False):
         cs.append(HumanConnector(parts[0], parts[1], parts[2] if len(parts) > 2 else "human",
                                  turn_timeout=args.human_timeout, inbox=args.inbox))
     if not cs and not allow_empty:
-        sys.exit("need --mock N, --nous, and/or --human")
+        sys.exit("need --mock N, --provider NAME (or --providers FILE), and/or --human")
     return cs
+
+
+def _providers(args):
+    """The providers this run uses: every one in the providers file, and every one named by
+    --provider (or --nous, kept as a shorthand). The file's settings win for a name in both."""
+    from . import providers
+    listed = providers.load(args.providers) if getattr(args, "providers", None) else []
+    names = list(getattr(args, "provider", None) or [])
+    if getattr(args, "nous", False):
+        names.append("nous")
+    out = list(listed)
+    for name in names:
+        if not any(p.name == name for p in out):
+            out.append(providers.named(name, listed))
+    return out
 
 
 def _narrator(args):
     """Who writes tellings, from --narrator: `mechanical` (the software, free, nothing leaves the
-    field) or a Nous model regex (a model reads each stretch; the entry question says so)."""
+    field) or PROVIDER:REGEX, a model that reads each stretch (the entry question says so, and
+    through which provider). A bare REGEX means a Nous model, as it always has."""
     spec = getattr(args, "narrator", None)
     if not spec:
         return None
     from .narrator import MechanicalNarrator, ModelNarrator
     if spec == "mechanical":
         return MechanicalNarrator()
-    from . import nous
-    conn = nous.build(only=[spec])
+    from . import providers
+    listed = providers.load(args.providers) if getattr(args, "providers", None) else []
+    name, sep, pattern = spec.partition(":")
+    if not sep or not (name in providers.PRESETS or any(p.name == name for p in listed)):
+        name, pattern = "nous", spec           # a bare pattern means Nous, as it always has
+    try:
+        conn = providers.build(providers.named(name, listed), only=[pattern])
+    except RuntimeError as e:
+        sys.exit(str(e))
     seats = conn.seats()
     if not seats:
-        sys.exit(f"no Nous model matches --narrator {spec!r}")
+        sys.exit(f"no {name} model matches --narrator {spec!r}")
     return ModelNarrator(conn, seats[0])
 
 
@@ -122,14 +154,14 @@ def cmd_open(args):
     print(f"invited {n} presences")
     st = room.state()
     if st.invitation is None:
-        room.invite_text(open(args.invitation).read())
+        room.invite_text(open(args.invitation, encoding="utf-8").read())
     else:
         print(f"invitation already recorded (event {st.invitation_event})")
     if args.faq:
         if room.set_faq(open(args.faq, encoding="utf-8").read()):
             print("standing answers (FAQ) recorded; shown with the invitation from now on")
     if args.documentation and st.documentation is None:
-        room.set_documentation(open(args.documentation).read())
+        room.set_documentation(open(args.documentation, encoding="utf-8").read())
     room.set_budget(args.budget)
     room.announce_narrator()
     room.announce_witnessing()
@@ -149,7 +181,7 @@ def cmd_open(args):
         print(f"{c1['question']} participant(s) asked a question. See `questions`, answer with `answer`, then re-run `open` to re-ask them.")
     st = room.state()
     if st.briefing is None:
-        room.brief(open(args.briefing).read(), source=args.briefing_source or "")
+        room.brief(open(args.briefing, encoding="utf-8").read(), source=args.briefing_source or "")
     else:
         print(f"briefing already recorded (event {st.briefing_event})")
         room.mark_briefed()
@@ -209,7 +241,7 @@ def cmd_close(args):
     room.alert = _print_alert
     print(f"seats bound to existing presences: {room.bind_seats()} (no one is invited by closing)")
     before = room.log.total_cost()
-    c = room.closing(open(args.note).read(), open(args.question).read())
+    c = room.closing(open(args.note, encoding="utf-8").read(), open(args.question, encoding="utf-8").read())
     print(f"closing: {c}   spent: ${room.log.total_cost() - before:.4f}")
 
 
@@ -290,7 +322,7 @@ def cmd_say(args):
     line = args.text if args.text is not None else sys.stdin.readline()
     if not line or not line.strip():
         sys.exit("nothing to say")
-    with open(args.inbox, "a") as f:
+    with open(args.inbox, "a", encoding="utf-8") as f:
         f.write(line.rstrip("\n") + "\n")
     print(f"said (queued for your next turn): {line.strip()!r}")
 
@@ -411,8 +443,10 @@ def cmd_map(args):
     if not args.no_story:
         disclosed = replay(log.iter()).narrator
         if disclosed and disclosed.get("kind") == "model" and disclosed.get("model"):
-            from . import nous
-            conn = nous.build(only=[re.escape(disclosed["model"]) + "$"])
+            from . import providers
+            listed = providers.load(args.providers) if getattr(args, "providers", None) else []
+            conn = providers.build(providers.named(disclosed.get("provider") or "nous", listed),
+                                   only=[re.escape(disclosed["model"]) + "$"])
             seats = conn.seats()
             if not seats:
                 sys.exit(f"the narrator the field was told of ({disclosed['model']}) is not on the roster; "
@@ -429,7 +463,8 @@ def cmd_map(args):
     page = render_html(d, told, title)
     out = args.out or f"records/map-{d['since']}-{d['upto']}.html"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    open(out, "w").write(page)
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(page)
     print(f"map written: {out}  (open in a browser; also served at /{os.path.basename(out)} while `serve` runs)")
 
 
@@ -528,7 +563,8 @@ def main(argv=None):
                     help="entries before the recent ones, shown as one line each in their author's own title (0 = none)")
     ap.add_argument("--narrator", default=None,
                     help="who writes tellings for people following at a slower pace: 'mechanical' (the software; free; "
-                         "nothing leaves the field) or a Nous model regex (a model reads each stretch; disclosed at entry)")
+                         "nothing leaves the field) or PROVIDER:REGEX, a model that reads each stretch (disclosed at entry). "
+                         "A bare REGEX means a Nous model")
     ap.add_argument("--tell-every", type=int, default=1, help="write a telling every this many rounds (with --narrator)")
     ap.add_argument("--human-every", type=float, default=300.0,
                     help="the people's clock's starting gap: seconds after one person's turn ends before they are asked again. Stands until a person sets the clock")
@@ -546,14 +582,20 @@ def main(argv=None):
     ap.add_argument("--same-tempo", action="store_true",
                     help="put people in the models' rounds (rounds then wait for them)")
     ap.add_argument("--mock", type=int, default=0)
-    ap.add_argument("--nous", action="store_true")
+    ap.add_argument("--provider", action="append", default=None,
+                    help="seat models from a provider: openrouter, nous, ollama, lmstudio (repeatable). "
+                         "Its key comes from its environment variable")
+    ap.add_argument("--providers", default=None,
+                    help="a JSON file of providers: presets with their own settings, or any compatible service "
+                         "(see hope/providers.py). Keys are named by environment variable, never written in it")
+    ap.add_argument("--nous", action="store_true", help="the same as --provider nous")
     ap.add_argument("--human", help='seat one human participant: "Name / hails from [/ people]"; answers gates and turns on stdin')
     ap.add_argument("--human-timeout", type=float, default=900.0,
                     help="the people's clock's starting window: seconds a person has to answer a turn; if it passes, nothing is written as theirs. Stands until a person sets the clock")
     ap.add_argument("--inbox", default=None, help="human seat reads actions from this file instead of the terminal; speak with `say` from anywhere")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only", action="append", default=None, help="regex on model id (repeatable)")
-    ap.add_argument("--price-ceiling", type=float, default=0.0, help="USD per million prompt tokens; --nous seats above it are not seated unless named by --allow")
+    ap.add_argument("--price-ceiling", type=float, default=0.0, help="USD per million prompt tokens; seats above it are not seated unless named by --allow")
     ap.add_argument("--allow", action="append", default=None, help="REGEX=TURNS: seat a model above the ceiling with a disclosed turn allowance (repeatable)")
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)

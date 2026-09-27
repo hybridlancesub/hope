@@ -2650,5 +2650,174 @@ class WitnessTest(unittest.TestCase):
         self.assertEqual(a.witness()["fingerprint"], EventLog(path).verify()["fingerprint"])
 
 
+class FakeProvider:
+    """A compatible service on this machine: a model list with prices, and chat completions that
+    answer the gates and then contribute. It keeps every Authorization header it was sent."""
+
+    MODELS = [
+        {"id": "deepseek/deepseek-v3", "name": "DeepSeek V3", "pricing": {"prompt": "0.000002", "completion": "0.000008"}},
+        {"id": "qwen/qwen3-8b", "name": "Qwen3 8B", "pricing": {"prompt": "0.000001", "completion": "0.000001"}},
+        {"id": "openrouter/auto", "name": "Auto Router", "pricing": {"prompt": "-1", "completion": "-1"}},
+        {"id": "some/embed-small", "name": "An embedding model"},
+    ]
+
+    def __init__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        fake = self
+        self.auth = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                fake.auth.append(self.headers.get("Authorization"))
+                self._send({"data": FakeProvider.MODELS})
+
+            def do_POST(self):
+                fake.auth.append(self.headers.get("Authorization"))
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                low = req["messages"][0]["content"].lower()
+                if "accept_invitation" in low:
+                    act = {"action": "accept_invitation"}
+                elif '"received"' in low:
+                    act = {"action": "received"}
+                elif "opt_in" in low:
+                    act = {"action": "opt_in"}
+                else:
+                    act = {"action": "contribute", "domain": "doors", "content": "Arrived through a provider."}
+                self._send({"choices": [{"message": {"content": json.dumps(act)}, "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 1000, "completion_tokens": 100}})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class ProviderTest(unittest.TestCase):
+    """Any compatible service can seat models, limited only by the gates. Keys stay in the
+    environment, prices reach the runway, and models on the operator's own machine are free."""
+
+    KEY = "sk-test-NEVER-WRITTEN-4242"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.fake = FakeProvider()
+        os.environ.pop("HOPE_TEST_KEY", None)
+
+    def tearDown(self):
+        self.fake.close()
+        os.environ.pop("HOPE_TEST_KEY", None)
+
+    def provider(self, **kw):
+        from hope.providers import Provider
+        return Provider(**{"name": "test", "label": "Test Provider", "base_url": self.fake.url,
+                           "key_env": "HOPE_TEST_KEY", "id_prefix": "test__", **kw})
+
+    def field(self, conn, db="p.db"):
+        room = Room(EventLog(os.path.join(self.tmp, db)), [conn], alert_fn=lambda m: None, parallel=2)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        room.round()
+        return room
+
+    def test_a_key_comes_from_its_environment_variable_and_never_reaches_the_transcript(self):
+        from hope import providers
+        os.environ["HOPE_TEST_KEY"] = self.KEY
+        room = self.field(providers.build(self.provider()))
+        self.assertTrue(self.fake.auth and all(a == f"Bearer {self.KEY}" for a in self.fake.auth))
+        room.log.conn.execute("pragma wal_checkpoint(TRUNCATE)")
+        for name in os.listdir(self.tmp):
+            with open(os.path.join(self.tmp, name), "rb") as f:
+                self.assertNotIn(self.KEY.encode(), f.read(), name)
+
+    def test_without_its_key_a_provider_names_the_variable_to_set(self):
+        from hope import providers
+        with self.assertRaises(RuntimeError) as e:
+            providers.build(self.provider())
+        self.assertIn("HOPE_TEST_KEY", str(e.exception))
+        self.assertEqual(self.fake.auth, [], "nothing was sent without a key")
+
+    def test_a_providers_listed_prices_reach_the_runway(self):
+        from hope import providers
+        os.environ["HOPE_TEST_KEY"] = self.KEY
+        conn = providers.build(self.provider(), only=["deepseek"])
+        self.assertEqual([s.model for s in conn.seats()], ["deepseek/deepseek-v3"])
+        room = self.field(conn)
+        calls = room.log.conn.execute("select count(*) from ledger").fetchone()[0]
+        self.assertGreater(calls, 0)
+        self.assertAlmostEqual(room.log.total_cost(), calls * (1000 * 0.000002 + 100 * 0.000008))
+
+    def test_a_stated_price_is_used_where_a_provider_lists_none(self):
+        from hope import providers
+        seats = providers.roster([{"id": "house/model"}], self.provider(price={"prompt": 3.0, "completion": 15.0}))
+        self.assertEqual(seats[0].pricing, {"prompt": 3.0 / 1e6, "completion": 15.0 / 1e6})
+
+    def test_models_on_the_operators_own_machine_are_free(self):
+        from hope import providers
+        conn = providers.build(self.provider(key_env=None, local=True, label="the operator's own machine (Ollama)"))
+        self.assertTrue(conn.seats())
+        for s in conn.seats():
+            self.assertEqual(s.pricing, {"prompt": 0.0, "completion": 0.0})
+            self.assertIn("on the operator's own machine", s.hails_from)
+        room = self.field(conn)
+        self.assertEqual(room.log.total_cost(), 0.0)
+
+    def test_a_router_with_no_fixed_price_and_non_chat_models_are_not_seated(self):
+        from hope import providers
+        models = [s.model for s in providers.roster(FakeProvider.MODELS, self.provider())]
+        self.assertEqual(models, ["deepseek/deepseek-v3", "qwen/qwen3-8b"])
+
+    def test_nous_seats_keep_their_ids_and_the_same_model_elsewhere_is_another_seat(self):
+        from hope import nous, providers
+        m = [{"id": "deepseek/deepseek-v3", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}]
+        (n,) = nous.roster(m)
+        (o,) = providers.roster(m, providers.PRESETS["openrouter"])
+        self.assertEqual(n.id, "deepseek__deepseek-v3")
+        self.assertEqual(n.hails_from, "DeepSeek via Nous Research inference")
+        self.assertEqual(o.id, "openrouter__deepseek__deepseek-v3")
+        self.assertEqual(o.hails_from, "DeepSeek via OpenRouter")
+        self.assertNotEqual(n.id, o.id)
+
+    def test_a_providers_file_never_holds_a_key(self):
+        from hope import providers
+        path = os.path.join(self.tmp, "providers.json")
+        with open(path, "w") as f:
+            json.dump({"providers": [{"name": "mine", "base_url": "https://example.org/v1", "api_key": "x"}]}, f)
+        with self.assertRaises(ValueError) as e:
+            providers.load(path)
+        self.assertIn("key_env", str(e.exception))
+        with open(path, "w") as f:
+            json.dump({"providers": [{"name": "openrouter", "only": ["deepseek/"]},
+                                     {"name": "My Service", "base_url": "https://example.org/v1", "key_env": "MY_KEY"},
+                                     {"name": "ollama", "base_url": "http://192.168.1.20:11434/v1"}]}, f)
+        a, b, c = providers.load(path)
+        self.assertEqual((a.base_url, a.key_env, a.only), ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", ["deepseek/"]))
+        self.assertEqual((b.key_env, b.id_prefix), ("MY_KEY", "my-service__"))
+        self.assertEqual(c.label, "a server the operator chose (Ollama)",
+                         "a local preset at another address is not called the operator's own machine")
+        self.assertEqual(providers.PRESETS["openrouter"].only, [], "a file's settings never change the preset")
+
+    def test_the_command_line_names_providers_and_nous_still_works(self):
+        import argparse
+        from hope.__main__ import _providers
+        got = _providers(argparse.Namespace(provider=["openrouter", "ollama"], providers=None, nous=True))
+        self.assertEqual([p.name for p in got], ["openrouter", "ollama", "nous"])
+        self.assertTrue(got[1].local)
+
+
 if __name__ == "__main__":
     unittest.main()

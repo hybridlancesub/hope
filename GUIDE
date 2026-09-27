@@ -644,8 +644,9 @@ Atlas. Section 26 (Endings: "encourage communication around completion"); Sectio
 
 11. Funding, and how a field runs out
 ------------------------------------
-What happens. The operator states a budget. (The Nous API does not let the field read the
-account's balance, so the budget is what the operator says.) After each round, the engine
+What happens. The operator states a budget. (No provider lets the field read the account's
+balance, so the budget is what the operator says. Spend from every provider counts against
+it, at the prices the provider lists; models on the operator's own machine cost nothing.) After each round, the engine
 estimates what the next round will cost, from the dearest of the last three rounds plus 15%.
 
     a few rounds left     the field is told, at the very top of every view:
@@ -859,7 +860,9 @@ PART FOUR: WHERE THINGS LIVE
     hope/human.py          a person's seat in a terminal; its reply format
     hope/rendezvous.py     seats reached over the network
     hope/connector.py      how the field talks to model providers (and free mock seats)
-    hope/nous.py           Nous Research, one provider
+    hope/providers.py      which providers: OpenRouter, Nous, models on the operator's own
+                           machine, or any compatible service; keys stay in the environment
+    hope/nous.py           Nous Research, one provider, with its own way to credentials
     hope/prior.py          carrying a closed field's shared entries into a new one
     hope/narrator.py       tellings: the model narrator and the software's own plain account
     hope/map.py            retelling a sitting: the software's own account, or the narrator the

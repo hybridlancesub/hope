@@ -85,6 +85,8 @@ class ModelNarrator:
     def __init__(self, connector, seat):
         self.connector, self.seat = connector, seat
         self.name, self.model = seat.name, seat.model
+        self.provider = getattr(connector, "provider_name", None)       # named at entry, with the model
+        self.through = getattr(connector, "provider_label", None) or self.provider
 
     def tell(self, d: Dict, log, upto: int) -> Dict:
         """One model call, plus at most one correction pass. Both calls are counted."""

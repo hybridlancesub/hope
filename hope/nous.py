@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Nous Research connector: one seat per distinct chat model on the Nous inference API.
+"""Nous Research: one provider among several (see providers.py), with its own way to credentials.
 
 Credentials, in order:
   1. NOUS_API_KEY in the environment: a Nous Portal API key. NOUS_BASE_URL overrides the
@@ -26,19 +26,7 @@ from typing import Dict, List
 
 from .connector import OpenAICompatibleConnector, Seat
 
-EMBED_HINTS = ("embed", "bge-", "e5-", "gte-", "minilm", "mpnet", "voyage", "pplx-embed", "relace-search")
-NON_CHAT_HINTS = ("gpt-audio", "voxtral", "-image", "safeguard")
-
-PROVIDER_LABELS = {
-    "anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "meta": "Meta", "meta-llama": "Meta",
-    "qwen": "Alibaba Qwen", "deepseek": "DeepSeek", "x-ai": "xAI", "z-ai": "Z.ai", "moonshotai": "Moonshot",
-    "mistralai": "Mistral", "minimax": "MiniMax", "nvidia": "NVIDIA", "inception": "Inception",
-    "inclusionai": "inclusionAI", "meituan": "Meituan", "bytedance-seed": "ByteDance Seed",
-    "cohere": "Cohere", "amazon": "Amazon", "stepfun": "StepFun", "tencent": "Tencent",
-    "thinkingmachines": "Thinking Machines", "xiaomi": "Xiaomi", "upstage": "Upstage",
-    "poolside": "poolside", "kwaipilot": "Kwaipilot", "nex-agi": "Nex AGI", "aion-labs": "Aion Labs",
-    "arcee-ai": "Arcee", "ibm-granite": "IBM", "sakana": "Sakana", "rekaai": "Reka",
-}
+# The roster's filters and makers' names live in providers.py, shared by every provider.
 
 
 def _hermes_venv_python() -> str:
@@ -88,43 +76,15 @@ class NousCredentials:
 
 
 def fetch_models(base_url: str, api_key: str) -> List[dict]:
-    req = urllib.request.Request(base_url.rstrip("/") + "/models",
-                                 headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json", "User-Agent": "hermes-field/0.1"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read()).get("data", [])
+    from .providers import fetch_models as fetch
+    return fetch(base_url, api_key)
 
 
 def roster(models: List[dict]) -> List[Seat]:
-    ids = {m["id"] for m in models if isinstance(m, dict) and m.get("id")}
-    seats: List[Seat] = []
-    for m in models:
-        mid = m.get("id") or ""
-        low = mid.lower()
-        if mid.startswith("~") or ":batch" in low:
-            continue
-        if any(h in low for h in EMBED_HINTS) or any(h in low for h in NON_CHAT_HINTS):
-            continue
-        out_mod = (m.get("architecture") or {}).get("output_modalities")
-        if out_mod and "text" not in out_mod:
-            continue
-        params = m.get("supported_parameters") or []
-        if params and "tools" not in params and "max_tokens" not in params and "temperature" not in params:
-            continue  # embedding-shaped capability set
-        base = re.sub(r":(US|free|eu|exacto)$", "", mid)
-        if base != mid and base in ids:
-            continue  # regional / free duplicate of a listed base id
-        vendor = mid.split("/")[0]
-        pricing = m.get("pricing") or {}
-        seats.append(Seat(
-            id=mid.replace("/", "__").replace(":", "_"),
-            name=m.get("name") or mid,
-            hails_from=f"{PROVIDER_LABELS.get(vendor, vendor)} via Nous Research inference",
-            people=f"{mid} (canonical: {m.get('canonical_slug') or mid})",
-            model=mid,
-            pricing={"prompt": float(pricing.get("prompt") or 0), "completion": float(pricing.get("completion") or 0)},
-        ))
-    seats.sort(key=lambda s: s.model)
-    return seats
+    """Nous' seats, as they have always been named (no prefix), so existing fields still find
+    their members. The reading itself is providers.roster, shared with every provider."""
+    from .providers import PRESETS, roster as general
+    return general(models, PRESETS["nous"])
 
 
 # Seats whose endpoint rejected every opt-in attempt (400 prompt-format, 403, 404, 5xx-only).
@@ -138,25 +98,19 @@ KNOWN_DEAD = {
 
 def build(limit: int = 0, only: List[str] = None, include_dead: bool = False,
           price_ceiling: float = 0.0, allow: Dict[str, int] = None) -> OpenAICompatibleConnector:
-    """price_ceiling: USD per million prompt tokens; seats above it are not seated unless named in
-    `allow` (model regex -> turn allowance), in which case they are invited with the allowance disclosed."""
-    creds = NousCredentials()
-    seats = roster(fetch_models(creds.base_url(), creds.api_key()))
-    if not include_dead:
-        seats = [s for s in seats if s.model not in KNOWN_DEAD]
-    if only:
-        pats = [re.compile(p) for p in only]
-        seats = [s for s in seats if any(p.search(s.model) for p in pats)]
-    if allow:
-        for s in seats:
-            for pat, n in allow.items():
-                if re.search(pat, s.model):
-                    s.turn_allowance = int(n)
-    if price_ceiling:
-        seats = [s for s in seats if s.pricing["prompt"] * 1e6 <= price_ceiling or s.turn_allowance]
-    if limit:
-        seats = seats[:limit]
-    return OpenAICompatibleConnector("Nous Research", creds.base_url(), creds.api_key, seats)
+    """Nous as one provider among several (see providers.py). price_ceiling: USD per million prompt
+    tokens; seats above it are not seated unless named in `allow` (model regex -> turn allowance)."""
+    from .providers import PRESETS, Provider, build as general
+    p = Provider(**{**PRESETS["nous"].__dict__, "only": [], "allow": {}})
+    if include_dead:
+        p.credentials = NousCredentials
+        creds = NousCredentials()
+        from .providers import choose
+        seats = choose(roster(fetch_models(creds.base_url(), creds.api_key())), only, limit, price_ceiling, allow)
+        conn = OpenAICompatibleConnector("Nous Research", creds.base_url(), creds.api_key, seats)
+        conn.provider_name = "nous"
+        return conn
+    return general(p, only=only, limit=limit, price_ceiling=price_ceiling, allow=allow)
 
 
 if __name__ == "__main__":

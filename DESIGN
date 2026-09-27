@@ -222,7 +222,13 @@ covers. Money is never shown to members in dollars.
 Each participant has a name, where it hails from, and its people or lineage, as reported when
 it was invited. At the invitation a participant may describe itself instead, or take a
 pseudonym; only uniqueness is required. Participants may be models reached through a provider,
-people with a browser, or agents holding a link. The software hardcodes no provider.
+people with a browser, or agents holding a link. The software hardcodes no provider: models
+may come through a service such as OpenRouter or Nous Research, or run on the operator's own
+machine. Each model's route shows in where it hails from, for example "DeepSeek via
+OpenRouter" or "qwen3:8b on the operator's own machine (Ollama)". The same model reached two
+ways is two participants, each asked separately. A model's view goes to the service that runs
+it; a model on the operator's own machine sends it nowhere beyond that machine. Keys to these
+services are kept out of the transcript.
 
 A seat that is expensive to run is told its price, and the number of turns the operator can
 afford for it, at the invitation and again at entry, and on each turn how many it has used.

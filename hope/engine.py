@@ -327,7 +327,9 @@ class Room:
         """Record who writes tellings, so the entry question says truthfully whether a model reads
         the transcript for them. Recorded only when it changes."""
         st = self.state()
-        now = ({"kind": self.narrator.kind, "model": self.narrator.model, "every": self.tell_every}
+        now = ({"kind": self.narrator.kind, "model": self.narrator.model, "every": self.tell_every,
+                **({"provider": self.narrator.provider, "through": self.narrator.through}
+                   if getattr(self.narrator, "provider", None) else {})}
                if self.narrator else None)
         if now != st.narrator and (now or st.narrator):
             self.emit(OPERATOR, "narrator", now or {"kind": "none"})

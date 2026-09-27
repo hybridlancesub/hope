@@ -142,7 +142,8 @@ def narrator_fact(narrator: Optional[dict]) -> str:
     every = narrator.get("every") or 1
     when = "every round" if every == 1 else f"every {every} rounds"
     if narrator.get("kind") == "model":
-        return (f"About tellings: {when}, a narrator model that is not a participant ({narrator.get('model')}) reads what the "
+        via = f", through {narrator.get('through') or narrator['provider']}" if narrator.get("provider") else ""
+        return (f"About tellings: {when}, a narrator model that is not a participant ({narrator.get('model')}{via}) reads what the "
                 f"field said since the last telling and writes a short account of it for the people who follow the field at a "
                 f"slower pace. Your words go to the service that runs that model. Its tellings are kept in the transcript.")
     return (f"About tellings: {when}, the software writes a plain account of what the field said since the last one, for "

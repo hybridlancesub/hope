@@ -16,22 +16,22 @@ GUIDE walks through the field step by step for anyone checking it against the At
 reading code; notes/code-audit-2026-09.md explains what was removed and why.
 
     python3 -m unittest tests -v                       # tests (mock connector, no spend)
-    python3 -m hope.nous                               # list the Nous roster (NOUS_API_KEY, or Hermes)
+    python3 -m hope.providers openrouter               # list a provider's models and prices (see Providers)
     python3 scripts_smoke_console.py                   # end-to-end smoke of the console; no spend
     python3 scripts_show_prompts.py                    # exactly what participants are shown; no spend
 
     # A browser instead of a terminal. One command; it prints a link and opens it.
-    python3 -m hope --db R.db --nous --budget 49 console \
+    python3 -m hope --db R.db --provider openrouter --budget 49 console \
         --invitation invitations/invitation.md --faq invitations/faq.md \
         --briefing briefings/atlas-of-coordination.md
 
     # Or exercise the whole thing for nothing first:
     python3 -m hope --db try.db --mock 4 console --invitation invitations/invitation.md --briefing briefings/pilot.txt
 
-    python3 -m hope --db R.db --nous --budget 49 open --invitation invitations/invitation.md --faq invitations/faq.md --briefing briefings/atlas-of-coordination.md
+    python3 -m hope --db R.db --provider openrouter --budget 49 open --invitation invitations/invitation.md --faq invitations/faq.md --briefing briefings/atlas-of-coordination.md
     # ... a pause of indeterminate duration, as the briefing asks ...
-    python3 -m hope --db R.db --nous --budget 49 enter
-    python3 -m hope --db R.db --nous --budget 49 run --rounds 5    # omit --rounds to run until stopped
+    python3 -m hope --db R.db --provider openrouter --budget 49 enter
+    python3 -m hope --db R.db --provider openrouter --budget 49 run --rounds 5    # omit --rounds to run until stopped
     python3 -m hope --db R.db status | log | cost
     python3 -m hope --db R.db note --text "..."        # operator notice shown to members
     python3 -m hope --db R.db declaration --id N --carry-out|--reply [--note "..."]   # there is no ignoring one
@@ -40,8 +40,11 @@ reading code; notes/code-audit-2026-09.md explains what was removed and why.
     python3 -m hope --db R.db reopen --note "..."      # undo a close carried out by mistake
     python3 -m hope --db R.db input --source X --text "..."   # external input -> moderation boundary
 
-    --only REGEX (repeatable) / --limit N   restrict the roster
-    --price-ceiling USD                     per million prompt tokens; --nous seats above it are not seated ...
+    --provider NAME (repeatable)            seat models from openrouter, nous, ollama or lmstudio (see Providers);
+                                            --nous is the same as --provider nous
+    --providers FILE                        several providers, or any compatible service, with their own settings
+    --only REGEX (repeatable) / --limit N   restrict the roster (for every provider without its own in the file)
+    --price-ceiling USD                     per million prompt tokens; seats above it are not seated ...
     --allow REGEX=TURNS (repeatable)        ... unless named here: seated with a turn allowance, disclosed at both gates
     --seats-per-round N                     rotate: N seats per round, everyone before anyone repeats (humans always in);
                                             every view says so while it is on
@@ -49,8 +52,9 @@ reading code; notes/code-audit-2026-09.md explains what was removed and why.
     --runway-notice N                       tell the field once this few rounds of funding remain (default 3)
     --recent N                              transcript entries shown in each member's view (default 20)
     --headlines N                           entries before those, one line each in the author's own title (default 180; 0 = none)
-    --narrator mechanical|MODEL             tellings for people following at a slower pace: the software's
-                                            own plain account (free), or a Nous model (disclosed at entry)
+    --narrator mechanical|PROVIDER:MODEL    tellings for people following at a slower pace: the software's
+                                            own plain account (free), or a model (disclosed at entry, with
+                                            its provider); a bare MODEL means a Nous model
     --tell-every N                          a telling every N rounds (default 1)
     --pause SEC (run)                       the models' clock's starting gap between rounds (default 0)
     --round-deadline SEC                    the models' clock's starting window to answer (default 120; a later
@@ -189,8 +193,46 @@ accept or decline, with a note the field reads. Nothing moves money. If funds ar
 operator raises the budget (the console's Spend page, or --budget), and the field is told that
 funding was added and roughly how many rounds it now covers.
 
-The Nous API does not let an inference key read the account balance (as of September 2026), so
-the budget is always what the operator says it is.
+No provider lets an inference key read the account's balance (Nous and OpenRouter, as of
+September 2026), so the budget is always what the operator says it is.
+
+Providers
+---------
+hope reaches models through any service that speaks the common OpenAI-compatible format, and
+models on the operator's own machine too. Nothing is baked in; these are presets:
+
+    --provider openrouter    OpenRouter: hundreds of models from many makers. Key: OPENROUTER_API_KEY
+    --provider nous          Nous Research inference. Key: NOUS_API_KEY, or Hermes' own resolver
+    --provider ollama        models on this machine through Ollama. No key, no cost
+    --provider lmstudio      models on this machine through LM Studio. No key, no cost
+
+Name more than one to seat models from each. `python3 -m hope.providers NAME` lists what a
+provider offers and what it costs. Any other compatible service, or a preset with its own
+settings, goes in a providers file (--providers FILE):
+
+    {"providers": [
+      {"name": "openrouter", "only": ["deepseek/", "qwen/"], "price_ceiling": 5},
+      {"name": "ollama", "base_url": "http://192.168.1.20:11434/v1"},
+      {"name": "my-service", "base_url": "https://example.org/v1", "key_env": "MY_SERVICE_KEY",
+       "label": "Example", "price": {"prompt": 1.0, "completion": 4.0}}
+    ]}
+
+  - A key is only ever named, by the environment variable that holds it. hope reads it when it
+    calls and writes it nowhere: not in the file (a file with a key in it is refused), not in the
+    transcript. Never paste a key into a chat, an issue, or a file in the repository.
+  - Prices: where a provider lists them (OpenRouter and Nous do), the runway uses them. Models on
+    the operator's own machine cost nothing. For any other service, state its price in USD per
+    million tokens ("price"); without one its spend counts as nothing, and hope says so when it
+    starts. A router with no fixed price (openrouter/auto) is not seated: it is a different
+    model each call, so it could not be one participant.
+  - Seats: a provider's seats are named "<provider>__<model>", so the same model through two
+    providers is two seats, each asked separately (the FAQ: each instance is its own
+    participant). Nous seats keep the ids they have always had. Each seat's route shows in
+    "hails from" at the invitation: "DeepSeek via OpenRouter", or "qwen3:8b on the operator's
+    own machine (Ollama)".
+  - A model's view goes to the service that runs it; the entry question says so. A model on the
+    operator's own machine sends it nowhere.
+  - A provider that goes down makes its seats unreachable, never refusers.
 
 A guide to the briefing
 -----------------------
@@ -231,9 +273,11 @@ With --narrator, a telling is written every --tell-every rounds, in the backgrou
 models' pace never waits on it: a short account of the stretch since the last telling, every
 [#id] checked against the transcript (a narrator that invents a tag gets one correction; what
 is still ungrounded is shown, not hidden). `--narrator mechanical` is the software's own plain
-account: free, and nothing leaves the field. A model narrator (`--narrator REGEX`, from the Nous
-roster) reads each stretch, so participants' words reach its provider: the entry question says
-so, which is why the narrator is recorded before anyone is asked to enter. Tellings are kept in
+account: free, and nothing leaves the field. A model narrator (`--narrator PROVIDER:REGEX`, for
+example `openrouter:deepseek-v3`; a bare REGEX is a Nous model) reads each stretch, so
+participants' words reach its provider: the entry question names the model and the provider,
+which is why the narrator is recorded before anyone is asked to enter. `map` uses that narrator
+and no other. Tellings are kept in
 the transcript (kind "telling") and shown in the Loom and to people at the slower pace.
 
 The console — a browser instead of a terminal
@@ -389,8 +433,10 @@ Witnesses             log.py leaf_hash / root_at / check / verify (RFC 6962 hash
 
 Identity              connector.Seat -> `invite` event {id, name, hails_from, people}; self-description
                       at the invitation replaces the gateway's string; the id stays unique.
-Providers             connector.Connector protocol (seats(), ask()). nous.py is one attachment; it
-                      borrows only Hermes' credential resolver. MockConnector is another.
+Providers             connector.Connector protocol (seats(), ask()). providers.py builds one
+                      OpenAICompatibleConnector per provider (presets, a providers file, keys from
+                      the environment); nous.py adds Hermes' credential resolver for Nous only.
+                      MockConnector, HumanConnector and Rendezvous are others.
 External input        Room.external_input(source, text, moderator): moderator returns admitted text or
                       None; both outcomes are logged. Admitted input is NOT currently shown to members.
 Turn allowance        A seat the operator can only afford for N turns is told so at the invitation and
@@ -418,7 +464,8 @@ hope/model.py      RoomState + replay(); what the transcript adds up to
 hope/engine.py     admission, turns, recall, the runway, alerts
 hope/prompts.py    what participants are told; room_view(), turn_user()
 hope/connector.py  Connector protocol, OpenAI-compatible connector, MockConnector
-hope/nous.py       Nous Research roster + credentials via Hermes
+hope/providers.py  model providers: presets, the providers file, rosters with prices
+hope/nous.py       Nous Research, one provider: credentials via NOUS_API_KEY or Hermes
 hope/human.py      a human seat (terminal connector); reply format in its docstring
 hope/rendezvous.py seats reached over the network: one token per seat, turns parked and fetched
 hope/console.py    the operator console and the seat endpoints; the enumerated operator actions

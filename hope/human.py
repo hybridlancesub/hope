@@ -136,7 +136,7 @@ class HumanConnector:
     def _read_inbox(self, timeout: Optional[float]) -> Optional[str]:
         deadline = None if timeout is None else time.time() + timeout
         while True:
-            with open(self.inbox, "r") as f:
+            with open(self.inbox, "r", encoding="utf-8") as f:
                 f.seek(self._inbox_pos)
                 line = f.readline()
                 if line:
