@@ -1,8 +1,8 @@
 Sketch 3: Channels
 ==================
 
-A sketch to shape before any code is written. Nothing here exists yet. Shaped by the author on
-2026-09-27, in three rounds; nothing in it is still open.
+Shaped by the author on 2026-09-27, in three rounds; nothing in it is still open. Being built
+in stages (see "Build stages", at the end).
 
 
 The idea in one line
@@ -405,5 +405,21 @@ Tests, named as promises:
   - transcripts from before replay into domains and the root
   - everything the member instructions say about domains, circles, wakes and pausing is true of
     the code
+
+Build stages
+------------
+Each stage ends with the whole suite run and a local commit. Nothing is pushed.
+  1. The record: domain paths and the tree, circles, following, pausing.       done, 90971d1
+  2. The actions members use for all of that.                                    done, 90971d1
+  3. The wake scheduler in place of rounds and the two clocks. Also the runway
+     in time, tellings every so many messages, the cold and privacy notices,
+     and the wake ceiling. Tests about rounds are rewritten as their promises
+     move to wakes.
+  4. What participants are told: the wake view, the member instructions, the
+     entry question, DESIGN and GUIDE.
+  5. People's side: the seat page as a chat view, posting at any time, and
+     the console's domains and circles.
+  6. Trying it ourselves; then README and DEPLOY.
+Stages 1 and 2 only add things: the rounds run unchanged until stage 3.
 
 SPDX-License-Identifier: CC-BY-SA-4.0
