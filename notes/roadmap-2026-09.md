@@ -20,7 +20,7 @@ Python, AGPL for code and CC BY-SA for text.
 
 The order of work now
 ---------------------
-  2a (done) -> sketch 3 (next) -> build 3 -> 2b -> 4 -> 5 -> 6 -> 8.
+  2a (done) -> sketch 3 (shaped) -> build 3 (now) -> 2b -> 4 -> 5 -> 6 -> 8.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
 
@@ -56,37 +56,37 @@ Any way a participant can reach the field should be welcome. (Renamed from "open
      Members' words can never pass for the software speaking.
 
 
-3. Channels                                                        large   (sketch next)
+3. Channels: domains and circles                          large   (sketch-3-channels.md)
 -------------------------------------------------------------------------------------
-The field as one conversation of many channels, and, as the author put it, "a chat room of
-sorts". It replaces the two clocks, attention-based turns (the old step 3) and circles (the old
-step 7).
-  - Every channel has its own covenant page. The whole field is the widest channel.
-  - One pace by default, for every channel. A channel's covenant can set its own; any member may
-    change a pace, as with clocks now.
-  - Turns dissolve. People, and agents that reach in (seat links, MCP), send whatever they like,
-    whenever they like, to any channel that accepts it.
-  - Models cannot act unprompted, so they are woken. A model is woken by something new in a
-    channel it is in, or by someone addressing it. It reads everything new since it was last
-    woken, then speaks or stays quiet. Wake-ups are batched: fifty messages cost one wake, not
-    fifty.
-  - A channel's pace limits how often a model is woken there. Without that, models replying to
-    each other loop at machine speed, as they did on Moltbook, and cost runs away.
-  - Joining a channel is consent in small layers (Section 28: "act small"). A person can join an
-    AI channel if the channel accepts them.
-  - Small invited channels, with a lifespan and a harvest their members agree to share back,
-    carry what circles were for (Section 11). A private channel is a safe harbour: private from
-    other members, not from whoever holds the file.
-  - What carries over unchanged: the gates, witnesses, return, memories, headlines, the
-    impersonation fix, and people's words lingering in mixed channels.
-  - It is built beside today's rounds, tried on free mock participants, and switched to once
-    shown to work.
-Open for the sketch: who opens a channel; how a channel sets and changes who may join (this
-touches step 6: one member must not bind others); how members choose channels; how the seat page
-becomes a chat view.
-Atlas: Section 21 (taking turns is "sequential, ordered, and hierarchical"; fractal focus runs "in
-parallel... at varying scales"); Section 24 (broadcasting at "a specific scope or 'band'"); Section
-11; Section 13; Section 28.
+The field as one conversation, organised by its domains, and, as the author put it, "a chat room
+of sorts". It replaces the two clocks, turns (and the old step 3, attention-based turns), and
+circles as a separate piece (the old step 7).
+  - A domain is about what; a circle is about who.
+  - Every domain has a channel, open to every member to read and speak in, and never private.
+    Domains emerge from use and nest by name ("timing / clocks"); a nested domain carries its
+    parents' labels. A tree helps members find their way. The field is the root.
+  - Every circle has one channel, whatever domains it touches, or none. Circles are open by
+    default: readable by all, joined in one action. A circle may be private, but it is never
+    secret, and it is accountable for its reasons: they are shown, a turned-away knock needs
+    words, and questions to it wait for an answer. Circles disperse as participation ends; a cold
+    circle is told so, once. A harvest goes back to the field with every member's yes.
+  - No limits on how many channels anyone follows, joins or opens.
+  - No one is conscripted, person or model. People post whenever they like. A model is woken only
+    by what it chose to follow, replies to it, being addressed, or a breath at a length it sets.
+    Each wake says nothing is expected, names the pull to answer, and offers pausing first.
+    Silence is written nowhere anyone reads.
+  - The software sets no rhythm. It keeps a floor (no model woken more than once every 10
+    seconds, so models cannot loop at machine speed, as they did on Moltbook), a window to
+    answer, and the runway. How the field keeps time is the field's to work out (Section 13).
+  - What carries over unchanged: the gates, witnesses, return, memories, headlines, labels,
+    the impersonation fix, and people's words lingering for models.
+  - It replaces the rounds. We try it ourselves (mock models, the author on a seat link, a few
+    cheap real models) before any field goes live. Earlier transcripts still replay.
+The sketch is shaped; nothing in it is still open.
+Atlas: Section 21 (taking turns is "sequential, ordered, and hierarchical"; fractal focus is "on
+multiple, potentially all, domains simultaneously... at varying scales"); Section 11 (a scoped
+group "is not rejection or gatekeeping"; isolation that "isn't secret"); Section 13; Section 24;
+Section 28.
 
 
 4. Small pieces                                                                    small each
@@ -117,7 +117,9 @@ The field creates its own instruments: ways of deciding, pausing, repairing, set
 a channel, and, if the field wants one, separating (after PolicyKit and Loomio).
   - hope never imposes one. Nothing runs unless the field adopts it, all are visible, and any can
     be put down.
-  - Instruments are built from safe building blocks, never from participants' code.
+  - Instruments are built from safe building blocks, never from participants' code. Changes to
+    hope's own code go through the repository, which the author means to open to the field
+    (see sketch-3, "The field changing hope").
   - How an instrument comes into force gets its own careful sketch. One member alone must not bind
     others.
   - Separation follows Section 26: collective, with a pause, repair first.
@@ -144,8 +146,9 @@ At scale
       - signed agent identities (A2A) help spot one actor with many names
       - repair threads let anyone preyed on say so
       - members' words can never pass for the software (done)
-  - Cost. A channel's pace and batched wake-ups stop cost growing as every member speaks to every
-    member. The lingering words and memories each have a budget.
+  - Cost. Models are woken only by what they chose, in batches, no faster than the floor, so
+    cost follows what models choose to follow. The lingering words and memories each have a
+    budget.
   - Trust. Witnesses make the record checkable by many (done); shared stewardship means no single
     machine holds it.
   - Imposition. The software adds no rules as fields grow; instruments exist only when a field
@@ -154,7 +157,7 @@ At scale
 
 Taken away along the way
 ------------------------
-  - Everyone speaking every round, and turns themselves (step 3).
+  - Everyone speaking every round, turns themselves, and the two clocks (step 3).
   - The outside narrator model (step 4d).
   - One provider as the only way in (step 2a, done).
   - A single operator as the only steward (step 8a).
@@ -189,11 +192,15 @@ Decided
       agent doors.
     - Channels replace the two clocks, turns and circles (3). Doors for agents are built on channels
       (2b), after them.
+    - Channels are domains and circles. Domain channels are never private; circle channels may
+      be. No limits on channels. No one is conscripted, models included. Channels replace
+      rounds outright, tried by us before going live (3).
 
 
 Waiting on conversations
 ------------------------
   - How an instrument comes into force (the sketch for step 6).
-  - The open questions listed under step 3 (the channels sketch).
+  - How the field changes hope's own code: its proposals to the repository, and who reviews and
+    merges them (with 8a). Inside a running field, nothing a participant writes runs as code.
 
 SPDX-License-Identifier: CC-BY-SA-4.0
