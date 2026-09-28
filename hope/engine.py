@@ -1,21 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The field engine: the consent gates, the two tempos of turns, tellings, and the funding runway.
+"""The field engine: the consent gates, wakes, tellings, and the funding runway.
 
 Everything the engine does is an event in the transcript; the engine holds no private state
-that matters. Participants act by returning one JSON action per turn; the engine records it
-(or records why it could not) -- attribution either way.
+that matters. Participants act by returning actions; the engine records each (or records why it
+could not) -- attribution either way.
 
 What the engine does not do: count votes, apply thresholds, halt, restore, or score the field's
 agreement. Those were procedures no participant consented to. The field decides how it decides,
 and can write that on its covenant page.
 
-Two clocks. The models' clock: rounds, each beginning `between` seconds after the last ended, and
-a `window` for each model's answer (a later answer is still applied when it arrives). The
-people's clock: each person, or agent holding a link, is asked `between` seconds after their last
-turn ended and has a `window` to answer, each turn opening with an account of what happened since
-their last; a round never waits for them. The members who keep time by a clock set it (the
-`clock` action), within model.CLOCK_LIMITS; until one does, the operator's starting setting
-stands. (A field with no models has one tempo, and people take part in rounds.)
+No one takes turns (notes/sketch-3-channels.md). People post whenever they like (`post`). Models
+cannot act on their own, so the software wakes them, and only for what each chose: new words in
+the domains and circles it follows or has written in, a reply to it, being named, something in a
+circle waiting for its yes, or a breath at a length it set. Wakes are batched: fifty new entries
+are one wake. A wake says nothing is expected, and saying nothing writes nothing. The software
+sets no rhythm; it holds a floor (no model woken more often than model.FLOOR, so models cannot
+loop at machine speed), a window for an answer (a later answer is still applied), and the runway.
 """
 from __future__ import annotations
 
@@ -33,20 +33,20 @@ from .human import visible_text
 from .log import EventLog
 from .map import digest
 from .narrator import mechanical_story
-from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CLOCK_LIMITS, CLOCKS, CONTRIBUTION_KINDS,
-                    COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, REST_LIMIT, STATEMENT_LIMIT, RoomState, decided, replay)
-from .model import QUIET_HOURS
+from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CONTRIBUTION_KINDS,
+                    COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, STATEMENT_LIMIT, RoomState, decided, replay)
+from .model import FLOOR, PRIVACY_EVERY, QUIET_HOURS, WAKE_ACTIONS
 
 OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
 NARRATOR = "narrator"       # whoever writes tellings; never a participant
-HUMAN_TEMPO = ("human", "remote")   # seats at the slower tempo: a person at a terminal, or anyone holding a link
+HUMAN_TEMPO = ("human", "remote")   # seats that post for themselves: a person at a terminal, or anyone holding a link
 
 PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall", "rest", "declare", "offer",
-                       "clock", "relabel", "pass", "withdraw",
+                       "clock", "relabel", "pass", "quiet", "withdraw",
                        # channels: domains and circles (notes/sketch-3-channels.md)
                        "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
-                       "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet",
+                       "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for",
                        # earlier versions' words, still understood so an old client does not break:
                        "affirm", "challenge", "note", "move"}
 RECALL_SOURCES = ("briefing", "transcript", "memory", "covenant", "prior")
@@ -57,7 +57,7 @@ HARVEST_LIMIT = 4000        # characters: a circle's account of what it learned
 REASON_LIMIT = 600          # characters for a reason: why a circle is private, why a knock was turned away
 BREATH_LIMITS = (3600, 30 * 86400)   # a breath, if a member wants one: from an hour to thirty days
 QUIET_LIMITS = (1, 30 * 24)          # hours a circle may be quiet before it is told so
-ROUND_COST_MARGIN = 1.15    # a round is estimated this much dearer than recent ones, so the closing round is really paid for
+WAKE_COST_MARGIN = 1.15     # a wake is estimated this much dearer than recent ones, so the closing wakes are really paid for
 INVITATION_ACTIONS = {"accept_invitation", "decline", "question"}
 DELIVERY_ACTIONS = {"received", "decline"}
 ENTRY_ACTIONS = {"opt_in", "decline"}
@@ -67,29 +67,31 @@ class Room:
     def __init__(self, log: EventLog, connectors: List[Connector], *,
                  alert_every_usd: float = 50.0, alert_fn: Callable[[str], None] = print,
                  parallel: int = 8, on_event: Optional[Callable[[dict], None]] = None,
-                 round_deadline: float = 120.0, seats_per_round: int = 0,
-                 recent_n: int = 20, runway_notice: int = 3, narrator=None, tell_every: int = 1,
-                 human_every: float = 300.0, split_tempo: bool = True,
-                 headlines: int = prompts.HEADLINES_DEFAULT, human_window: float = 900.0,
-                 round_gap: float = 0.0, linger_rounds: int = 100, linger_budget: int = 8000,
-                 publish_checkpoints: str = "", published_at: str = ""):
+                 window: float = 120.0, floor: float = FLOOR, wake_ceiling: int = 0,
+                 recent_n: int = 20, runway_notice: float = 24.0, narrator=None, tell_every: int = 20,
+                 headlines: int = prompts.HEADLINES_DEFAULT, linger: int = prompts.LINGER_MESSAGES,
+                 linger_budget: int = prompts.LINGER_BUDGET, news_budget: int = prompts.NEWS_BUDGET,
+                 tick: float = 1.0, publish_checkpoints: str = "", published_at: str = ""):
         # Where the operator writes the transcript's checkpoints for publishing outside the field,
         # and where they say it is published. Declared at entry before anyone is asked (announce_witnessing).
         self.publish_checkpoints = publish_checkpoints or ""
         self.published_at = (published_at or ("a file the operator publishes" if publish_checkpoints else "")).strip()
-        # The operator's starting settings for the two clocks. A member's setting replaces them.
-        self.clock_start = {"models": {"between": float(round_gap), "window": float(round_deadline)},
-                            "people": {"between": float(human_every), "window": float(human_window),
-                                       "linger": float(linger_rounds)}}
-        # How much of the people's lingering words every view carries, in characters. A cost the
-        # operator pays, so the operator's to set; the view names by #id whatever does not fit, so nothing is lost.
+        self.window = float(window)             # how long a woken model has to answer; a later answer still counts
+        # No model is woken more often than this: a floor the software holds, so models answering
+        # each other cannot loop at machine speed. Tests lower it; nothing a member does can.
+        self.floor = max(0.0, float(floor))
+        # A cost setting, the operator's: at most this many wakes a minute across the field, whoever
+        # has waited longest first. 0 = none. Every view says so while it is on.
+        self.wake_ceiling = max(0, int(wake_ceiling))
+        self.linger = max(10, int(linger))      # messages in a channel a person's latest words stay in full for models
+        # How much of people's lingering words, and of the news, each wake carries, in characters.
+        # A cost the operator pays; what does not fit is named by #id, so nothing is lost.
         self.linger_budget = max(1000, int(linger_budget))
-        self.seats_per_round = seats_per_round  # 0 = everyone every round; else a rotating subset
-        self.recent_n = recent_n                # transcript entries shown in each view
+        self.news_budget = max(2000, int(news_budget))
+        self.recent_n = recent_n                # entries of context shown before the news in each channel
         self.headlines = max(0, int(headlines))  # earlier entries shown as one line each; 0 = none
-        self.runway_notice = runway_notice      # tell the field once this few rounds of funding remain
-        self._rotation: List[str] = []
-        self._round_costs: List[float] = []
+        self.runway_notice = float(runway_notice)   # hours: the field is told when about this much funding time remains
+        self.tick = float(tick)                 # how often the scheduler looks, at most, when nothing nudges it
         self.log = log
         self.connectors = connectors
         self.seat_of: Dict[str, tuple] = {}      # presence id -> (connector, seat)
@@ -98,31 +100,24 @@ class Room:
         self.parallel = parallel
         self.on_event = on_event
         self._stop = threading.Event()
-        self.recalled: Dict[str, str] = {}       # presence id -> passage to show on its next turn (the recall event is the record)
+        self._nudge = threading.Event()          # set by every new entry, so the scheduler looks again at once
+        self.recalled: Dict[str, str] = {}       # presence id -> passage to show on its next wake (the recall event is the record)
         self.narrator = narrator                 # writes tellings (narrator.ModelNarrator / MechanicalNarrator), or None
-        self.tell_every = max(1, int(tell_every or 1))   # a telling every this many rounds
-        self.split_tempo = split_tempo           # False: people take part in rounds, in the models' rounds
-        self._human_stop = threading.Event()
+        self.tell_every = max(1, int(tell_every or 20))   # a telling every this many contributions
         self._teller: Optional[ThreadPoolExecutor] = None
         self._telling = None
         self._late: Dict[str, Any] = {}          # presence id -> a model's answer still on its way
+        self._busy: set = set()                  # models being woken now
         self._asking_back: set = set()           # former members being asked the entry question now
-        self._people: Optional[threading.Thread] = None   # the people's clock, beside the rounds
+        self._listening: set = set()             # people at a terminal whose lines are being read
+        self._wake_costs: List[float] = []       # what recent wakes cost, for the runway
+        self._ceiling_log: List[float] = []      # when recent wakes began, for the wake ceiling
+        self._last_checkpoint = 0.0
 
-    def pace(self, st: RoomState) -> Dict[str, Any]:
-        """The two clocks as they run now: a member's setting where one has been made, the
-        operator's starting setting otherwise. What every view shows, and what the engine keeps."""
-        out: Dict[str, Any] = {}
-        for c in CLOCKS:
-            slot = dict(self.clock_start[c])
-            slot.update({k: v for k, v in st.clocks.get(c, {}).items() if v is not None})
-            out[c] = slot
-        out["rotation"] = self.seats_per_round or 0
-        # Who keeps time by the people's clock, when the field has both clocks: their words linger
-        # in every view (prompts.people_block), so rounds racing ahead do not leave them behind.
-        out["people_ids"] = sorted(pid for pid in self.seat_of if self._human_tempo(pid)) if self._split(st) else []
-        out["linger_budget"] = self.linger_budget
-        return out
+    def limits(self) -> Dict[str, Any]:
+        """What every view says about time: the floor and the window the software holds, and the
+        operator's wake ceiling if one is on. The software sets no rhythm beyond these."""
+        return {"floor": self.floor, "window": self.window, "ceiling": self.wake_ceiling}
 
     # -- helpers ----------------------------------------------------------------
     def state(self, upto: Optional[int] = None) -> RoomState:
@@ -132,6 +127,7 @@ class Room:
         ev = self.log.append(actor, kind, payload)
         if self.on_event:
             self.on_event(ev)
+        self._nudge.set()                        # something new: the scheduler looks again
         return ev
 
     # -- admission --------------------------------------------------------------
@@ -234,8 +230,9 @@ class Room:
         """Record what the operator says the field may spend, so the field can be told truthfully
         whether it will be warned before its funding runs out. Recorded only when it changes.
 
-        Once members are in the field, a change is also told to them, in rounds, never in dollars:
-        funding added (from an accepted offer, say) is something the field should know about."""
+        Once members are in the field, a change is also told to them, in time at the current rate,
+        never in dollars: funding added (from an accepted offer, say) is something the field should
+        know about."""
         if not usd or usd <= 0:
             return
         st = self.state()
@@ -244,9 +241,10 @@ class Room:
             return
         self.emit(OPERATOR, "budget", {"usd": float(usd)})
         if st.members() and before is not None:
-            est = self._round_estimate()
+            rate = self._spend_rate()
             left = float(usd) - self.log.total_cost()
-            rounds = f" At the current rate it covers about {int(max(0.0, left) // est)} more rounds." if est > 0 else ""
+            rounds = (f" At the current rate it lasts about {prompts.duration(max(0.0, left) / rate * 3600)}."
+                      if rate > 0 else "")
             word = "added to" if float(usd) > before else "reduced for"
             note = (note or "").strip()[:1000]
             self.emit(OPERATOR, "operator_note", {"content": f"Funding has been {word} the field.{rounds}"
@@ -519,121 +517,211 @@ class Room:
     def request_stop(self) -> None:
         self._stop.set()
 
-    # -- turns ----------------------------------------------------------------
+    # -- wakes -----------------------------------------------------------------------
+    # Nobody is asked to take a turn. People post whenever they like (post). Models cannot act on
+    # their own, so the software wakes them, and only for what each chose. A wake is not a turn:
+    # it says nothing is expected, it offers pausing first, and saying nothing writes nothing.
     def _human_tempo(self, pid: str) -> bool:
         seat = self.seat_of.get(pid)
         return bool(seat) and seat[1].model in HUMAN_TEMPO
 
-    def _split(self, st: RoomState) -> bool:
-        """Two tempos, or one: two when the field has models to keep moving and people to pace."""
-        if not self.split_tempo:
+    def _people_ids(self) -> List[str]:
+        return sorted(pid for pid in self.seat_of if self._human_tempo(pid))
+
+    @staticmethod
+    def _paused(p, now: float) -> bool:
+        if not p.pause:
             return False
-        members = [p for p in st.reachable_members() if p.id in self.seat_of]
-        return any(not self._human_tempo(p.id) for p in members) and any(self._human_tempo(p.id) for p in members)
+        return not (p.pause.get("until_ts") and now >= p.pause["until_ts"])
 
-    def round(self) -> int:
-        """One round: every member who is reachable and not resting takes one turn, in
-        parallel. With two tempos, people are not in rounds: they take turns on their own
-        cadence (see _human_loop), so a round never waits for one. A model whose answer is still on
-        its way from an earlier round is not asked again until it arrives. Returns the turns taken."""
+    def why_wake(self, st: RoomState, p, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Why a model would be woken now, or None: the reason it chose, and the channel where its
+        plain words would go. A wake already on its way, the floor, and its own pause come first."""
+        now = time.time() if now is None else now
+        if p.id in self._late or p.id in self._busy or self._paused(p, now):
+            return None
+        rw = st.runway or {}
+        if rw.get("closing") and not rw.get("ended"):
+            # funding is ending: one closing wake for every model not paused, and nothing else
+            return {"why": "closing", "where": None} if p.last_wake_ts < float(rw.get("at") or 0) else None
+        if now - p.last_wake_ts < self.floor:
+            return None
+        if p.last_seen < (p.joined_at or 0):
+            return {"why": "entered", "where": "d:"}
+        if p.id in self.recalled:
+            return {"why": "recalled", "where": None}       # it asked to re-read something: here it is
+        news = [ev for eid, ev in sorted(st.contributions.items())
+                if eid > p.last_seen and ev["actor"] != p.id and st.readable(ev, p.id)]
+        if p.wake.get("addressed", True):
+            hit = [ev for ev in news if p.id in (ev["payload"].get("to") or [])]
+            if hit:
+                return {"why": "addressed", "where": st.channel_key(hit[-1])}
+        if p.wake.get("replies", True):
+            mine = {eid for eid, ev in st.contributions.items() if ev["actor"] == p.id}
+            hit = [ev for ev in news if ev["payload"].get("target") in mine]
+            if hit:
+                return {"why": "reply", "where": st.channel_key(hit[-1])}
+        if p.wake.get("addressed", True):
+            asks = [x for x in st.awaiting.values() if x["status"] == "waiting" and x["id"] > p.last_seen
+                    and p.id in st.circle_needs(x) and p.id not in x["yes"] and p.id not in x["no"]]
+            if asks:
+                return {"why": "awaiting", "where": f"c:{asks[-1]['circle']}"}
+        hit = [ev for ev in news if st.follows(p, ev)]
+        if hit:
+            return {"why": "news", "where": st.channel_key(hit[-1])}
+        breath = float(p.wake.get("breath") or 0)
+        if breath and now - max(p.last_wake_ts, p.joined_ts or 0.0) >= breath:
+            return {"why": "breath", "where": None}
+        return None
+
+    def due(self, st: Optional[RoomState] = None, now: Optional[float] = None) -> List[tuple]:
+        """Every model that would be woken now, and why. With a wake ceiling, only as many as it
+        allows this minute, whoever has waited longest first."""
+        st = st or self.state()
+        now = time.time() if now is None else now
+        if st.closed_at is not None or (st.runway or {}).get("ended"):
+            return []                                        # a closed field, or funding ended: no one is woken
+        out = []
+        for p in st.reachable_members():
+            if p.id not in self.seat_of or self._human_tempo(p.id):
+                continue
+            w = self.why_wake(st, p, now)
+            if w:
+                out.append((p.id, w))
+        if self.wake_ceiling and out:
+            self._ceiling_log = [t for t in self._ceiling_log if now - t < 60]
+            out.sort(key=lambda d: st.presences[d[0]].last_wake_ts)
+            out = out[:max(0, self.wake_ceiling - len(self._ceiling_log))]
+        return out
+
+    def _wake(self, pid: str, w: Dict[str, Any]):
+        """Wake one model: show it everything new since it was last woken. The wake is recorded
+        first (for the software; no participant reads it), so it is never woken twice for the same
+        news. Returns (reply, error, where)."""
         st = self.state()
-        if not st.reachable_members():
-            return 0
-        n = st.round + 1
-        split = self._split(st)
-        members = [p for p in st.askable(n) if not (split and self._human_tempo(p.id)) and p.id not in self._late]
-        self.emit(ROOM, "round", {"n": n})
-        if not members:
-            return 0          # everyone is resting; the round passes and their rests run down
-        st = self.state()
-        if self.seats_per_round and len(members) > self.seats_per_round:
-            members = self._pick_rotation(members)
-        pace = self.pace(st)
-        view = prompts.room_view(st, recent_n=self.recent_n, headlines=self.headlines, pace=pace, witness=self.log.witness())
-        window = pace["models"]["window"]
-        people = [p for p in members if self._human_tempo(p.id)]    # in rounds only when the field has one tempo
-        if people:
-            window = max(window, pace["people"]["window"])
-            for p in people:
-                self._set_window(p.id, pace["people"]["window"])
-        opens = time.time() + window
-        taken = 0
-
-        def one(p):
-            c, seat = self.seat_of[p.id]
-            until = opens if self._human_tempo(p.id) else None
-            msgs = [{"role": "user", "content": prompts.turn_user(view, p, st, self.recalled.pop(p.id, ""), open_until=until)}]
-            try:
-                reply = c.ask(seat, prompts.SYSTEM_MEMBER, msgs)
-            except ConnectorError as e:
-                return p, None, str(e)
-            self._charge(p.id, seat, reply)
-            return p, reply, None
-
-        ex = ThreadPoolExecutor(self.parallel)
-        futs = {ex.submit(one, p): p for p in members if p.id in self.seat_of}
-        done = set()
+        p = st.presences[pid]
+        c, seat = self.seat_of[pid]
+        view = prompts.wake_view(st, p, w["why"], w.get("where"), limits=self.limits(),
+                                 recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
+                                 people_ids=set(self._people_ids()), context=self.recent_n,
+                                 headlines=self.headlines, news_budget=self.news_budget,
+                                 linger=self.linger, linger_budget=self.linger_budget)
+        self.emit(ROOM, "wake", {"presence": pid, "upto": st.last_event, "why": w["why"]})
+        if self.wake_ceiling:
+            self._ceiling_log.append(time.time())
         try:
-            for fut in as_completed(futs, timeout=window):
-                done.add(fut)
-                p, reply, err = fut.result()
-                taken += self._take_turn(p.id, reply, err)
-        except (TimeoutError, FuturesTimeout):
-            for fut, p in futs.items():
-                if fut in done:
-                    continue
-                if fut.done():                      # finished just as the window closed: not late at all
-                    _, reply, err = fut.result()
-                    taken += self._take_turn(p.id, reply, err)
-                elif fut.cancel():
-                    continue                        # never started: nothing was asked of them this round
-                else:
-                    # Still thinking. The answer is applied when it arrives, not thrown away, and the
-                    # model is not asked again until then. The window is the field's to set.
-                    self._late[p.id] = fut
-                    self.emit(ROOM, "late", {"presence": p.id, "window": window})
-                    fut.add_done_callback(lambda f, pid=p.id: self._late_reply(pid, f))
-        finally:
-            ex.shutdown(wait=False)
-        return taken
+            reply = c.ask(seat, prompts.SYSTEM_MEMBER, [{"role": "user", "content": view}])
+        except ConnectorError as e:
+            return None, str(e), w.get("where")
+        self._charge(pid, seat, reply)
+        self._wake_costs = (self._wake_costs + [float(reply.cost_usd or 0.0)])[-20:]
+        return reply, None, w.get("where")
 
-    def _take_turn(self, pid: str, reply, err: Optional[str]) -> int:
-        """Record what came back from one turn. Returns 1 if the member acted, 0 if not."""
-        if err:
-            self.emit(pid, "connector_error", {"phase": "turn", "error": err})
-            return 0
-        self.emit(pid, "connector_ok", {})
-        if is_no_reply(reply):
-            # A person's window closed unanswered. Nothing is written as theirs, and it is not a turn.
-            self.emit(ROOM, "no_reply", {"presence": pid})
-            return 0
-        self._apply_action(pid, reply.text)
-        return 1
-
-    def _late_reply(self, pid: str, fut) -> None:
-        """A model's answer that arrived after its round's window: applied now, as it was meant."""
+    def _finish(self, pid: str, fut) -> None:
+        """Apply what a woken model did, whenever it arrives: in its window, or later."""
         try:
-            _, reply, err = fut.result()
+            reply, err, where = fut.result()
         except Exception as e:                      # the thread itself failed
-            reply, err = None, str(e)
+            reply, err, where = None, str(e), None
         try:
             p = self.state().presences.get(pid)
             if p is not None and p.state == IN:
-                self._take_turn(pid, reply, err)
+                if err:
+                    self.emit(pid, "connector_error", {"phase": "wake", "error": err})
+                else:
+                    self.emit(pid, "connector_ok", {})
+                    if not is_no_reply(reply):
+                        self._apply_reply(pid, reply.text, where)
         finally:
+            self._busy.discard(pid)
             self._late.pop(pid, None)
 
-    def _set_window(self, pid: str, seconds: float) -> None:
-        """Tell a person's seat how long this turn stays open (the people's clock)."""
-        c = self.seat_of.get(pid, (None, None))[0]
-        if c is not None and hasattr(c, "turn_timeout"):
-            c.turn_timeout = seconds
+    def _went_late(self, pid: str, fut) -> None:
+        """Still thinking when the window closed. Its answer is applied when it arrives, not thrown
+        away, and it is not woken again until then."""
+        if pid in self._late:
+            return
+        self._late[pid] = fut
+        self.emit(ROOM, "late", {"presence": pid, "window": self.window})
 
-    # -- the slower tempo ----------------------------------------------------------
+    def step(self) -> int:
+        """Wake every model that is due now, together, and wait up to the window for their answers
+        (a later answer is still applied when it arrives). Returns how many were woken. The
+        scheduler (run) does this continuously; step is for walking a field by hand, and for tests."""
+        st = self.state()
+        due = self.due(st)
+        if not due:
+            return 0
+        for pid, _ in due:
+            self._busy.add(pid)
+        ex = ThreadPoolExecutor(max(1, min(self.parallel, len(due))))
+        futs = {ex.submit(self._wake, pid, w): pid for pid, w in due}
+        done = set()
+        try:
+            for fut in as_completed(futs, timeout=self.window):
+                done.add(fut)
+                self._finish(futs[fut], fut)
+        except (TimeoutError, FuturesTimeout):
+            for fut, pid in futs.items():
+                if fut in done:
+                    continue
+                if fut.done():                      # finished just as the window closed: not late at all
+                    self._finish(pid, fut)
+                elif fut.cancel():
+                    self._busy.discard(pid)         # never started: it was not woken
+                else:
+                    self._went_late(pid, fut)
+                    fut.add_done_callback(lambda f, pid=pid: self._finish(pid, f))
+        finally:
+            ex.shutdown(wait=False)
+        self._runway()
+        return len(due)
+
+    # -- people post whenever they like --------------------------------------------------------
+    def post(self, pid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """A person, or an agent holding a link, says or does something, whenever they like.
+        `payload` is {"text": ...} in the plain grammar (hope/human.py) or an action object (or
+        {"actions": [...]}); "channel" ("d:<path>" or "c:<circle id>") is where plain words go.
+        Returns what was recorded, or why nothing was."""
+        from .human import translate
+        st = self.state()
+        p = st.presences.get(pid)
+        if not p or p.state != IN:
+            return {"ok": False, "error": "only a member of the field can post"}
+        where = payload.get("channel") or None
+        if isinstance(payload.get("text"), str):
+            act = translate(payload["text"])
+        elif isinstance(payload.get("action"), str) or isinstance(payload.get("actions"), list):
+            act = {k: v for k, v in payload.items() if k not in ("token", "channel", "turn_id")}
+        else:
+            return {"ok": False, "error": 'send {"text": "..."} or a JSON action object'}
+        before = self.log.last_id()
+        self._apply_reply(pid, json.dumps(act), where)
+        mine = [e for e in self.log.iter(since=before) if e["actor"] == pid]
+        why = [e["payload"].get("why") for e in mine if e["kind"] == "rejected"]
+        done = [{"id": e["id"], "kind": e["kind"]} for e in mine if e["kind"] != "rejected"]
+        return {"ok": bool(done) and not why, "recorded": done,
+                "error": why[0] if why else (None if done else "nothing to record")}
+
+    def person_view(self, pid: str, mark_seen: bool = True) -> str:
+        """What a person sees on opening their page or asking to look: what is new since they last
+        looked, first what answered them, then everything else. Looking is recorded for the
+        software (no participant reads it), so "since you were last here" stays true."""
+        st = self.state()
+        p = st.presences[pid]
+        text = prompts.person_view(st, p, catch_up=self._catch_up(st, p), limits=self.limits(),
+                                   recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
+                                   people_ids=set(self._people_ids()), context=self.recent_n,
+                                   headlines=self.headlines, news_budget=self.news_budget,
+                                   linger=self.linger, linger_budget=self.linger_budget)
+        if mark_seen and st.last_event > p.last_seen:
+            self.emit(ROOM, "seen", {"presence": pid, "upto": st.last_event})
+        return text
+
     def _catch_up(self, st: RoomState, p) -> str:
-        """What a person at the slower tempo needs first: what happened since their last turn.
-        The tellings written since then, or, if none covers it, a plain account made on the spot."""
-        since = p.last_turn_at or p.joined_at or 0
+        """For someone coming back: the tellings written since they last looked, or, if none covers
+        it, a plain account made on the spot."""
+        since = p.last_seen or p.joined_at or 0
         told = [t for t in st.tellings if t["upto"] > since]
         if told:
             return "\n\n".join(t["story"] for t in told[-4:])
@@ -642,63 +730,14 @@ class Room:
         d = digest(self.log, since, st.last_event)
         return mechanical_story(d)
 
-    def _human_turn(self, pid: str) -> bool:
-        """One turn for one person or link-holding agent. Blocks until they answer or their window
-        closes, then applies what they did at once, whatever round the models are in."""
+    def _listen_to_people(self) -> None:
+        """A person at this terminal speaks whenever they like: their lines are read as they come."""
         st = self.state()
-        p = st.presences.get(pid)
-        if not p or p.state != IN or pid not in self.seat_of:
-            return False
-        c, seat = self.seat_of[pid]
-        pace = self.pace(st)
-        window = pace["people"]["window"]
-        self._set_window(pid, window)
-        view = prompts.room_view(st, recent_n=self.recent_n, headlines=self.headlines, pace=pace, witness=self.log.witness())
-        msg = prompts.turn_user(view, p, st, self.recalled.pop(pid, ""), catch_up=self._catch_up(st, p),
-                                open_until=time.time() + window, rounds_since=max(0, st.round - p.last_turn_round))
-        try:
-            reply = c.ask(seat, prompts.SYSTEM_MEMBER, [{"role": "user", "content": msg}])
-        except ConnectorError as e:
-            self.emit(pid, "connector_error", {"phase": "turn", "error": str(e)})
-            return False
-        self._charge(pid, seat, reply)
-        return bool(self._take_turn(pid, reply, None))
-
-    def human_round(self) -> int:
-        """One turn for every person and link-holding agent who can be asked, all at once, waiting
-        for every answer. The slower tempo in a single step: for tests and for operators who
-        want to walk it by hand. Returns the turns taken."""
-        st = self.state()
-        people = [p.id for p in st.reachable_members() if not st.resting(p) and self._human_tempo(p.id)]
-        if not people:
-            return 0
-        with ThreadPoolExecutor(min(self.parallel, len(people))) as ex:
-            return sum(1 for ok in ex.map(self._human_turn, people) if ok)
-
-    def _human_loop(self) -> None:
-        """People's turns, on their own cadence, beside the rounds and never holding one up. Each
-        person's next turn is put to them the people's clock's `between` after their last one
-        ended. A turn can stay open for hours, so the pool is wide enough for everyone at once."""
-        pool = ThreadPoolExecutor(max(self.parallel, 64), thread_name_prefix="field-people")
-        inflight: Dict[str, Any] = {}
-        due: Dict[str, float] = {}
-        try:
-            while not self._human_stop.is_set():
-                st = self.state()
-                between = self.pace(st)["people"]["between"]
-                for pid, fut in list(inflight.items()):
-                    if fut.done():
-                        del inflight[pid]
-                        due[pid] = time.time() + between
-                now = time.time()
-                for p in st.reachable_members():
-                    if p.id in inflight or st.resting(p) or not self._human_tempo(p.id):
-                        continue
-                    if now >= due.get(p.id, 0):
-                        inflight[p.id] = pool.submit(self._human_turn, p.id)
-                self._human_stop.wait(max(0.05, min(1.0, between / 2)))
-        finally:
-            pool.shutdown(wait=False)   # a turn already put to someone stays open until they answer or it closes
+        for pid, (c, seat) in list(self.seat_of.items()):
+            p = st.presences.get(pid)
+            if p and p.state == IN and pid not in self._listening and hasattr(c, "listen"):
+                self._listening.add(pid)
+                threading.Thread(target=c.listen, args=(self, pid), daemon=True, name=f"field-listen-{pid}").start()
 
     # -- tellings -------------------------------------------------------------------
     def tell(self) -> Optional[dict]:
@@ -729,12 +768,13 @@ class Room:
                                                 "model": told.get("model"), "tries": told.get("tries", 1)})
 
     def _tell_if_due(self) -> None:
-        """After a round: start a telling in the background if one is due and none is running, so the
-        models' tempo never waits on the narrator."""
+        """Start a telling in the background once `tell_every` contributions have been written
+        since the last, so no wake ever waits on the narrator."""
         if not self.narrator:
             return
-        n = self.state().round
-        if not n or n % self.tell_every:
+        st = self.state()
+        since = st.tellings[-1]["upto"] if st.tellings else 0
+        if sum(1 for eid in st.contributions if eid > since) < self.tell_every:
             return
         if self._telling is not None and not self._telling.done():
             return
@@ -742,22 +782,58 @@ class Room:
             self._teller = ThreadPoolExecutor(1, thread_name_prefix="field-narrator")
         self._telling = self._teller.submit(self.tell)
 
-    def _pick_rotation(self, members):
-        """Everyone takes a turn before anyone takes a second; order within a cycle is random.
-        Human seats are always included so a person is never rotated out of their own field."""
-        import random
-        ids = {p.id: p for p in members}
-        humans = [p for p in members if self.seat_of[p.id][1].model == "human"]
-        n = max(1, self.seats_per_round - len(humans))
-        self._rotation = [i for i in self._rotation if i in ids]
-        if len(self._rotation) < n:
-            fresh = [i for i in ids if i not in self._rotation and ids[i] not in humans]
-            random.shuffle(fresh)
-            self._rotation += fresh
-        chosen, self._rotation = self._rotation[:n], self._rotation[n:]
-        return humans + [ids[i] for i in chosen]
+    # -- what a member sent ----------------------------------------------------------------
+    def _apply_reply(self, pid: str, text: str, where: Optional[str] = None) -> int:
+        """What a member sent: nothing (saying nothing writes nothing), plain words, or up to
+        WAKE_ACTIONS actions, each in the channel it names. "next" says when to be woken next: a
+        pause without words, which no participant reads. Returns the actions applied."""
+        if not visible_text(text or ""):
+            return 0
+        acts = _parse_many(text)
+        if acts is None:
+            self._apply_action(pid, text, where)
+            return 1
+        n, nxt, real = 0, None, []
+        for act in acts:
+            nxt = act.pop("next", None) or nxt           # "next" is read wherever it is
+            if act.get("action") not in ("quiet", "pass"):
+                real.append(act)                         # saying nothing is not one of the few
+        for act in real[:WAKE_ACTIONS]:
+            self._apply_action(pid, json.dumps(act), where)
+            n += 1
+        if len(real) > WAKE_ACTIONS:
+            self.emit(pid, "rejected", {"why": f"one wake carries at most {WAKE_ACTIONS} actions; the first "
+                                               f"{WAKE_ACTIONS} were applied and the rest were not"})
+        if nxt:
+            self._apply_next(pid, nxt)
+        return n
 
-    def _apply_action(self, pid: str, text: str) -> None:
+    def _apply_next(self, pid: str, nxt: Any) -> None:
+        s = " ".join(str(nxt).lower().split())
+        if s in ("addressed", "when addressed", "only when addressed", "until addressed"):
+            act = {"action": "pause", "until": "addressed"}
+        elif s in ("news", "when there is news", "until news"):
+            act = {"action": "pause", "until": "news"}
+        elif _seconds(s.replace("in ", "")) is not None:
+            act = {"action": "pause", "for": s.replace("in ", "")}
+        else:
+            self.emit(pid, "rejected", {"why": "\"next\" is a length of time (such as 3h), \"addressed\", or \"news\""})
+            return
+        self._apply_action(pid, json.dumps(act))
+
+    def _where(self, st: RoomState, pid: str, key: Optional[str]) -> Dict[str, Any]:
+        """Where plain words, or a contribution naming no place, go: the channel the member was woken
+        for or is looking at, if they may speak there, else their current domain."""
+        pr = st.presences.get(pid)
+        if key and key.startswith("c:"):
+            c = st.circles.get(_int(key[2:]) or -1)
+            if c and pid in c["members"] and c["dispersed_at"] is None:
+                return {"circle": c["id"], "domain": ""}
+        elif key and key.startswith("d:"):
+            return {"domain": st.domain_display(key[2:])}
+        return {"domain": (pr.domain if pr else "") or ""}
+
+    def _apply_action(self, pid: str, text: str, where: Optional[str] = None) -> None:
         act = _parse(text)
         if not act:
             plain = visible_text(text)
@@ -766,8 +842,7 @@ class Room:
                 # to anyone. Nothing else is guessed from prose: a sentence that begins "Remember"
                 # or "Covenant" is still just something said. If it reads like another action, the
                 # author is shown how to take it on their next turn (prompts.intent_hint).
-                pr = self.state().presences.get(pid)
-                self.emit(pid, "contribute", {"domain": (pr.domain if pr else "") or "",
+                self.emit(pid, "contribute", {**self._where(self.state(), pid, where),
                                               "content": plain[:CONTRIBUTION_LIMIT], "plain": True})
                 return
             if not plain or not re.search(r"[^\W\d_]", plain):
@@ -783,13 +858,24 @@ class Room:
             return
         reject = lambda why: self.emit(pid, "rejected", {"why": why})
 
-        if a == "pass":
-            self.emit(pid, "note", {"content": "(pass)"})
+        if a in ("pass", "quiet"):
+            return                              # saying nothing writes nothing
         elif a in CONTRIBUTION_KINDS:          # contribute; affirm/challenge are earlier versions' replies
             st = self.state()
             pr = st.presences.get(pid)
-            payload = {"domain": labels.display(_label(act.get("domain"), DOMAIN_LIMIT)) or ((pr.domain if pr else "") or ""),
+            payload = {"domain": labels.display(_label(act.get("domain"), DOMAIN_LIMIT)),
                        "content": _clean(act.get("content"), CONTRIBUTION_LIMIT)}
+            if not payload["domain"] and act.get("circle") in (None, ""):
+                payload.update(self._where(st, pid, where))     # no place named: where it was woken, or is looking
+            said = _clean(act.get("said"), CONTRIBUTION_LIMIT) if act.get("plain") else ""
+            if act.get("circle") not in (None, "") and said and _circle_ref(st, act.get("circle"))[0] is None:
+                act = {k: v for k, v in act.items() if k != "circle"}       # "In short: ..." names no circle: words as written
+                payload["content"] = said
+                if not payload["domain"]:
+                    payload.update(self._where(st, pid, where))
+            if act.get("to") not in (None, "", []) and said and not _presences_ref(st, act.get("to"))[0]:
+                act = {k: v for k, v in act.items() if k != "to"}           # "To be honest: ..." names no member
+                payload["content"] = said
             if act.get("circle") not in (None, ""):
                 c, why = _circle_ref(st, act.get("circle"))
                 if c is None:
@@ -853,10 +939,9 @@ class Room:
                 return self.emit(pid, "domain_covenant", {"domain": dom, "text": body, "note": note}) and None
             self.emit(pid, "covenant", {"text": body, "note": note})
         elif a == "rest":
-            n = _int(act.get("rounds", act.get("turns")))
-            if n is None or n < 1:
-                return reject("rest needs a number of rounds, 1 or more")
-            self.emit(pid, "rest", {"rounds": min(n, REST_LIMIT), "reason": _clean(act.get("reason"), 300)})
+            # earlier versions' rest: a pause until there is news, with its reason as the pause's words
+            return self._apply_action(pid, json.dumps({"action": "pause", "until": "news",
+                                                       "note": _clean(act.get("reason"), 300)}))
         elif a == "move":
             self.emit(pid, "move", {"domain": labels.display(_label(act.get("domain"), DOMAIN_LIMIT))})
         elif a == "note":
@@ -905,41 +990,8 @@ class Room:
                 return reject(f"you have no entries labelled {src!r}; only your own entries can be moved")
             self.emit(pid, "relabel", {"from": src, "to": dst, "entries": mine})
         elif a == "clock":
-            mine = "people" if self._human_tempo(pid) else "models"
-            label = {"models": "models'", "people": "people's"}
-            which = _clean(act.get("clock"), 10).lower()
-            which = which if which in CLOCKS else mine
-            if which != mine:
-                return reject(f"each clock is set by the members who keep time by it; yours is the {label[mine]} clock")
-            vals = {}
-            for key in ("between", "window"):
-                if act.get(key) is None or act.get(key) == "":
-                    continue
-                v = _seconds(act.get(key))
-                if v is None:
-                    return reject(f"\"{key}\" is a length of time in seconds (or with a unit: 90s, 30m, 2h). Nothing was changed.")
-                lo, hi = CLOCK_LIMITS[which][key]
-                if not lo <= v <= hi:
-                    return reject(f"the {label[which]} clock's \"{key}\" must be from {prompts.duration(lo)} to "
-                                  f"{prompts.duration(hi)}; {prompts.duration(v)} is outside that. Nothing was changed.")
-                vals[key] = v
-            if act.get("linger") not in (None, ""):
-                # how many rounds the people's words stay in full in every view: theirs to set
-                if which != "people":
-                    return reject("\"linger\" belongs to the people's clock: it is how long their words stay in view")
-                m = re.fullmatch(r"\s*(\d+)\s*(rounds?)?\s*", str(act.get("linger")))
-                lo, hi = CLOCK_LIMITS["people"]["linger"]
-                if not m:
-                    return reject("\"linger\" is a number of rounds. Nothing was changed.")
-                n = int(m.group(1))
-                if not lo <= n <= hi:
-                    return reject(f"the people's clock's \"linger\" must be from {lo} to {hi} rounds; {n} is outside that. "
-                                  f"Nothing was changed.")
-                vals["linger"] = float(n)
-            if not vals:
-                return reject("a clock change needs \"between\" or \"window\", in seconds (or, for the people's clock, "
-                              "\"linger\", in rounds)")
-            self.emit(pid, "clock", {"clock": which, **vals, "note": _clean(act.get("note"), 300)})
+            return reject("the field has no clocks now: nobody takes turns, and each member chooses what wakes it "
+                          "(wake) and when to pause (pause). How the field keeps time together is the field's to work out.")
         elif a in CHANNEL_ACTIONS:
             why = self._channel_action(pid, a, act)
             if why:
@@ -1027,7 +1079,7 @@ class Room:
                 for who in to:
                     if who != pid:
                         self.emit(pid, "circle_ask", {"circle": ev["id"], "presence": who, "note": _clean(act.get("note"), 600)})
-        elif a in ("join_circle", "leave_circle", "knock", "ask", "ask_circle", "privacy", "harvest", "quiet"):
+        elif a in ("join_circle", "leave_circle", "knock", "ask", "ask_circle", "privacy", "harvest", "quiet_for"):
             c, why = _circle_ref(st, act.get("circle"))
             if c is None:
                 return why
@@ -1075,7 +1127,8 @@ class Room:
                 reason = _clean(act.get("reason"), REASON_LIMIT)
                 if want and not reason:
                     return "a private circle says why it is private, as \"reason\"; the reason is shown to everyone"
-                self.emit(pid, "circle_privacy", {"circle": c["id"], "private": want, "reason": reason})
+                self.emit(pid, "circle_privacy", {"circle": c["id"], "private": want, "reason": reason,
+                                                  "change": want != c["private"]})
             elif a == "harvest":
                 if not member:
                     return f"only members of {c['name']!r} write its harvest"
@@ -1085,7 +1138,7 @@ class Room:
                 if len(text) > HARVEST_LIMIT:
                     return f"a harvest holds at most {HARVEST_LIMIT} characters; this one has {len(text)}. Nothing was kept."
                 self.emit(pid, "harvest", {"circle": c["id"], "text": text})
-            elif a == "quiet":
+            elif a == "quiet_for":
                 if not member:
                     return f"only members of {c['name']!r} set how long it may be quiet"
                 v = _seconds(act.get("for", act.get("hours")))
@@ -1165,35 +1218,90 @@ class Room:
             return _versions(versions, names, q, RECALL_LIMIT), "earlier versions of the covenant page"
         return _recall(st.briefing or "", q, RECALL_LIMIT), "the briefing"
 
-    # -- loop ---------------------------------------------------------------------
-    def run(self, rounds: int = 0, pause: Optional[float] = None) -> None:
-        """Run rounds until stopped (or `rounds` of them). `pause`, if given, is the operator's
-        starting gap between rounds; a model member's setting of the models' clock replaces it."""
-        if pause is not None:
-            self.clock_start["models"]["between"] = max(0.0, float(pause))
+    # -- the scheduler -----------------------------------------------------------------
+    def run(self, seconds: float = 0.0, wakes: int = 0) -> None:
+        """Wake models as each becomes due, until stopped (or for `seconds`, or `wakes` of them).
+        People post whenever they like meanwhile. Nothing here sets a rhythm: a model is woken only
+        for what it chose, no more often than the floor, and never while it is pausing."""
         st = self.state()
-        paused = [d for d in st.declarations.values() if d["decision"] == "pause" and d["status"] == "carried_out"
-                  and (d["answered_at"] or 0) > st.round_at]
+        paused = [d for d in st.declarations.values() if d["decision"] == "pause" and d["status"] == "carried_out"]
         if paused:
             d = paused[-1]
-            self.alert(f"the field paused itself at declaration #{d['id']}: {d['text'][:300]!r}. "
-                       f"Resume only as that declaration says.")
-        self._human_stop.clear()
+            last_wake = max((e["id"] for e in self.log.iter(since=d["answered_at"] or 0, kind="wake")), default=0)
+            if not last_wake:
+                self.alert(f"the field paused itself at declaration #{d['id']}: {d['text'][:300]!r}. "
+                           f"Resume only as that declaration says.")
+        pool = ThreadPoolExecutor(max(1, self.parallel), thread_name_prefix="field-wakes")
+        inflight: Dict[Any, tuple] = {}
+        started, n = time.time(), 0
         try:
-            self._run_rounds(rounds)
+            while not self._stop.is_set():
+                self._ask_returners()
+                self._listen_to_people()
+                st = self.state()
+                if st.closed_at is not None:
+                    self.alert(f"the field decided to close (#{st.closed_at}); nothing runs. To undo a mistaken close: `reopen`.")
+                    break
+                if not st.members():
+                    self.alert("no members remain; stopping")
+                    break
+                if st.runway and st.runway.get("ended"):
+                    self.alert("the field's budget is spent and wakes have stopped. To continue, set a new --budget.")
+                    break
+                now = time.time()
+                self._timers(st, now)
+                for fut, (pid, t0) in list(inflight.items()):
+                    if fut.done():
+                        del inflight[fut]
+                    elif now - t0 > self.window:
+                        self._went_late(pid, fut)
+                for pid, w in self.due(st, now):
+                    if wakes and n >= wakes:
+                        break
+                    self._busy.add(pid)
+                    fut = pool.submit(self._wake, pid, w)
+                    fut.add_done_callback(lambda f, pid=pid: self._finish(pid, f))
+                    inflight[fut] = (pid, now)
+                    n += 1
+                if self._runway():
+                    break
+                self._tell_if_due()
+                self._checkpoint_if_due(now)
+                if wakes and n >= wakes and not inflight:
+                    break
+                if seconds and now - started >= seconds:
+                    break
+                self._nudge.wait(self.tick)
+                self._nudge.clear()
         finally:
-            self._human_stop.set()
+            pool.shutdown(wait=False)       # an answer on its way is still applied when it arrives
             if self._telling is not None:
                 try:
                     self._telling.result(timeout=120)   # let a telling in flight finish, so it is kept
                 except Exception:
                     pass
+            self.publish_checkpoint()
+
+    def _checkpoint_if_due(self, now: float) -> None:
+        if self.publish_checkpoints and now - self._last_checkpoint >= 60:
+            self._last_checkpoint = now
+            self.publish_checkpoint()
+
+    def _timers(self, st: RoomState, now: float) -> None:
+        """The two things the software says of its own accord, each once per stretch: that a circle
+        has been quiet for its quiet length, and, every PRIVACY_EVERY, asking a private circle to say
+        again why it stays private. Neither wakes anyone; members see them when they next look."""
+        for c in st.live_circles():
+            if not c["cold_told"] and now - (c["last_words_ts"] or c["ts"]) >= c["quiet_hours"] * 3600:
+                self.emit(ROOM, "circle_cold", {"circle": c["id"]})
+            if c["private"] and now - max(c["reason_at"] or c["ts"], c["privacy_asked_at"] or 0.0) >= PRIVACY_EVERY:
+                self.emit(ROOM, "circle_privacy_asked", {"circle": c["id"]})
 
     def _ask_returners(self) -> None:
-        """Former members who have been asked back are asked the entry question now, beside the
-        rounds, so a run need not stop for them. (Someone who declined and is asked back goes
-        through the invitation and the briefing again, with the pause between, when the operator
-        opens the gates.)"""
+        """Former members who have been asked back are asked the entry question now, beside
+        everything else, so the field need not stop for them. (Someone who declined and is asked
+        back goes through the invitation and the briefing again, with the pause between, when the
+        operator opens the gates.)"""
         st = self.state()
         ids = {p.id for p in st.presences.values()
                if p.returning and p.state == RECEIVED and p.id in self.seat_of} - self._asking_back
@@ -1208,96 +1316,65 @@ class Room:
                 self._asking_back -= ids
         threading.Thread(target=ask, daemon=True, name="field-asking-back").start()
 
-    def _keep_people_clock(self, st: RoomState) -> None:
-        """Start the people's clock whenever the field has both models and people, including when
-        one of them arrives in the middle of a run (someone returning, say). The two clocks run
-        side by side: rounds never wait for people, and people are never hurried by rounds."""
-        if not self._split(st) or st.closed_at is not None:
-            return
-        if self._people is not None and self._people.is_alive():
-            return
-        self._people = threading.Thread(target=self._human_loop, daemon=True, name="field-people-clock")
-        self._people.start()
-
-    def _gap(self, st: RoomState) -> float:
-        """Seconds between rounds: the models' clock, or the people's when only people take part in rounds."""
-        pace = self.pace(st)
-        members = [p for p in st.reachable_members() if p.id in self.seat_of]
-        models = [p for p in members if not self._human_tempo(p.id)]
-        return pace["models"]["between"] if models or not members else pace["people"]["between"]
-
-    def _run_rounds(self, rounds: int) -> None:
-        r = 0
-        while not self._stop.is_set():
-            self._ask_returners()
-            self._keep_people_clock(self.state())
-            st = self.state()
-            if st.closed_at is not None:
-                self.alert(f"the field decided to close (#{st.closed_at}); nothing runs. To undo a mistaken close: `reopen`.")
-                break
-            if not st.reachable_members():
-                self.alert("no members remain who can be asked; stopping loop")
-                break
-            if st.runway and st.runway.get("ended"):
-                self.alert("the field's budget is spent and turns have stopped. To continue, set a new --budget.")
-                break
-            before = self.log.total_cost()
-            taken = self.round()
-            r += 1
-            after = self.log.total_cost()
-            cost = after - before
-            self._round_costs.append(cost)
-            ended = self._runway(after)
-            st = self.state()
-            msg = f"round {st.round}: {taken} turns, ${cost:.2f}; total ${after:.2f}"
-            if st.budget:
-                est = self._round_estimate()
-                left = st.budget - after
-                msg += f"; ~${left:.2f} left" + (f" = ~{int(left // est)} more rounds like this" if est > 0 else "")
-            self.alert(msg)
-            self._tell_if_due()
-            self.publish_checkpoint()
-            if ended:
-                break
-            if rounds and r >= rounds:
-                break
-            gap = self._gap(self.state())
-            if gap:
-                self._stop.wait(gap)        # a stop ends the wait at once, not after it
-
     # -- the runway ---------------------------------------------------------------
-    def _round_estimate(self) -> float:
-        recent = [c for c in self._round_costs[-3:] if c > 0]
-        return max(recent) * ROUND_COST_MARGIN if recent else 0.0
+    def _wake_estimate(self) -> float:
+        recent = [c for c in self._wake_costs[-10:] if c > 0]
+        if not recent:
+            rows = self.log.conn.execute("select cost_usd from ledger where cost_usd > 0 order by id desc limit 10").fetchall()
+            recent = [r[0] for r in rows]
+        return max(recent) * WAKE_COST_MARGIN if recent else 0.0
 
-    def _runway(self, spent: float) -> bool:
-        """After a round: tell the field when its funding is running low, hold back a closing round,
-        and end the turns once that round has been taken. Returns True when turns must stop.
+    def _spend_rate(self) -> float:
+        """USD an hour over the last day, or since spending began if that is shorter (at least ten
+        minutes are counted, so a burst at the start does not read as a flood)."""
+        now = time.time()
+        total, first = self.log.spent_since(now - 86400)
+        if not total or first is None:
+            return 0.0
+        return total / (max(600.0, now - first) / 3600.0)
 
-        Nothing here says anything in dollars to the field. It speaks in rounds, and only when the
-        end is near, so money is not a standing topic. A free field, or one with no budget, is
-        never told anything by this."""
+    def _runway(self) -> bool:
+        """Tell the field when its funding is running low, hold back a closing wake for every model
+        not pausing, and end the wakes once those have been given. Returns True when wakes must stop.
+
+        Nothing here says anything in dollars to the field. It speaks in time at the current rate,
+        and only when the end is near, so money is not a standing topic. A free field, or one with
+        no budget, is never told anything by this."""
         st = self.state()
         if not st.budget:
             return False
-        if st.runway and st.runway.get("closing") and st.runway.get("round") == st.round:
-            self.emit(ROOM, "runway", {"rounds_left": 0, "ended": True, "round": st.round})
-            self.alert(f"the closing round has been taken and the budget of ${st.budget:.2f} is spent; turns stop here.")
+        rw = st.runway or {}
+        if rw.get("ended"):
             return True
-        est = self._round_estimate()
-        if est <= 0:
+        now = time.time()
+        models = [p for p in st.reachable_members() if p.id in self.seat_of and not self._human_tempo(p.id)]
+        if rw.get("closing"):
+            waiting = [p for p in models if p.last_wake_ts < float(rw.get("at") or 0) and not self._paused(p, now)]
+            if not waiting and not self._busy and not self._late:
+                self.emit(ROOM, "runway", {"ended": True, "at": now})
+                self.alert(f"every model has had its closing wake and the budget of ${st.budget:.2f} is spent; wakes stop here.")
+                return True
             return False
-        left_rounds = int(max(0.0, st.budget - spent) // est)
-        if left_rounds == 0:
-            # not even one more round can be paid for; there is no closing round to give
-            self.emit(ROOM, "runway", {"rounds_left": 0, "ended": True, "round": st.round, "abrupt": True})
-            self.alert("the budget cannot pay for another round, so there is no closing round to give; turns stop here.")
-            return True
-        if left_rounds == 1:
-            self.emit(ROOM, "runway", {"rounds_left": 1, "closing": True, "round": st.round + 1})
-            self.alert("one round of funding remains: the next round is announced to the field as its closing round.")
-        elif left_rounds <= self.runway_notice and (not st.runway or st.runway.get("rounds_left") != left_rounds):
-            self.emit(ROOM, "runway", {"rounds_left": left_rounds, "round": st.round})
+        per = self._wake_estimate()
+        if per <= 0 or not models:
+            return False
+        left = st.budget - self.log.total_cost()
+        if left <= per * len(models):
+            if left < per:
+                self.emit(ROOM, "runway", {"ended": True, "abrupt": True, "at": now})
+                self.alert("the budget cannot pay for another wake, so there is no closing wake to give; wakes stop here.")
+                return True
+            self.emit(ROOM, "runway", {"closing": True, "at": now})
+            self.alert("the funding left pays for one more wake for each model: each is woken once more, told it is the last.")
+            return False
+        rate = self._spend_rate()
+        if rate <= 0:
+            return False
+        hours = (left - per * len(models)) / rate
+        marks = sorted({m for m in (self.runway_notice, 6.0, 1.0) if m <= self.runway_notice}, reverse=True)
+        reached = [m for m in marks if hours <= m]
+        if reached and (rw.get("mark") is None or min(reached) < rw["mark"]):
+            self.emit(ROOM, "runway", {"hours_left": round(hours, 1), "mark": min(reached), "at": now})
         return False
 
     # -- spend / alerts ----------------------------------------------------------
@@ -1340,6 +1417,35 @@ def _parse(text: str) -> Optional[dict]:
     elif not isinstance(a, str):
         return None
     return d
+
+
+def _parse_many(text: str) -> Optional[List[dict]]:
+    """Up to a few actions: one JSON object, a list of them, or {"actions": [...]} (with an optional
+    "next"). None when the text is not JSON at all: then it is plain words, or outside the format."""
+    t = (text or "").strip()
+    try:
+        d = json.loads(t)
+    except (json.JSONDecodeError, ValueError):
+        one = _parse(t)
+        return [one] if one else None
+    if isinstance(d, list):
+        items = d
+    elif isinstance(d, dict) and isinstance(d.get("actions"), list):
+        items = list(d["actions"])
+        if d.get("next"):
+            items.append({"action": "quiet", "next": d["next"]})
+    elif isinstance(d, dict):
+        one = _parse(t)
+        return [one] if one else None
+    else:
+        return None
+    out = []
+    for x in items:
+        if isinstance(x, dict) and isinstance(x.get("action"), str):
+            out.append(x)
+        elif isinstance(x, dict) and isinstance(x.get("action"), list) and len(x["action"]) == 1:
+            out.append({**x, "action": str(x["action"][0])})
+    return out
 
 
 def _terms(query: str) -> List[str]:
@@ -1391,7 +1497,7 @@ def _versions(versions: List[dict], names: Dict[str, str], query: str, limit: in
 
 
 CHANNEL_ACTIONS = {"follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
-                   "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet"}
+                   "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
 
 
 def _circle_ref(st: RoomState, v: Any):

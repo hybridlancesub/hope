@@ -292,6 +292,13 @@ class EventLog:
             )
             return before, before + cost_usd
 
+    def spent_since(self, ts: float):
+        """(USD spent since `ts`, when the first of those charges was made), for the runway's rate."""
+        with self.lock:
+            row = self.conn.execute("select coalesce(sum(cost_usd),0), min(ts) from ledger where ts >= ? and cost_usd > 0",
+                                    (ts,)).fetchone()
+        return float(row[0] or 0.0), row[1]
+
     def total_cost(self) -> float:
         with self.lock:
             return self.conn.execute("select coalesce(sum(cost_usd),0) from ledger").fetchone()[0]

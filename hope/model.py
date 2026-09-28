@@ -95,10 +95,11 @@ CONTRIBUTION_KINDS = ("contribute", "affirm", "challenge")
 VISIBLE_KINDS = CONTRIBUTION_KINDS + ("remember", "let_go", "covenant", "rest", "declare", "offer",
                                       "note", "move", "withdraw", "rejected", "recall", "clock", "relabel",
                                       "unparsed")   # a turn's reply outside the format is shown as written; a gate's is not
-TURN_KINDS = VISIBLE_KINDS                   # every attributed outcome of a turn, counted against an allowance
 CHANNEL_KINDS = ("follow", "unfollow", "wake_pref", "pause", "domain_covenant", "circle_form", "circle_join",
                  "circle_leave", "circle_ask", "circle_knock", "circle_answer", "circle_question", "circle_reply",
                  "circle_privacy", "circle_covenant", "circle_quiet", "harvest")
+VISIBLE_KINDS = VISIBLE_KINDS + tuple(k for k in CHANNEL_KINDS if k not in ("follow", "unfollow", "wake_pref"))
+TURN_KINDS = VISIBLE_KINDS                   # what earlier versions counted as a turn; a wake is counted now
 ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
 
 
@@ -134,6 +135,7 @@ class Presence:
     pause: Optional[Dict[str, Any]] = None   # its pause, if it has taken one: until a time, being addressed, or news
     last_seen: int = 0                       # the last entry it was shown: at a wake, or on a person's page
     last_wake_ts: float = 0.0                # when it was last woken (the floor counts from here)
+    joined_ts: float = 0.0                   # when it entered (a breath counts from here until its first wake)
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -262,6 +264,11 @@ class RoomState:
         keys = list(p.follows) + (list(p.written_in) if p.wake.get("written", True) else [])
         return any(self.in_channel(ev, k) for k in keys)
 
+    def domain_display(self, pth: str) -> str:
+        """A domain path as members wrote it: "Timing / Clocks"."""
+        parts = [x for x in (pth or "").split("/") if x]
+        return " / ".join(self.domain_names.get("/".join(parts[:i + 1]), parts[i]) for i in range(len(parts)))
+
     def live_circles(self) -> List[Dict[str, Any]]:
         return [c for c in self.circles.values() if c["dispersed_at"] is None]
 
@@ -284,7 +291,7 @@ class RoomState:
             if pth not in nodes:
                 nodes[pth] = {"path": pth, "name": self.domain_names.get(pth, pth.split("/")[-1] if pth else ""),
                               "entries": 0, "branch": 0, "last": 0, "last_ts": 0.0, "children": [], "circles": [],
-                              "page": pth in self.domain_pages}
+                              "page": pth in self.domain_pages, "spellings": set()}
                 if pth:
                     up = "/".join(pth.split("/")[:-1])
                     node(up)["children"].append(pth)
@@ -296,6 +303,9 @@ class RoomState:
                 continue
             pth = labels.path(self.label_of(ev))
             node(pth)["entries"] += 1
+            segs = labels.segments(self.label_of(ev))
+            if segs:
+                node(pth)["spellings"].add(segs[-1])
             for q in [""] + labels.parents(pth):
                 n = node(q)
                 n["branch"] += 1
@@ -350,7 +360,9 @@ class RoomState:
             if len(self.recent) > 200:
                 del self.recent[:-200]
         # A gate's unreadable answer (it carries a "phase", such as the closing question) is not a turn.
-        if k in TURN_KINDS and pr is not None and pr.state == IN and not (k == "unparsed" and p.get("phase")):
+        # Earlier versions counted a turn for each attributed outcome. Now a wake is what is counted,
+        # since it is what costs; what a member did before its first wake still counts as it did.
+        if k in TURN_KINDS and pr is not None and pr.state == IN and not (k == "unparsed" and p.get("phase"))                 and not pr.last_wake_ts:
             pr.turns += 1
             pr.last_turn_at = eid
             pr.last_turn_round = self.round
@@ -416,7 +428,7 @@ class RoomState:
         elif k == "opt_in":
             if pr and pr.state == RECEIVED:
                 pr.state, pr.joined_at, pr.returning = IN, eid, False
-                pr.rest_until, pr.last_turn_round = 0, self.round
+                pr.rest_until, pr.last_turn_round, pr.joined_ts = 0, self.round, ts
         elif k == "decline":
             if pr and pr.state != OUT:
                 pr.state, pr.left_at, pr.left_reason = OUT, eid, p.get("reason") or "declined"
@@ -486,8 +498,11 @@ class RoomState:
             if m and m["by"] == a:                           # only its author may let a memory go
                 del self.memories[p["memory"]]
         elif k == "rest":
+            # earlier versions' rest, for some rounds; it reads now as a pause until there is news
             if pr and pr.state == IN:
                 pr.rest_until = self.round + max(1, min(int(p.get("rounds") or 1), REST_LIMIT))
+                pr.pause = {"at": eid, "ts": ts, "until_ts": None, "until": "news", "in": None,
+                            "note": p.get("reason") or ""}
         elif k == "declare":
             if pr and pr.state == IN and p.get("decision") in DECISIONS:
                 self.declarations[eid] = {"id": eid, "kind": "declaration", "by": a, "decision": p["decision"],
@@ -568,6 +583,10 @@ class RoomState:
                 tgt.last_seen = max(tgt.last_seen, int(p.get("upto") or 0))
                 if k == "wake":
                     tgt.last_wake_ts = ts
+                    if tgt.state == IN:
+                        tgt.turns += 1               # a wake is what an allowance counts
+                        if tgt.turn_allowance and tgt.turns >= tgt.turn_allowance:
+                            tgt.exhausted = True
         elif k == "domain_covenant":
             pth = labels.path(p.get("domain") or "")
             if pr and pr.state == IN and pth:
@@ -678,6 +697,11 @@ class RoomState:
                 self.awaiting[eid] = {"id": eid, "circle": c["id"], "kind": "harvest", "by": a, "text": p["text"],
                                        "yes": {a: ""}, "no": {}, "status": "waiting", "ts": ts, "agreed_at": None}
                 self._settle(c["id"], eid)
+        elif k == "operator_read":                # the operator opened a private circle in the console
+            c = self.circles.get(p.get("circle"))
+            if c:
+                c.setdefault("read_by_operator", []).append({"id": eid, "ts": ts, "note": p.get("note") or ""})
+                self.scoped[eid] = {"circle": c["id"]}
         elif k == "circle_cold":                  # the software's once-per-quiet-stretch notice
             c = self.circles.get(p.get("circle"))
             if c:

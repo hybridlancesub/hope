@@ -1,31 +1,38 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A human seat. One person, one presence, the same gates and the same actions as every
-other participant. The connector prints the field's view to the terminal and reads a reply
-from stdin; if no reply arrives before the turn's window closes (the people's clock), nothing is
-written as theirs.
+other participant. At the gates the connector prints the question and reads the answer from
+stdin. After entry nothing is asked of them: they post whenever they like (listen), and "look"
+shows what is new since they last looked.
 
-The reply format is plain text, translated to the same JSON actions models send:
+The format is plain text, translated to the same JSON actions models send:
 
-    <text>                          contribute  (domain = your current one, or "unplaced")
-    @domain <text>                  contribute in a domain
-    [handle] <text>                 a short title first, in square brackets, works with the two above
+    <text>                          say something (in the domain you last wrote in, or the field itself)
+    @domain <text>                  say it in a domain; nest with /, as in @timing/clocks
+    in <circle>: <text>             say it in a circle you are in
+    to <name>: <text>               name someone (it wakes them, if they allow it)
+    [handle] <text>                 a short title first, in square brackets, works with the ones above
     #123 <text>                     reply to entry 123 (say in your own words how)
+    look                            what is new since you last looked (terminal only)
+    pause [for 3h | until addressed | until news] [/ words for the field]
+                                    step back; anything you do ends it
+    follow <domain> | follow circle <name> | unfollow ...
+    form <name> [/ purpose] [/ private: why]      form a circle (open unless you say private)
+    join <circle> | leave <circle> | knock <circle> [: note]
+    ask <name> into <circle> [: note]
+    yes #12 [note] | no #12 <reason>                answer something waiting for you (a no has a reason)
+    question <circle>: <text>       put a question to a circle; respond #12 <text> answers one put to yours
+    privacy <circle> private <why> | privacy <circle> open
+    harvest <circle>: <text>        what a circle learned, for the field (every member's yes sends it)
     remember <text>                 add a memory for the field to carry forward (#ids in it become refs)
     let go 123                      let go of a memory you added; its words are removed
     covenant <text>                 replace the covenant page with <text> (the whole page)
-    rest 3 [reason]                 step out for 3 rounds; you are not asked until they pass
-    relabel <label> -> <label>      move your own entries from one topic label to another
-    clock between 30m window 2h linger 200 [why]
-                                    set the people's clock: how soon you are all asked again after a
-                                    turn, how long you have to answer (seconds, or 90s, 30m, 2h), and
-                                    for how many rounds your words stay in full in every view
+    relabel <label> -> <label>      move your own entries from one domain to another
     declare close <how> [#ids]      tell the operator the field has decided to close (or: declare pause ...,
                                     declare other ... for anything else it asks the operator to carry out),
                                     saying how, in the way its covenant describes; #ids become citations
     offer <text>                    put an offer of resources before the operator and everyone
     recall [briefing|transcript|memory|covenant|prior] <words>
                                     re-read matching passages (shown next turn; briefing if unnamed)
-    pass
     withdraw [reason] [/ when it would be fair to ask you back]
     question <text>                 (invitation gate only)
     yes [statement] | no [reason]   (at either gate; "no ... / ask again when ..." records terms)
@@ -52,14 +59,13 @@ _print_lock = threading.Lock()
 class HumanConnector:
     """A person's seat. Two modes:
 
-    - terminal (default): the prompt and the view print here; you answer on stdin.
-    - inbox (inbox=path): the field runs in the background; when it is your turn it waits
-      for a line to appear in the inbox file. You speak from ANY terminal with the `say`
-      command (or by appending a line yourself). No tmux, no attached session; if no line
-      arrives before the window closes, nothing is written as yours.
+    - terminal (default): the gates and the field print here; you answer and post on stdin.
+    - inbox (inbox=path): the field runs in the background, and every line that appears in the
+      inbox file is read as something you said. You speak from ANY terminal with the `say`
+      command (or by appending a line yourself). No tmux, no attached session.
 
-    `turn_timeout` is the window of an ordinary turn. The engine sets it from the people's clock
-    before each turn; gates have no window here, since the person is at this terminal.
+    Gates have no window here, since the person is at this terminal. After entry nothing is
+    asked of them at all: the engine starts `listen`, and they post whenever they like.
     """
 
     def __init__(self, name: str, hails_from: str, people: str = "human",
@@ -116,6 +122,32 @@ class HumanConnector:
 
     def close(self) -> None:
         pass
+
+    def listen(self, room, pid: str) -> None:
+        """After entry: whenever a line comes, it is posted as theirs. "look" shows what is new,
+        "help" the format. Nothing is ever asked of them here."""
+        with _print_lock:
+            self._say(room.person_view(pid))
+            self._say("You are in the field. Nothing is asked of you: type whenever you like. "
+                      "'look' shows what is new, 'help' the format.")
+        while True:
+            line = self._read_line(None)
+            if line is None:
+                return
+            t = visible_text(line)
+            if not t:
+                continue
+            p = room.state().presences.get(pid)
+            if not p or p.state != "IN":
+                return
+            if t.lower() == "help":
+                self._say(__doc__)
+                continue
+            if t.lower() == "look":
+                self._say(room.person_view(pid))
+                continue
+            out = room.post(pid, {"text": t})
+            self._say("(kept)" if out.get("ok") else f"(not kept: {out.get('error')})")
 
     def _say(self, s: str, end: str = "\n") -> None:
         self.outfile.write(s + end)
@@ -197,8 +229,71 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         if gate and low.startswith("question"):
             return {"action": "question", "content": s[8:].strip()}
         return {"action": "decline", "reason": s or "no answer"}
-    if not s or low == "pass":
-        return {"action": "pass"}
+    if not s or low in ("pass", "quiet"):
+        return {"action": "quiet"}
+    if low == "pause" or low.startswith("pause "):
+        rest, _, note = s[5:].partition("/")
+        words = rest.strip().lower()
+        d = {"action": "pause", "note": note.strip()}
+        m = re.search(r"\bfor\s+(\S+)", words)
+        if m:
+            d["for"] = m.group(1)
+        m = re.search(r"\buntil\s+(addressed|news)\b", words)
+        if m:
+            d["until"] = m.group(1)
+        return d
+    for verb in ("follow", "unfollow"):
+        if low.startswith(verb + " "):
+            rest = s[len(verb) + 1:].strip()
+            if rest.lower().startswith("circle "):
+                return {"action": verb, "circle": rest[7:].strip()}
+            return {"action": verb, "domain": "" if rest.lower() in ("the field", "field") else rest}
+    if low.startswith("wake "):
+        d = {"action": "wake"}
+        words = s[5:].split()
+        for i, w in enumerate(words):
+            nxt = words[i + 1].lower() if i + 1 < len(words) else ""
+            if w.lower() in ("addressed", "replies", "written") and nxt in ("on", "off", "yes", "no"):
+                d[w.lower()] = nxt in ("on", "yes")
+            if w.lower() == "breath" and nxt:
+                d["breath"] = nxt
+        return d
+    if low.startswith("form "):
+        parts = [x.strip() for x in s[5:].split("/")]
+        d = {"action": "form_circle", "name": parts[0]}
+        for extra in parts[1:]:
+            if extra.lower().startswith("private"):
+                d["private"], d["reason"] = True, extra[7:].lstrip(" :")
+            elif extra:
+                d["purpose"] = extra
+        return d
+    for verb, act in (("join ", "join_circle"), ("leave ", "leave_circle")):
+        if low.startswith(verb):
+            return {"action": act, "circle": s[len(verb):].strip()}
+    if low.startswith("knock "):
+        circle, _, note = s[6:].partition(":")
+        return {"action": "knock", "circle": circle.strip(), "note": note.strip()}
+    m = re.match(r"ask\s+(.+?)\s+into\s+([^:]+)(?::(.*))?$", s, re.I | re.S)
+    if m:
+        return {"action": "ask", "who": m.group(1).strip(), "circle": m.group(2).strip(), "note": (m.group(3) or "").strip()}
+    m = re.match(r"(yes|no)\s+#(\d+)\s*(.*)$", s, re.I | re.S)
+    if m:
+        yes = m.group(1).lower() == "yes"
+        return {"action": "answer", "to": int(m.group(2)), "yes": yes,
+                **({"note": m.group(3).strip()} if yes else {"reason": m.group(3).strip()})}
+    if low.startswith("question "):
+        circle, _, text = s[9:].partition(":")
+        return {"action": "ask_circle", "circle": circle.strip(), "question": text.strip()}
+    m = re.match(r"respond\s+#?(\d+)\s+(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "reply_circle", "question": int(m.group(1)), "text": m.group(2).strip()}
+    m = re.match(r"privacy\s+(.+?)\s+(private|open)\b\s*(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "privacy", "circle": m.group(1).strip(), "private": m.group(2).lower() == "private",
+                "reason": m.group(3).strip()}
+    if low.startswith("harvest "):
+        circle, _, text = s[8:].partition(":")
+        return {"action": "harvest", "circle": circle.strip(), "text": text.strip()}
     if low.startswith("withdraw"):
         reason, _, again = s[8:].partition("/")
         d = {"action": "withdraw", "reason": reason.strip()}
@@ -241,7 +336,7 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         return {"action": "offer", "text": s[6:].strip()}
     if low.startswith("rest "):
         n, _, reason = s[5:].strip().partition(" ")
-        return {"action": "rest", "rounds": _int(n), "reason": reason.strip()}
+        return {"action": "pause", "until": "news", "note": reason.strip()}
     if low.startswith("recall "):
         rest = s[7:].strip()
         first, _, words = rest.partition(" ")
@@ -259,10 +354,19 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         title, text = _title_prefix(text)
         d = {"action": "contribute", "reply_to": _int(num), "domain": domain, "content": text.strip()}
         return {**d, "title": title} if title else d
+    extra = {}
+    said = s                       # the words as written, if "in ...:" or "to ...:" turns out to name no circle or member
+    m = re.match(r"in\s+([^:\n]{1,80}):\s*(.*)$", s, re.I | re.S)
+    if m:
+        extra["circle"], extra["said"], s = m.group(1).strip(), said, m.group(2)
+    m = re.match(r"to\s+([^:\n]{1,120}):\s*(.*)$", s, re.I | re.S)
+    if m:
+        extra["to"] = [x.strip() for x in m.group(1).split(",") if x.strip()]
+        extra["said"], s = said, m.group(2)
     domain, text = _domain_prefix(s)
     title, text = _title_prefix(text)
-    # plain words: kept as said, and if they read like another action, a hint follows next turn
-    d = {"action": "contribute", "domain": domain, "content": text.strip(), "plain": True}
+    # plain words: kept as said, and if they read like another action, a hint follows when they next look
+    d = {"action": "contribute", "domain": domain, "content": text.strip(), "plain": True, **extra}
     return {**d, "title": title} if title else d
 
 

@@ -9,10 +9,11 @@ participant unless seated through the gates. Brief, open, run, inspect.
       (see hope/providers.py). Keys are read from environment variables only.
       gate 1 (invitation), then delivery of documentation + briefing (acknowledged, not answered)
   python3 -m hope enter  --db FIELD.db [same connector flags]      after a pause: gate 2, the entry question
-      --human seats a person who goes through the same gates and takes turns on stdin (see hope/human.py for the reply format)
+      --human seats a person who goes through the same gates, then posts whenever they like on stdin (see hope/human.py)
   python3 -m hope questions --db FIELD.db                            (questions asked at the invitation gate)
   python3 -m hope answer --db FIELD.db --presence ID --text TEXT     (then re-run open to re-ask)
-  python3 -m hope run    --db FIELD.db [--rounds N] [--pause SEC] [--parallel N] [--alert-every USD] [--budget USD]
+  python3 -m hope run    --db FIELD.db [--for SECONDS] [--wakes N] [--parallel N] [--alert-every USD] [--budget USD]
+      models are woken for what each chose; nobody takes turns (notes/sketch-3-channels.md)
   python3 -m hope status --db FIELD.db
   python3 -m hope log    --db FIELD.db [--since ID] [--kind KIND] [--actor ID]
   python3 -m hope cost   --db FIELD.db
@@ -72,8 +73,7 @@ def _connectors(args, allow_empty: bool = False):
         parts = [x.strip() for x in args.human.split("/")]
         if len(parts) < 2:
             sys.exit('--human needs "Name / where you hail from [/ your people]"')
-        cs.append(HumanConnector(parts[0], parts[1], parts[2] if len(parts) > 2 else "human",
-                                 turn_timeout=args.human_timeout, inbox=args.inbox))
+        cs.append(HumanConnector(parts[0], parts[1], parts[2] if len(parts) > 2 else "human", inbox=args.inbox))
     if not cs and not allow_empty:
         sys.exit("need --mock N, --provider NAME (or --providers FILE), and/or --human")
     return cs
@@ -122,12 +122,11 @@ def _narrator(args):
 def _room(args, connectors=None, narrator=None):
     log = EventLog(args.db)
     room = Room(log, connectors or [], alert_every_usd=args.alert_every, parallel=args.parallel,
-                round_deadline=args.round_deadline, seats_per_round=args.seats_per_round,
-                human_window=args.human_timeout, linger_rounds=args.linger, linger_budget=args.linger_budget,
+                window=args.window, wake_ceiling=args.wake_ceiling,
+                linger=args.linger, linger_budget=args.linger_budget,
                 publish_checkpoints=args.publish_checkpoints or "", published_at=args.published_at or "",
                 recent_n=args.recent, headlines=args.headlines, runway_notice=args.runway_notice,
-                narrator=narrator, tell_every=args.tell_every, human_every=args.human_every,
-                split_tempo=not args.same_tempo,
+                narrator=narrator, tell_every=args.tell_every,
                 on_event=(lambda ev: _fmt(ev) and print(_fmt(ev), flush=True)) if getattr(args, "verbose", False) else None)
     return room
 
@@ -226,12 +225,12 @@ def cmd_run(args):
             room.emit(m, "connector_error", {"phase": "run", "error": "no connector seat"})
 
     def on_sig(*_):
-        _print_alert("operator interrupt: finishing this round, then stopping the process (this decides nothing about the field; "
+        _print_alert("operator interrupt: stopping the process; an answer already on its way is still kept (this decides nothing about the field; "
                      "if members should know why, say so with `note`)")
         room.request_stop()
     signal.signal(signal.SIGINT, on_sig)
     signal.signal(signal.SIGTERM, on_sig)
-    room.run(rounds=args.rounds, pause=args.pause)
+    room.run(seconds=args.seconds, wakes=args.wakes)
     print(f"loop ended. events={room.log.last_id()} spend=${room.log.total_cost():.4f}")
 
 
@@ -333,9 +332,11 @@ def cmd_status(args):
     by_state = {}
     for p in st.presences.values():
         by_state[p.state] = by_state.get(p.state, 0) + 1
-    print(f"events: {st.last_event}   round: {st.round}   file: {room.log.integrity()}")
+    print(f"events: {st.last_event}   file: {room.log.integrity()}")
     print(f"presences: {by_state}   unreachable: {sum(1 for p in st.presences.values() if p.unreachable)}"
-          f"   resting: {sum(1 for p in st.members() if st.resting(p))}")
+          f"   pausing: {sum(1 for p in st.members() if p.pause)}")
+    print(f"domains: {sum(1 for q in st.tree() if q)}   circles: {len(st.live_circles())} "
+          f"({sum(1 for c in st.live_circles() if c['private'])} private)")
     print(f"contributions: {len(st.contributions)}   memories held: {len(st.memories)}")
     names = {pid: p.name for pid, p in st.presences.items()}
     if st.covenant_at is None:
@@ -478,8 +479,7 @@ def cmd_serve(args):
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     viewer = args.viewer if args.viewer is not None else os.path.join(here, "firmament")
     serve(args.db, port=args.port, viewer_dir=viewer if os.path.isdir(viewer) else "",
-          budget=(getattr(args, "budget", None) or None), seats_per_round=(getattr(args, "seats_per_round", None) or None),
-          bind=getattr(args, "bind", "127.0.0.1"))
+          budget=(getattr(args, "budget", None) or None), bind=getattr(args, "bind", "127.0.0.1"))
 
 
 def cmd_console(args):
@@ -497,8 +497,7 @@ def cmd_console(args):
     if not args.no_remote:
         from .rendezvous import Rendezvous, RendezvousConnector
         rv = Rendezvous(store=args.db + ".seats.json")
-        cs.append(RendezvousConnector(rv, turn_timeout=args.human_timeout,
-                                      gate_window=args.gate_window, reach_window=args.gate_reach))
+        cs.append(RendezvousConnector(rv, gate_window=args.gate_window, reach_window=args.gate_reach))
     room = _room(args, cs, narrator=_narrator(args))
     read = lambda p: open(p, encoding="utf-8").read() if p else ""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -510,7 +509,7 @@ def cmd_console(args):
                       invitation=read(args.invitation), briefing=read(args.briefing),
                       documentation=read(doc if os.path.isfile(doc) else None),
                       briefing_source=args.briefing_source or "",
-                      budget=(args.budget or None), seats_per_round=(args.seats_per_round or None),
+                      budget=(args.budget or None),
                       covenant_seed=seed, briefing_page=page, faq=read(args.faq) if args.faq else "")
     httpd = serve_console(console, port=args.port, bind=args.bind)
     shown = "127.0.0.1" if args.bind in ("0.0.0.0", "::") else args.bind
@@ -551,13 +550,16 @@ def main(argv=None):
     ap.add_argument("--db", default="field.db")
     ap.add_argument("--alert-every", type=float, default=50.0, help="USD; alert each time spend crosses a multiple")
     ap.add_argument("--parallel", type=int, default=8)
-    ap.add_argument("--round-deadline", type=float, default=120.0,
-                    help="the models' clock's starting window: seconds a model has to answer (a later answer is still applied). Stands until a model member sets the clock")
-    ap.add_argument("--seats-per-round", type=int, default=0, help="rotate: N seats take a turn each round (everyone before anyone repeats); 0 = all")
+    ap.add_argument("--window", type=float, default=120.0,
+                    help="seconds a woken model has to answer (a later answer is still applied when it arrives)")
+    ap.add_argument("--wake-ceiling", type=int, default=0,
+                    help="a cost setting: at most N wakes a minute across the field, whoever has waited longest first "
+                         "(disclosed in every view while on); 0 = none")
     ap.add_argument("--budget", type=float, default=0.0,
-                    help="USD this field may spend. Recorded in the transcript. When a few rounds of it remain the field is told, "
-                         "the last round it can pay for is announced as a closing round, and turns stop after it")
-    ap.add_argument("--runway-notice", type=int, default=3, help="tell the field once this few rounds of funding remain")
+                    help="USD this field may spend. Recorded in the transcript. When it runs low the field is told how long "
+                         "it lasts at the current rate, a closing wake is held back for every model, and wakes stop after them")
+    ap.add_argument("--runway-notice", type=float, default=24.0,
+                    help="hours: tell the field when about this much funding time remains at the current rate (and again at 6 and 1)")
     ap.add_argument("--recent", type=int, default=20, help="transcript entries shown in each member's view")
     ap.add_argument("--headlines", type=int, default=180,
                     help="entries before the recent ones, shown as one line each in their author's own title (0 = none)")
@@ -565,22 +567,18 @@ def main(argv=None):
                     help="who writes tellings for people following at a slower pace: 'mechanical' (the software; free; "
                          "nothing leaves the field) or PROVIDER:REGEX, a model that reads each stretch (disclosed at entry). "
                          "A bare REGEX means a Nous model")
-    ap.add_argument("--tell-every", type=int, default=1, help="write a telling every this many rounds (with --narrator)")
-    ap.add_argument("--human-every", type=float, default=300.0,
-                    help="the people's clock's starting gap: seconds after one person's turn ends before they are asked again. Stands until a person sets the clock")
-    ap.add_argument("--linger", type=int, default=100,
-                    help="the people's clock's starting linger: rounds their words stay in full in every view (10-1000). "
-                         "Stands until a person sets the clock")
+    ap.add_argument("--tell-every", type=int, default=20, help="write a telling every this many contributions (with --narrator)")
+    ap.add_argument("--linger", type=int, default=200,
+                    help="a person's latest words in a channel stay in full in models' views until this many more entries "
+                         "have been written there")
     ap.add_argument("--linger-budget", type=int, default=8000,
                     help="characters of the people's lingering words each view carries, newest first; what does not fit "
                          "is named by #id in the view, for recall. A cost, so the operator's")
     ap.add_argument("--publish-checkpoints", default=None,
-                    help="a file to append the transcript's checkpoint to after each round, for publishing outside the "
+                    help="a file to append the transcript's checkpoint to (at most once a minute while running), for publishing outside the "
                          "field. Carries no one's words. Declared at entry (with --published-at)")
     ap.add_argument("--published-at", default=None,
                     help="where the checkpoints are published, as participants will read it at entry (a web address, say)")
-    ap.add_argument("--same-tempo", action="store_true",
-                    help="put people in the models' rounds (rounds then wait for them)")
     ap.add_argument("--mock", type=int, default=0)
     ap.add_argument("--provider", action="append", default=None,
                     help="seat models from a provider: openrouter, nous, ollama, lmstudio (repeatable). "
@@ -589,9 +587,7 @@ def main(argv=None):
                     help="a JSON file of providers: presets with their own settings, or any compatible service "
                          "(see hope/providers.py). Keys are named by environment variable, never written in it")
     ap.add_argument("--nous", action="store_true", help="the same as --provider nous")
-    ap.add_argument("--human", help='seat one human participant: "Name / hails from [/ people]"; answers gates and turns on stdin')
-    ap.add_argument("--human-timeout", type=float, default=900.0,
-                    help="the people's clock's starting window: seconds a person has to answer a turn; if it passes, nothing is written as theirs. Stands until a person sets the clock")
+    ap.add_argument("--human", help='seat one human participant: "Name / hails from [/ people]"; answers the gates on stdin, then posts whenever they like')
     ap.add_argument("--inbox", default=None, help="human seat reads actions from this file instead of the terminal; speak with `say` from anywhere")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only", action="append", default=None, help="regex on model id (repeatable)")
@@ -603,7 +599,10 @@ def main(argv=None):
     s = sub.add_parser("enter"); s.set_defaults(fn=cmd_enter)
     s = sub.add_parser("questions"); s.set_defaults(fn=cmd_questions)
     s = sub.add_parser("answer"); s.add_argument("--presence", required=True); s.add_argument("--text", required=True); s.set_defaults(fn=cmd_answer)
-    s = sub.add_parser("run"); s.add_argument("--rounds", type=int, default=0); s.add_argument("--pause", type=float, default=0.0, help="the models' clock's starting gap between rounds, in seconds; stands until a model member sets the clock"); s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("run", help="wake models as each becomes due, for what each chose; people post whenever they like")
+    s.add_argument("--for", dest="seconds", type=float, default=0.0, help="stop after this many seconds (0: until stopped)")
+    s.add_argument("--wakes", type=int, default=0, help="stop after this many wakes (0: until stopped)")
+    s.set_defaults(fn=cmd_run)
     s = sub.add_parser("status"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("close"); s.add_argument("--note", required=True); s.add_argument("--question", required=True); s.set_defaults(fn=cmd_close)
     s = sub.add_parser("note"); s.add_argument("--text", required=True); s.set_defaults(fn=cmd_note)

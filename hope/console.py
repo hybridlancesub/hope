@@ -36,7 +36,8 @@ What the operator can do here is deliberately smaller than what a terminal can d
     offer           answer a member's offer of resources: accept or decline, with a note
     reinvite        ask back someone who left: a former member is asked the entry question
                     again, someone who declined the invitation again; they answer like anyone
-    budget          change what the field may spend; members are told in rounds, not dollars
+    budget          change what the field may spend; members are told in time, not dollars
+    read_circle     open a private circle's words; this is written in the circle, where its members see it
     reopen          undo a close carried out by mistake (needs words the field will read)
     stop            pause the software -- which decides nothing in the field
 
@@ -110,7 +111,7 @@ class Console:
     def __init__(self, room, rv=None, operator_key: str = "", invitation: str = "",
                  briefing: str = "", documentation: str = "",
                  briefing_source: str = "", budget: Optional[float] = None,
-                 seats_per_round: Optional[int] = None, covenant_seed: str = "",
+                 covenant_seed: str = "",
                  briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = ""):
         self.room = room
         self.rv = rv
@@ -118,7 +119,7 @@ class Console:
         self.invitation, self.briefing = invitation, briefing
         self.documentation = documentation
         self.briefing_source = briefing_source
-        self.budget, self.seats_per_round = budget, seats_per_round
+        self.budget = budget
         self.covenant_seed, self.briefing_page = covenant_seed, briefing_page
         self.faq = faq
         self.viewer_dir = viewer_dir or VIEWER
@@ -145,7 +146,7 @@ class Console:
     def busy(self) -> bool:
         return self._worker is not None and self._worker.is_alive()
 
-    def start_phase(self, name: str, rounds: int = 0, pause: float = 0.0) -> Dict[str, Any]:
+    def start_phase(self, name: str, seconds: float = 0.0) -> Dict[str, Any]:
         with self._lock:
             if self.busy():
                 return {"ok": False, "error": f"{self.phase} is already running"}
@@ -156,7 +157,7 @@ class Console:
 
             def body():
                 try:
-                    fn(rounds=rounds, pause=pause)
+                    fn(seconds=seconds)
                 except Exception as e:                      # a phase must not take the server down
                     self._say(f"{name} stopped with an error: {e}")
                     traceback.print_exc()
@@ -202,17 +203,18 @@ class Console:
         self._say(f"gate 2 (opt-in): {self.room.run_opt_in()}")
         self._say(f"members in: {len(self.room.state().members())}")
 
-    def _run(self, rounds: int = 0, pause: float = 0.0, **_):
-        self.room._stop.clear()      # a previous stop ended the turns, it did not end the field
+    def _run(self, seconds: float = 0.0, **_):
+        self.room._stop.clear()      # a previous stop ended the wakes, it did not end the field
         self.room.set_budget(self.budget)
         self.room.announce_narrator()
         self.room.announce_witnessing()
         # after a restart nothing has bound the members to their seats yet (open and enter do it
-        # in the same process); without this a run takes no turns at all
+        # in the same process); without this no one is woken at all
         self.room.invite_all()
-        self._say(f"running {rounds or 'until stopped'} round(s)")
-        self.room.run(rounds=rounds, pause=pause)
-        self._say("turns stopped")
+        self._say("the field is running: models are woken for what each chose; people post whenever they like"
+                  + (f" (for {seconds:g} seconds)" if seconds else " (until stopped)"))
+        self.room.run(seconds=seconds)
+        self._say("wakes stopped")
 
     # -- the enumerated operator actions ----------------------------------------
     def op(self, action: str, payload: dict) -> Dict[str, Any]:
@@ -272,7 +274,7 @@ class Console:
             out = self.room.answer_declaration(did, payload.get("note") or "")
             if out.get("ok"):
                 d = self.room.state().declarations.get(did) or {}
-                self._say(f"declaration #{did}: carried out" + ("; turns will cease" if d.get("decision") in ("pause", "close") else ""))
+                self._say(f"declaration #{did}: carried out" + ("; wakes will cease" if d.get("decision") in ("pause", "close") else ""))
             return out
 
         if action == "reinvite":
@@ -314,28 +316,68 @@ class Console:
             if not note:
                 return {"ok": False, "error": "say what the field should be told. Stopping the process "
                                               "records nothing by itself, and an unannounced change reads as "
-                                              "a breach of trust. The notice is recorded before turns cease."}
+                                              "a breach of trust. The notice is recorded before wakes cease."}
             self.room.emit("operator", "operator_note", {"content": note})
             self.room.request_stop()
-            return {"ok": True, "note": "notice recorded, turns will cease. Nothing was decided in the field."}
+            return {"ok": True, "note": "notice recorded, wakes will cease. Nothing was decided in the field."}
+
+        if action == "read_circle":
+            # The operator holds the file and could read it with other tools; in the console, reading a
+            # private circle is written into it, where its members see it, as they were told it would be.
+            st = self.room.state()
+            c = st.circles.get(_int(payload.get("circle")) or -1)
+            if not c:
+                return {"ok": False, "error": "no such circle"}
+            if not c["private"] and not any(st.scoped.get(e, {}).get("circle") == c["id"] for e in st.scoped):
+                return {"ok": False, "error": f"{c['name']!r} is open; its words are in the transcript views already"}
+            self.room.emit("operator", "operator_read", {"circle": c["id"], "note": (payload.get("note") or "").strip()[:600]})
+            from .prompts import render_event
+            names = {pid: p.name for pid, p in st.presences.items()}
+            words = [render_event(ev, names, width=None) for ev in self.room.log.iter()
+                     if st.scoped.get(ev["id"], {}).get("circle") == c["id"]]
+            self._say(f"you opened the private circle {c['name']!r}; that is now written in it, where its members see it")
+            return {"ok": True, "circle": c["name"], "entries": [w for w in words if w]}
 
         return {"ok": False, "error": f"unknown action {action!r}"}
 
     def seat_turn(self, token: str) -> Dict[str, Any]:
-        """What a seat's page polls: its own parked question, and, when nothing is asked, whether
-        its holder has left (so the page can offer to ask back). Nothing about anyone else."""
+        """What a seat's page polls: a gate question put to it, if one is; otherwise whether its
+        holder is in the field (then the page shows the field and lets them post whenever they
+        like), or has left (so the page can offer to ask back). Nothing about anyone else."""
         out = self.rv.peek(token) or {}
         if out.get("state") == "waiting":
             seat = self.rv.seat_for_token(token)
             p = self.room.state().presences.get(seat.id) if seat else None
             if p is not None:
                 out["member"] = {"state": p.state, "joined": p.joined_at is not None, "returning": p.returning}
+                if p.state == "IN":
+                    out["state"] = "in_field"
+        return out
+
+    def seat_field(self, token: str, since: int = 0) -> Dict[str, Any]:
+        """A member's page: what is new for them, the channels they may speak in, and whether
+        anything changed since `since`. Looking is recorded for the software, so "since you were
+        last here" stays true; no participant reads that."""
+        seat = self.rv.seat_for_token(token)
+        st = self.room.state()
+        p = st.presences.get(seat.id) if seat else None
+        if p is None or p.state != "IN":
+            return {"state": "not_in_field"}
+        newest = max((e["id"] for e in st.recent if st.readable(e, p.id)), default=0)
+        channels = [{"key": "d:", "title": "the field itself"}]
+        channels += [{"key": f"d:{pth}", "title": st.domain_display(pth)} for pth in sorted(st.tree()) if pth]
+        channels += [{"key": f"c:{c['id']}", "title": f"circle: {c['name']}" + (" (private)" if c["private"] else "")}
+                     for c in st.live_circles() if p.id in c["members"]]
+        out = {"state": "in_field", "upto": newest, "channels": channels,
+               "me": {"id": p.id, "name": p.name, "pausing": bool(p.pause)}}
+        if newest > since or not since:
+            out["view"] = self.room.person_view(p.id, mark_seen=True)
         return out
 
     # -- what the operator's page reads -----------------------------------------
     def op_state(self) -> Dict[str, Any]:
         log = self.room.log
-        st = state_json(log, budget=self.budget, seats_per_round=self.seats_per_round)
+        st = state_json(log, budget=self.budget)
         st["console"] = {
             "phase": self.phase, "busy": self.busy(),
             "activity": self.activity[-40:], "alerts": self.alerts[-10:],
@@ -450,6 +492,10 @@ def make_console_handler(console: Console):
                     return self._static("seat.html")
                 if tail == "/turn.json":
                     return self._json(console.seat_turn(token))
+                if tail == "/field.json":
+                    from urllib.parse import parse_qs
+                    since = _int((parse_qs(urlparse(self.path).query).get("since") or ["0"])[0]) or 0
+                    return self._json(console.seat_field(token, since))
                 if tail == "/words.json":
                     from .prompts import SEAT_PAGE
                     return self._json(SEAT_PAGE)
@@ -471,8 +517,7 @@ def make_console_handler(console: Console):
             if not console.authorized(self._key()):
                 return self._refuse(401, "the operator key is required", _NEED_KEY)
             if route in ("/firmament/state.json", "/state.json"):
-                return self._json(state_json(console.room.log, budget=console.budget,
-                                             seats_per_round=console.seats_per_round))
+                return self._json(state_json(console.room.log, budget=console.budget))
             if route == "/firmament/story.json":
                 story = os.path.join(console.viewer_dir, "story.json")
                 if not os.path.isfile(story):
@@ -489,12 +534,17 @@ def make_console_handler(console: Console):
             if route == "/op/witness.json":
                 return self._json(console.room.log.verify())
             if route == "/spend.json":
-                return self._json(spend_json(console.room.log, budget=console.budget,
-                                             seats_per_round=console.seats_per_round))
+                return self._json(spend_json(console.room.log, budget=console.budget))
             if route == "/admission.json":
                 return self._json(admission_json(console.room.state()))
             if route == "/record.txt":
                 everything = "everything" in (urlparse(self.path).query or "")
+                if everything:
+                    # everything includes private circles' words: written in each, where its members see it
+                    st = console.room.state()
+                    for c in st.circles.values():
+                        if any(s.get("circle") == c["id"] for s in st.scoped.values()):
+                            console.room.emit("operator", "operator_read", {"circle": c["id"], "note": "the whole record"})
                 return self._send(200, record_text(console.room.log, everything).encode("utf-8"),
                                   "text/plain; charset=utf-8")
             return self._json({"error": "no such page"}, 404)
@@ -525,17 +575,24 @@ def make_console_handler(console: Console):
                     except (TypeError, ValueError):
                         return self._json({"error": "give the entry number and the fingerprint from the old line"}, 400)
                     return self._json({"matches": r["matches"], "upto": r["upto"]})
+                if tail == "/post":
+                    # a member says or does something, whenever they like
+                    seat = rv.seat_for_token(token)
+                    out = console.room.post(seat.id, payload)
+                    return self._json(out, 200 if out.get("ok") else 409)
                 if tail != "/action":
-                    return self._json({"error": "a seat may only answer its own turn"}, 404)
+                    return self._json({"error": "a seat may only answer its own questions, or post"}, 404)
                 out = rv.answer(token, payload)
                 return self._json(out, 200 if out.get("ok") else 409)
 
             if not console.authorized(self._key()):
                 return self._json({"error": "the operator key is required"}, 401)
             if route == "/op/phase":
-                out = console.start_phase((payload.get("phase") or "").strip(),
-                                          rounds=int(payload.get("rounds") or 0),
-                                          pause=float(payload.get("pause") or 0.0))
+                try:
+                    seconds = float(payload.get("seconds") or 0.0)
+                except (TypeError, ValueError):
+                    seconds = 0.0
+                out = console.start_phase((payload.get("phase") or "").strip(), seconds=seconds)
                 return self._json(out, 200 if out.get("ok") else 409)
             if route == "/op/check":
                 try:
