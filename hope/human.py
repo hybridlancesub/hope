@@ -30,9 +30,12 @@ The format is plain text, translated to the same JSON actions models send:
     relabel <label> -> <label>      move your own entries from one domain to another
     declare <what, why, how> [/ in 1h] [/ pause 2h | / pause | / resume | / close | / bring <instrument> |
             / put down <instrument> | / pin <section> | / unpin <section> | / rhythm 15m |
-            / friction <declarations|pinned|an act>: notice 1h, yes 1, objections hold | / ask <help>]
+            / friction <declarations|pinned|an act>: notice 1h, yes 1, objections hold | / ask <help> |
+            / steward <names> | / unsteward <names> | / move to <a steward>]
                                     announce what will happen; after its notice the software carries out what
                                     you name, and asks the operator's help with "ask"; #ids become citations
+    steward yes | steward no [why] | steward step down [note]
+                                    answer the field asking you to keep a copy of its record, or step down
     offer <text>                    put an offer of resources before the operator and everyone
     tool <tool>: <words>            use one of the field's tools (the words go to its first text argument;
                                     or give its arguments as JSON after the colon); what came back is shown
@@ -421,6 +424,12 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
             else:
                 _effect_words(d, extra)
         return d
+    m = re.match(r"steward\s+(yes|no|step\s+down)\b\s*(.*)$", s, re.I | re.S)
+    if m:
+        verb, rest = " ".join(m.group(1).lower().split()), m.group(2).strip()
+        if verb == "step down":
+            return {"action": "steward", "step_down": True, "note": rest}
+        return {"action": "steward", "yes": verb == "yes", "reason": rest}
     m = re.match(r"withdraw\s+revision\s+#?(\d+)\s*(.*)$", s, re.I | re.S)
     if m:
         return {"action": "withdraw_revision", "revision": int(m.group(1)), "note": m.group(2).strip()}
@@ -637,6 +646,14 @@ def _effect_words(d: dict, extra: str) -> None:
         d["rhythm"] = extra[7:].strip()
     elif low_.startswith("ask "):
         d["ask"] = extra[4:].strip()
+    elif low_.startswith("steward "):
+        d.setdefault("steward", []).extend(x.strip() for x in extra[8:].split(",") if x.strip())
+    elif low_.startswith("unsteward "):
+        d.setdefault("unsteward", []).extend(x.strip() for x in extra[10:].split(",") if x.strip())
+    elif low_.startswith("move to "):
+        d["move"] = extra[8:].strip()
+    elif low_.startswith("move "):
+        d["move"] = extra[5:].strip()
     elif low_.startswith("friction "):
         target, _, rest = extra[9:].partition(":")
         f = {"for": target.strip()}

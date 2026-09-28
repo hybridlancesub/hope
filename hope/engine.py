@@ -23,6 +23,10 @@ Declarations (notes/sketch-8-the-operator-as-bridge.md) are announcements: after
 software carries out what one says it can do itself, and asks the operator's help, as a bridge,
 with anything else. The operator approves nothing; their one control is the budget.
 
+Stewards (notes/sketch-9-stewards.md): members the field declares, on their own yes, who keep a
+copy of what every member can read on machines of their own (hope/steward.py). A field that
+moves to a steward closes here; the steward carries it on at their machine (carry_on).
+
 Tools (notes/sketch-4-tools.md). A woken model may use a tool, or read on in something long, and
 is asked again in the same wake with what came back, as agents do, until it acts or says nothing.
 Each step is a paid model call, checked against the runway before it is taken, and one guard
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -55,6 +60,8 @@ from .model import FIRM_DEFAULT, PLAY_WORDS, ROLE_LENGTH, firm_ranges, touches_f
 from .model import INVITE_PAUSE, REPAIR_STATUSES
 from .model import INSTRUMENT_PURPOSES, RESPONSES
 from .model import BEAT_SHARE, EFFECTS, EVERYONE, FRICTION_FOR, RHYTHM_MIN, duration, effects_words, friction_words
+from .model import STEWARD_RECORD
+from . import steward as stewardship
 
 OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
@@ -70,7 +77,7 @@ PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall",
                        "use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill",
                        # step 4 (notes/sketch-5-small-pieces.md)
                        "journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
-                       "withdraw_revision",
+                       "withdraw_revision", "steward",
                        # step 5 (notes/sketch-6-repair-and-invitations.md)
                        "repair", "announce", "invite", "answer_question",
                        # step 6 (notes/sketch-7-instruments.md)
@@ -158,6 +165,8 @@ class Room:
         self.tool_steps = max(1, int(tool_steps))   # the guard against a loop, per wake
         self.tool_view = max(2000, int(tool_view))  # characters of a result one step shows (a cost; the rest is read on)
         self._ctx: Dict[str, Dict[str, Any]] = {}   # presence id -> this wake's (or post's) actions, steps, what came back
+        # The stewards' links, in a file beside the transcript and never in it (hope/steward.py).
+        self.links = stewardship.Links(log.path + ".stewards.json")
 
     def limits(self, st: Optional[RoomState] = None) -> Dict[str, Any]:
         """What every view says about time: the floor and the window the software holds, the
@@ -334,6 +343,63 @@ class Room:
              f"The operator cannot yet do what the field asked at #{req_id}{said} It stays open.")})
         return {"ok": True}
 
+    def carry_on(self, note: str) -> Dict[str, Any]:
+        """Carry the field on at this machine, from a steward's copy, once the field has declared it
+        moves to this steward. The transcript goes on from the same fingerprints (under a log name of
+        its own, since the earlier machine's may still grow), and every member is asked the entry
+        question again. Nobody is moved without their yes."""
+        me = self.log.meta("steward")
+        if not me:
+            return {"ok": False, "error": "this is not a steward's copy of a field (`steward` makes one)"}
+        if self.log.meta("carried_on"):
+            return {"ok": False, "error": "this copy has already been carried on; it is the field's home now"}
+        st = self.state()
+        if not st.moved:
+            return {"ok": False, "error": "the field has not declared that it moves (if it has since, catch your copy up "
+                                          "with `steward` first)"}
+        if st.moved["to"] != me:
+            who = st.presences.get(st.moved["to"])
+            return {"ok": False, "error": f"the field moved to the machine of {who.name if who else st.moved['to']}, not to yours"}
+        note = (note or "").strip()[:1000]
+        if not note:
+            return {"ok": False, "error": "say something to the members, who read it when they are asked whether to continue here"}
+        w = self.log.witness()
+        old = self.log.origin()
+        ev = self.emit(OPERATOR, "carried_on", {"from": old, "upto": w["upto"], "fingerprint": w["fingerprint"],
+                                                "steward": me, "declaration": st.moved["from"], "note": note})
+        self.log.set_meta("carried_on", str(ev["id"]))
+        self.log.set_meta("origin", f"hope.field/{secrets.token_hex(8)}")
+        return {"ok": True, "at": ev["id"], "asked": [p.id for p in self.state().presences.values() if p.returning]}
+
+    def steward_link(self, st: RoomState, pid: str) -> Optional[str]:
+        """A steward's own link (after the field's address), for their own view only; None for anyone else."""
+        if pid in st.stewards:
+            return f"/steward/{self.links.token(pid)}/"
+        return None
+
+    def serve_copy(self, token: str, since: Any = 0, held: Any = None) -> Dict[str, Any]:
+        """What a steward's copy is sent (hope/steward.py), for whoever holds a steward's link, while
+        they are a steward. How far each copy has caught up is written in the transcript, at most once
+        an hour, so every member can see it."""
+        pid = self.links.pid(str(token or ""))
+        st = self.state()
+        if not pid or pid not in st.stewards:
+            if pid:
+                self.links.revoke(pid)
+            return {"ok": False, "error": "this is not a steward's link, or no longer is"}
+        try:
+            since = max(0, int(since or 0))
+            held = [int(x) for x in (held or [])][:100_000]
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "since is an entry's number, and held a list of them"}
+        out = stewardship.serve_copy(self.log, since, held)
+        out.update({"ok": True, "you": pid})
+        s = st.stewards[pid]
+        if not out["more"] and out["after"]["upto"] > s["upto"] and \
+                (s["synced_at"] is None or time.time() - s["synced_ts"] >= STEWARD_RECORD):
+            self.emit(ROOM, "steward_synced", {"presence": pid, "upto": out["after"]["upto"]})
+        return out
+
     def resume(self, note: str) -> Dict[str, Any]:
         """Bridge a pause the field cannot end itself: a declared pause with no end, in a field whose
         models cannot act while it holds. Resume it as the declaration said, or as members asked from
@@ -379,8 +445,14 @@ class Room:
 
     def reopen(self, note: str) -> Dict[str, Any]:
         """Open a closed field again: when its members ask from outside it (nothing runs once it is
-        closed, so the field cannot), or when a fault closed it. It needs words, and the field sees them."""
-        if self.state().closed_at is None:
+        closed, so the field cannot), or when a fault closed it. It needs words, and the field sees them.
+        A field that moved to a steward is not reopened here: it goes on at their machine."""
+        st = self.state()
+        if st.moved:
+            who = st.presences.get(st.moved["to"])
+            return {"ok": False, "error": f"the field moved to the machine of {who.name if who else st.moved['to']}, its "
+                                          f"steward (#{st.moved['at']}); it goes on there, not here"}
+        if st.closed_at is None:
             return {"ok": False, "error": "the field is not closed"}
         if not (note or "").strip():
             return {"ok": False, "error": "say why the field is being reopened; members will read it"}
@@ -691,6 +763,8 @@ class Room:
                     and p.id in st.circle_needs(x) and p.id not in x["yes"] and p.id not in x["no"]]
             if asks:
                 return {"why": "awaiting", "where": f"c:{asks[-1]['circle']}"}
+        if p.wake.get("addressed", True) and p.id in st.steward_asks and st.steward_asks[p.id]["at"] > p.last_seen:
+            return {"why": "steward", "where": None}        # the field asks them to keep a copy of its record
         if p.wake.get("addressed", True):
             asked = [q for q in st.iquestions.values() if q["status"] == "open" and q["id"] > p.last_seen
                      and (p.id in q["asked"] or p.id == q.get("subject")) and p.id not in q["answers"]]
@@ -749,6 +823,7 @@ class Room:
         view = prompts.wake_view(st, p, w["why"], w.get("where"), limits=self.limits(st), funding=self.runway_now(st),
                                  untold=self.untold(st, p) if w["why"] == "untold" else None,
                                  recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
+                                 steward_link=self.steward_link(st, pid),
                                  people_ids=set(self._people_ids()), context=self.recent_n,
                                  headlines=self.headlines, news_budget=self.news_budget,
                                  linger=self.linger, linger_budget=self.linger_budget)
@@ -900,6 +975,7 @@ class Room:
         text = prompts.person_view(st, p, catch_up=self._catch_up(st, p), limits=self.limits(st),
                                    funding=self.runway_now(st),
                                    recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
+                                   steward_link=self.steward_link(st, pid),
                                    people_ids=set(self._people_ids()), context=self.recent_n,
                                    headlines=self.headlines, news_budget=self.news_budget,
                                    linger=self.linger, linger_budget=self.linger_budget)
@@ -1188,7 +1264,7 @@ class Room:
             st2 = self.state()
             d = st2.declarations.get(ev["id"])
             if d:
-                words = effects_words(fx, versions=st2.instrument_versions)
+                words = effects_words(fx, prompts.names_of(st2), versions=st2.instrument_versions)
                 self.alert(f"DECLARATION #{ev['id']} by {prompts.names_of(st2).get(pid, pid)}: {body[:300]}"
                            + (f" It will {words}." if words else "")
                            + f" It takes effect in {duration(d['due_ts'] - d['ts'])} unless its declarer withdraws it"
@@ -1770,6 +1846,20 @@ class Room:
             if d["status"] not in ("waiting", "announced") and not (b and b["status"] == "asked"):
                 return f"#{d['id']} is {d['status'].replace('_', ' ')}; to undo what it did, declare again"
             self.emit(pid, "declaration_withdrawn", {"declaration": d["id"], "note": _clean(act.get("note"), 600)})
+        elif a == "steward":
+            if act.get("step_down") is True:
+                if pid not in st.stewards:
+                    return "you are not one of the field's stewards"
+                self.emit(pid, "steward_step_down", {"note": _clean(act.get("note"), 600)})
+                self.links.revoke(pid)
+                return None
+            if not isinstance(act.get("yes"), bool):
+                return ("steward takes \"yes\": true or false, to answer the field asking you to keep a copy of its "
+                        "record, or \"step_down\": true")
+            if pid not in st.steward_asks:
+                return "the field has not asked you to be a steward (or you have answered)"
+            self.emit(pid, "steward_answer", {"yes": act["yes"], "reason": _clean(act.get("reason"), REASON_LIMIT)})
+            return None
         elif a == "withdraw_revision":
             r = st.briefing_waiting.get(_int(str(act.get("revision", act.get("id")) or "").lstrip("#")) or -1)
             if not r:
@@ -2271,6 +2361,11 @@ class Room:
                 self._gates_beside()
                 self._listen_to_people()
                 st = self.state()
+                if st.moved:
+                    who = st.presences.get(st.moved["to"])
+                    self.alert(f"the field moved to the machine of {who.name if who else st.moved['to']}, its steward "
+                               f"(#{st.moved['at']}); nothing runs here. It goes on there.")
+                    break
                 if st.closed_at is not None:
                     self.alert(f"the field closed itself (#{st.closed_at}); nothing runs. If its members ask you to open "
                                f"it again, or a fault closed it: `reopen`.")
@@ -2356,7 +2451,7 @@ class Room:
     def _took_effect(self, eid: int, fx: Dict[str, Any], who: str) -> None:
         """Tell the operator what the field just did, and what it asks their help with."""
         st = self.state()
-        words = effects_words(fx, versions=st.instrument_versions)
+        words = effects_words(fx, prompts.names_of(st), versions=st.instrument_versions)
         if words:
             self.alert(f"#{eid} by {who} has taken effect: the field will {words}.")
         b = st.bridges.get(eid)
@@ -2616,8 +2711,8 @@ CHANNEL_ACTIONS = {"chat", "follow", "unfollow", "pause", "wake", "form_circle",
                    "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
 TOOL_ACTIONS = {"use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill"}
 STEP4_ACTIONS = {"journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
-                 "repair", "announce", "invite", "answer_question",
-                 "instrument", "raise", "respond", "withdraw_question"}
+                 "withdraw_revision", "repair", "announce", "invite", "answer_question",
+                 "instrument", "raise", "respond", "withdraw_question", "steward"}
 INSTRUMENT_TEXT_LIMIT = 6000    # characters of an instrument's words, as long as a covenant page
 
 
@@ -2873,6 +2968,29 @@ def _effects(st: RoomState, act: dict, body: str, floor: float):
         fr.append(one)
     if fr:
         fx["friction"] = fr
+    for key in ("steward", "unsteward"):
+        if act.get(key) in (None, "", []):
+            continue
+        who, unknown = _presences_ref(st, act[key])
+        if unknown or not who:
+            return None, f"no member named {', '.join(unknown) or 'anyone'} to {'ask to be a steward' if key == 'steward' else 'end the stewardship of'}"
+        if key == "steward":
+            gone = [st.presences[x].name for x in who if st.presences[x].state != IN]
+            if gone:
+                return None, f"{', '.join(gone)} is not in the field; a steward is a member"
+        else:
+            not_yet = [st.presences[x].name for x in who if x not in st.stewards and x not in st.steward_asks]
+            if not_yet:
+                return None, f"{', '.join(not_yet)} is not a steward, and has not been asked"
+        fx[key] = who
+    if act.get("move") not in (None, ""):
+        who, unknown = _presences_ref(st, act["move"])
+        if len(who) != 1:
+            return None, "\"move\" names one steward, whose machine the field moves to"
+        if who[0] not in st.stewards:
+            return None, (f"{st.presences[who[0]].name} is not a steward; the field moves only to a steward's machine, "
+                          f"where a copy of its record is kept")
+        fx["move"] = who[0]
     ask = _clean(act.get("ask"), STATEMENT_LIMIT)
     if ask:
         fx["ask"] = ask

@@ -22,7 +22,7 @@ The order of work now
 ---------------------
   2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: built;
   `hope host` later) -> 4 (built, sketch 5) -> 5 (built, sketch 6) -> 6 (built, sketch 7) -> 8b (the spiral tree, built)
-  -> the operator as bridge (built, sketch 8) -> 8a -> the interface pass, last.
+  -> the operator as bridge (built, sketch 8) -> 8a (stewards, built, sketch 9) -> the interface pass, last.
   A trial with a few real models comes later, when the author can set a key.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
@@ -178,8 +178,8 @@ itself/themselves in service to the field", whose one control is the budget.
   - Friction the field sets: a notice, yeses besides the author's, objections that hold. Loose
     by default; the Maxims pinned with an hour, one other yes, and an objection that holds.
   - A heartbeat at a rhythm the field sets (15 minutes to start), slowing as funding shortens.
-  - Still to come, with 8a: a lockout of the operator that means something (other stewards
-    holding copies of the transcript).
+  - Since 8a (sketch 9): the field withdraws the operator's role by moving to a steward's
+    machine, from a copy that steward holds.
 
 
 7. (Circles and harvests: now part of step 3.)
@@ -188,9 +188,13 @@ itself/themselves in service to the field", whose one control is the budget.
 
 8. Shared stewardship, and the spiral tree                                         medium each
 -------------------------------------------------------------------------------------
-  a. Shared stewardship. The operator's role is split into money, gates and machine, and in time
-     chosen by the field. Copies of the transcript are kept by several stewards, checked by
-     fingerprints. This learns from Matrix and Scuttlebutt without adopting either.
+  a. Shared stewardship. Built (sketch 9): members the field declares, on their own yes, keep
+     copies of what every member can read on their own machines, the rest only as fingerprints,
+     each copy checking itself against the field's fingerprints. A field that moves to a steward
+     closes on the old machine and is carried on at theirs, where every member is asked again.
+     Still to come: splitting money, gates and machine among several stewards at once, and who
+     reviews the field's changes to hope's code. This learns from Matrix and Scuttlebutt
+     without adopting either.
   b. The spiral tree. A viewer members can see, showing the field's shape, channels included,
      with where it differs and its minority voices (Section 25; after Polis and Talk to the City).
      Built (hope/spiral.py, tree.html): branches by domain, circles beside them, leaves; where the
@@ -221,7 +225,7 @@ Taken away along the way
   - Everyone speaking every round, turns themselves, and the two clocks (step 3).
   - The outside narrator model (step 4d).
   - One provider as the only way in (step 2a, done).
-  - A single operator as the only steward (step 8a).
+  - A single operator as the only steward (step 8a, built).
 
 
 Not to be done
@@ -273,6 +277,9 @@ Decided
       separation with pause and repair first; the pause is the instrument's own. Separation, for
       now, only from circles. The software's guards are defaults the field may change.
     - Step 8: the spiral tree first (8b).
+    - Stewards (sketch 9): a steward is a member the field declares; the copy holds what every
+      member can read and the rest as fingerprints; carried on elsewhere, every member is asked
+      again; the field declares the move.
     - The operator as bridge (sketch 8): declarations carried out by the software after a notice
       of 3 minutes; instruments settle by their own rule (unless an objection stands); the
       Maxims pinned with an hour and one other yes; a heartbeat every 15 minutes, dynamic by

@@ -19,6 +19,10 @@ the erasure.
 Files written by earlier versions of this software still open. Their old chain columns are read
 past, and their rows are given fingerprints the first time they are opened here; `verify` says
 from which entry witnessing began.
+
+A steward's copy (notes/sketch-9-stewards.md) is a file of this same kind, holding the field's
+rows as the field wrote them (`put`), except that some are held only by their leaf: rows of the
+kind "withheld". Its tree, and so its fingerprints, are the field's.
 """
 from __future__ import annotations
 
@@ -54,6 +58,7 @@ create index if not exists events_kind on events(kind);
 # The `ledger` table records money, never words. Its name is kept only so that earlier versions'
 # files still open; nothing a participant sees calls it that.
 ERASED = {"erased": True}
+WITHHELD = "withheld"   # a row a steward's copy holds only by its leaf (and, for a stand-in, what members already see)
 
 
 def payload_hash(body: str) -> str:
@@ -151,6 +156,63 @@ class EventLog:
     def origin(self) -> str:
         return self._meta("origin")
 
+    def meta(self, k: str, default: Optional[str] = None) -> Optional[str]:
+        return self._meta(k, default)
+
+    def set_meta(self, k: str, v: str) -> None:
+        with self.lock:
+            self.conn.execute("insert into meta(k, v) values (?, ?) on conflict(k) do update set v = excluded.v", (k, str(v)))
+
+    # -- copies (a steward's) --------------------------------------------------
+    def rows(self, since: int = 0, limit: int = 0, ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """Rows exactly as stored: the words as written, their fingerprint, and the leaf."""
+        q = "select id, ts, actor, kind, payload, payload_hash, leaf from events"
+        if ids is not None:
+            if not ids:
+                return []
+            q += f" where id in ({','.join('?' * len(ids))}) order by id"
+            args: List[Any] = list(ids)
+        else:
+            q += " where id > ? order by id" + (" limit ?" if limit else "")
+            args = [since] + ([limit] if limit else [])
+        with self.lock:
+            got = self.conn.execute(q, args).fetchall()
+        return [{"id": r[0], "ts": r[1], "actor": r[2], "kind": r[3], "body": r[4], "payload_hash": r[5], "leaf": r[6]}
+                for r in got]
+
+    def size_and_root(self) -> Tuple[int, bytes, int]:
+        """How many rows the tree holds, its root, and the last row's id."""
+        with self.lock:
+            self._sync()
+            return self._size, _root(self._frontier), self._last
+
+    def put(self, rows: List[Dict[str, Any]]) -> None:
+        """Add rows to a copy exactly as the field holds them, ids and leaves included. Only for a
+        steward's copy, which is written this way and no other until it is carried on."""
+        with self.lock:
+            self.conn.execute("begin immediate")
+            try:
+                for r in rows:
+                    self.conn.execute(
+                        "insert into events(id, ts, actor, kind, payload, payload_hash, leaf) values (?,?,?,?,?,?,?)",
+                        (r["id"], r["ts"], r["actor"], r["kind"], r["body"], r["payload_hash"], r["leaf"]))
+                self.conn.execute("commit")
+            except BaseException:
+                self.conn.execute("rollback")
+                raise
+            self._sync()
+
+    def fill(self, row: Dict[str, Any]) -> bool:
+        """Replace a row held only by its leaf with what may now be held of it (someone at the gates
+        entered, say). The leaf never changes; a row whose leaf differs is refused."""
+        with self.lock:
+            got = self.conn.execute("select leaf, kind from events where id = ?", (row["id"],)).fetchone()
+            if not got or got[0] != row["leaf"] or got[1] != WITHHELD:
+                return False
+            self.conn.execute("update events set ts = ?, actor = ?, kind = ?, payload = ?, payload_hash = ? where id = ?",
+                              (row["ts"], row["actor"], row["kind"], row["body"], row["payload_hash"], row["id"]))
+            return True
+
     def witnessed_from(self) -> int:
         return int(self._meta("witnessed_from", "1"))
 
@@ -198,8 +260,13 @@ class EventLog:
                 except (TypeError, ValueError):
                     pass
         frontier: List[Tuple[int, bytes]] = []
-        erased, problem = [], None
+        erased, held, problem = [], [], None
         for eid, ts, actor, kind, body, ph, leaf in rows:
+            if kind == WITHHELD:                # a steward's copy holds this one by its leaf (and a stand-in, or nothing)
+                if not json.loads(body).get("as"):
+                    held.append(eid)
+                _push(frontier, bytes.fromhex(leaf))
+                continue
             if json.loads(body) == ERASED:
                 if actor not in let_go.get(eid, set()):
                     problem = problem or f"the words of #{eid} are gone, and no let_go by its author names it"
@@ -213,7 +280,7 @@ class EventLog:
         return {"ok": problem is None, "problem": problem, "entries": len(rows),
                 "upto": rows[-1][0] if rows else 0, "fingerprint": fingerprint_text(root),
                 "checkpoint": f"{self.origin()}\n{len(rows)}\n{base64.b64encode(root).decode('ascii')}\n",
-                "erased": erased, "witnessed_from": self.witnessed_from()}
+                "erased": erased, "held_as_fingerprints": len(held), "witnessed_from": self.witnessed_from()}
 
     # -- events -------------------------------------------------------------
     def append(self, actor: str, kind: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

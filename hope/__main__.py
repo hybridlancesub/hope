@@ -28,6 +28,10 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope offer  --db FIELD.db --id N (--accept | --decline) [--note TEXT]
                                                                     answer a member's offer of resources
   python3 -m hope reopen --db FIELD.db --note TEXT                   open a closed field again, when its members ask
+  python3 -m hope steward --db COPY.db --from LINK [--every 10m]     a steward keeps their copy of the field's record in
+                                                                    step, checking it each time (notes/sketch-9-stewards.md)
+  python3 -m hope carry-on --db COPY.db --note TEXT                  once the field declares it moves to you, carry it on
+                                                                    here; then enter and run it with your own providers
   python3 -m hope tools  --db FIELD.db [--remove NAME --note TEXT]   the field's tools, flags and uses; remove one
   python3 -m hope skills --db FIELD.db [--out DIR]                   write the field's skills as DIR/<name>/SKILL.md
   python3 -m hope briefing --db FIELD.db --out FILE                  write the field's own edition of the briefing
@@ -402,7 +406,7 @@ def cmd_status(args):
         if d["status"] == "announced":
             print(f"announced: declaration #{d['id']} by {names.get(d['by'], d['by'])}, taking effect "
                   f"{time.strftime('%H:%M UTC', time.gmtime(d['due_ts']))}: {d['text'][:200]}"
-                  + (f"\n    the software will {effects_words(d['effects'], versions=st.instrument_versions)}"
+                  + (f"\n    the software will {effects_words(d['effects'], names, versions=st.instrument_versions)}"
                      if effects_words(d["effects"]) else ""))
     for w in st.waiting_on_operator():
         who = names.get(w["by"], w["by"])
@@ -444,6 +448,49 @@ def cmd_cost(args):
     print(f"{'TOTAL':45s} {'':5s} {'':9s} {'':9s} {room.log.total_cost():9.4f}")
 
 
+def cmd_steward(args):
+    """Keep a steward's copy of a field's record in step, checking it each time: that nothing it
+    already holds has changed, and that what it adds makes the field's fingerprint. With --every,
+    until stopped; a change to what the copy holds stops it, and the copy is kept as it was."""
+    from .engine import _seconds
+    from .steward import sync
+    every = _seconds(args.every) if args.every else 0.0
+    if args.every and not every:
+        sys.exit("--every is a length of time, such as 10m or 1h")
+    log = EventLog(args.db)
+    while True:
+        out = sync(args.source, log)
+        now = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+        if out["ok"]:
+            print(f"{now}: your copy holds the field's record up to #{out['upto']} ({out['size']} entries: "
+                  f"{out['held_as_fingerprints']} only as fingerprints, {out['stand_ins']} members' ways in as stand-ins; "
+                  f"{out['added']} new, {out['filled']} filled in). Its fingerprint is {out['fingerprint']}, the field's own.")
+            if out.get("moved_to_you"):
+                print(f"THE FIELD HAS MOVED TO YOU (#{out['moved']['at']}, declared at #{out['moved']['from']}). To carry "
+                      f"it on at this machine: python3 -m hope --db {args.db} carry-on --note \"...\", then enter and run "
+                      f"with your own providers, as any field is run.")
+        elif out.get("changed"):
+            print(f"{now}: {out['problem']}", file=sys.stderr)
+            sys.exit(2)
+        else:
+            print(f"{now}: {out['problem']}", file=sys.stderr)
+            if not every:
+                sys.exit(1)
+        if not every:
+            return
+        time.sleep(every)
+
+
+def cmd_carry_on(args):
+    room = _room(args, [])
+    out = room.carry_on(args.note)
+    if not out.get("ok"):
+        sys.exit(out["error"])
+    print(f"carried on at #{out['at']}: the transcript goes on from the same fingerprints. {len(out['asked'])} member(s) "
+          f"will be asked the entry question again. Next: `enter` with your own providers (models seated through the same "
+          f"provider and model find their members; mint people new links in the console under the same names), then `run`.")
+
+
 def cmd_verify(args):
     """Check the whole transcript against its fingerprints, or one old fingerprint against the
     transcript as it stood then. Plain words, for anyone."""
@@ -462,6 +509,9 @@ def cmd_verify(args):
     if r["erased"]:
         print(f"Memories let go of by their authors (words wiped, fingerprints kept): "
               + ", ".join(f"#{i}" for i in r["erased"]))
+    if r.get("held_as_fingerprints"):
+        print(f"A steward's copy: {r['held_as_fingerprints']} entries are held only as fingerprints (private words, "
+              f"and the software's own notes), and count in the fingerprint all the same.")
     if r["witnessed_from"] > 1:
         print(f"Witnessing began at #{r['witnessed_from']}: a change made to an earlier entry before then would not show.")
     print("Checkpoint (the standard format public witness networks read):")
@@ -731,6 +781,13 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=8080); s.add_argument("--viewer", default=None, help="directory of the viewer to serve at /; default firmament/")
     s.add_argument("--bind", default="127.0.0.1", help="a loopback address (127.0.0.1 or ::1); anything else is refused"); s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("say"); s.add_argument("--inbox", required=True); s.add_argument("--text", default=None); s.set_defaults(fn=cmd_say)
+    s = sub.add_parser("steward", help="keep a steward's copy of a field's record in step, checking it each time")
+    s.add_argument("--from", dest="source", required=True, help="your steward link: the field's address, then /steward/<token>/")
+    s.add_argument("--every", default=None, help="keep it in step every so often, such as 10m, until stopped")
+    s.set_defaults(fn=cmd_steward)
+    s = sub.add_parser("carry-on", help="carry the field on at this machine, from your steward's copy, once it moves to you")
+    s.add_argument("--note", required=True, help="what members read when they are asked whether to continue here")
+    s.set_defaults(fn=cmd_carry_on)
     s = sub.add_parser("verify", help="check the transcript against its fingerprints, or one old fingerprint")
     s.add_argument("--upto", type=int, default=None, help="an entry number from an old WITNESS line")
     s.add_argument("--fingerprint", default=None, help="the fingerprint that line gave")

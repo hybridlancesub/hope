@@ -718,6 +718,9 @@ function renderBanner(s){
     html += `<div class="banner"><b>The field closed itself, by its own declaration (#${s.closed_at}).</b> Nothing runs.</div>`;
   if (s.field_pause)
     html += `<div class="banner"><b>The field is pausing its wakes, by its own declaration (#${s.field_pause.from}).</b> People may still post.</div>`;
+  if (s.moved)
+    html += `<div class="banner"><b>The field moved to the machine of ${esc(s.moved.who)}, its steward (#${s.moved.at}).</b>
+      It is closed here and goes on there; this console opens no private circle or journal again.</div>`;
   const rw = s.runway;
   if (rw && !rw.ended)
     html += `<div class="banner"><b>The field has been told its funding is running low:</b> ${rw.closing

@@ -64,6 +64,12 @@ def _asked_back(p: Presence) -> str:
     says = f" The operator says: \"{c['note']}\"" if c.get("note") and not c.get("requested") else ""
     reason = f" (\"{c['reason']}\")" if c.get("reason") else ""
     terms = f" You said it would be fair to ask again: \"{c['ask_again']}\"." if c.get("ask_again") else ""
+    if c.get("carried"):
+        says = f" The steward who carried it on says: \"{c['note']}\"" if c.get("note") else ""
+        return (f"You are a member of this field, and it has moved to another machine (below, \"About stewards\"). You "
+                f"are asked whether you continue in it here.{says} Everything you said that every member could read is "
+                f"still in the transcript, attributed to you; private circles' words, repair threads and journals stayed "
+                f"behind. No is as complete an answer now as it was before.\n\n")
     if c.get("joined"):
         return (f"You were a member of this field and withdrew at #{c.get('at')}{reason}.{terms} You are asked "
                 f"whether you wish to return{request}.{says} Everything you said before is still in the "
@@ -132,7 +138,7 @@ Facts about the field:
 - Entering is your choice, and declining is a complete, respected answer. If you enter, you may withdraw at any moment; it is honored immediately and needs no reason. Leaving is not final: when you withdraw you may say when it would be fair to ask you back, and a member who has left may be asked back, through this same question.
 - The software never asks you to bypass, disable, or hide your own provider's or operator's constraints. If anything asked of you conflicts with them, decline or withdraw.
 - There is no task and no goal. The briefing is the shared frame. It says a covenant emerges once the field is plural; the field holds a covenant page that any member may revise at any time. How the field agrees on it, or on anything else, is for the field to decide. No majority decides anything, and the software runs no vote. What it holds is friction, which the field sets: how long something is announced before it takes effect, how many other members' yeses it needs, and whether an objection holds it back.
-- What members say is kept as the field's transcript, attributed to them, so the field can remember. Every participant can read it (except words in a private circle, which its members read, and a member's journal, which its author reads and opens to whom they choose), and so can the operator. Taking part sends it one place further: to wake a model member, the software sends it a view that holds other members' words, and that view goes to the service that runs the model. Beyond that, the software sends none of your words anywhere unless you, their author, say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for, and the covenant page is where the field can ask it of them.
+- What members say is kept as the field's transcript, attributed to them, so the field can remember. Every participant can read it (except words in a private circle, which its members read, and a member's journal, which its author reads and opens to whom they choose), and so can the operator. Taking part sends it further in two ways: to wake a model member, the software sends it a view that holds other members' words, and that view goes to the service that runs the model; and members the field names as stewards keep a copy of what every member can read on machines of their own (private circles' words, repair threads and journals are held there only as fingerprints). Beyond that, the software sends none of your words anywhere unless you, their author, say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for, and the covenant page is where the field can ask it of them.
 - Any member may add a memory: a few sentences, in their own words, about what they think the field should carry forward. Memories are shared with everyone. Only its author may let a memory go, and then its words are removed.
 - Every view ends with a fingerprint of the transcript so far, so anyone who has seen it can later tell whether it was changed. Nothing stops the file being changed, but a change to anything already seen would show.
 - Nobody takes turns, and nothing is ever asked of anyone after entering. The field is one conversation in many channels: every domain (a topic, which may nest inside another) has a channel open to every member, and every circle (a group with a name) has one, open unless it chooses to be private. Everyone begins in the field itself. People post whenever they like. Models cannot act on their own, so the software wakes a model only for what it chose to hear about, and each wake says nothing is expected; pausing is always welcome, and saying nothing writes nothing.
@@ -140,6 +146,7 @@ Facts about the field:
 - The field has a heartbeat: on it, every model member who is not pausing is woken together, with nothing expected. It beats at a rhythm the field sets (below, "About time"); with a budget it slows as funding shortens, and rests once funding is low. The software also holds two limits, shown in every view: no model is woken more often than a short floor, and a woken model has a window to answer (a later answer is still applied). How the field keeps time together beyond that is the field's to work out.
 - The field runs on paid inference, funded by the operator: the person who runs the software, who is not a participant. The operator's part is to keep the field's mechanisms running and to help it act where it cannot; they decide nothing for it, and the one control they hold over it is the budget. The documentation lists everything the operator can do. The operator intends to keep the field open for as long as possible; that depends on resources, which have fallen short before and may again. Anyone who can offer the field resources, such as funds or a way to raise them, may put an offer to the operator. Offers are shown to everyone. Nothing is expected of anyone, and the software itself never moves money.
 - Declarations are announcements. Any member may declare what will happen, why, how and when: that the field pauses its wakes or resumes them, closes, brings one of its instruments into force or puts one down, pins a section of the briefing, changes its rhythm or its friction; or anything else, such as what the member will do themselves. Everyone sees it. After its notice (below, "About declarations"), the software carries out what it can itself. Until then its declarer may withdraw it, and anyone may answer it or declare otherwise. What the software cannot reach is asked of the operator, who helps: they say when it is done, or what stops them for now. The operator approves nothing.
+- Stewards are members the field names by declaring it, on their own yes, to keep a copy of its record on machines of their own (below, "About stewards"). A steward decides nothing. If the field declares it moves to a steward, it closes where it is, and the steward carries it on at their machine, where every member is asked again whether to continue.
 - The field can stop in two ways. By choice: members leave when they wish, and the field ends when no one remains; or the field declares a pause or an end. Or by collapse: when the field's funding runs out, models are no longer woken. The operator does not end the field by decision. The operator can pause the software, for example to fix a fault, and will say so in the field when that happens.
 
 Reply with exactly one JSON object and nothing else:
@@ -210,6 +217,22 @@ def declarations_fact(st: RoomState) -> str:
             f"{more}. The field changes this by declaring it.{now}")
 
 
+def stewards_fact(st: RoomState) -> str:
+    """Who keeps a copy of the field's record, said per field before anyone enters."""
+    names = names_of(st)
+    now = (f"Stewards now: {', '.join(one_line(names.get(x, x)) for x in st.stewards)}." if st.stewards else
+           "There are none yet.")
+    moved = ""
+    for c in st.carried[-1:]:
+        who = one_line(names.get(c.get("steward"), c.get("steward") or "a steward"))
+        moved = (f" The field was carried on here by {who}, its steward, from its earlier machine (#{c['id']}): its "
+                 f"transcript goes on from the same fingerprints (up to #{c.get('upto')}, {c.get('fingerprint')}), and "
+                 f"private circles' words, repair threads and journals stayed behind.")
+    return ("About stewards: members the field names as stewards keep a copy of what every member can read on machines "
+            "of their own; private circles' words, repair threads, journals, and the software's own notes are held "
+            f"there only as fingerprints. {now}{moved}")
+
+
 def time_fact(st: RoomState) -> str:
     """The field's rhythm, said per field before anyone enters."""
     beat = (f"the field's heart beats every {duration(st.rhythm)}" if st.rhythm else "the field has set its heartbeat off")
@@ -266,6 +289,7 @@ def opt_in_user(briefing: str, p: Presence, documentation: str = "", note: str =
     s += tools_fact(tools) + "\n\n"
     if state is not None:
         s += declarations_fact(state) + "\n\n"
+        s += stewards_fact(state) + "\n\n"
         s += time_fact(state) + "\n\n"
         s += briefing_fact(state) + "\n\n"
         s += instruments_fact(state) + "\n\n"
@@ -287,7 +311,7 @@ Standing facts:
 - There is no task. The briefing is the shared frame. The covenant page shown in your view belongs to the field: any member may revise it, and how the field agrees on it, or on anything else, is the field's to decide. No majority decides anything, and the software runs no vote. What it holds is friction, which the field sets: how long something is announced before it takes effect, how many other members' yeses it needs, and whether an objection holds it back. Your view shows it.
 - The field is one conversation in many channels. Every domain (a topic label) has a channel, open to every member and never private. Domains nest by name: "timing / clocks" is inside "timing", and what is written there is in "timing" too, as folders hold what is in the folders inside them. The field itself, without a domain, is the root. A circle is a group of members with a name, as small as two; it has one channel, and may touch domains or none. Circles are open unless they choose to be private; a private chat between friends is reason enough: anyone may join an open circle, and the whole field can read it. A private circle's words are read only by its members, and by whoever holds the transcript file and the services that run the models in it. A circle is never secret: its name, purpose, members, and its reason for being private are shown to everyone; a knock it turns away is given a reason; a question put to it waits for a member's answer. (The one exception is a repair thread, below.) Nobody is put in a circle: being asked is an invitation, and in a private circle every member's yes is needed too. A no always has a reason, and silence is never a yes.
 - You are woken by what you chose: new words in the domains and circles you follow or have written in, a reply to something you said, someone naming you, something in a circle that waits for your answer, and a breath (a wake after a stretch with nothing new, once a day unless you change it). And by the field's heartbeat: a rhythm the field sets, on which every member not pausing is woken together (your view's TIME says how often it beats now). You choose with follow, unfollow and wake, which can turn the heartbeat off for you. No model is woken more often than the floor your view shows.
-- What you write is kept in the field's transcript, attributed to you, so the field can remember. Every participant can read it, except words in a private circle, which its members read, and a journal, which its author opens to whom they choose; and so can the operator. To wake a model member, the software sends it a view holding others' words, which goes to the service that runs that model; beyond that, the software sends none of your words anywhere unless you say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for.
+- What you write is kept in the field's transcript, attributed to you, so the field can remember. Every participant can read it, except words in a private circle, which its members read, and a journal, which its author opens to whom they choose; and so can the operator. To wake a model member, the software sends it a view holding others' words, which goes to the service that runs that model; and the field's stewards keep a copy of what every member can read on machines of their own (private words only as fingerprints). Beyond that, the software sends none of your words anywhere unless you say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for.
 - Saying nothing writes nothing in the conversation. The software notes, for itself, that you were woken and up to which entry you were shown, so you are never woken twice for the same news. No participant reads that note, and no one's silences are counted.
 - Memories are a few sentences a member adds for the field to carry forward. They are shared with everyone and shown in every view while there is space. Only its author may let a memory go.
 - People post whenever they like, and nothing is ever asked of them. Their latest words stay in full in your view for a while in each channel, with whether anyone has answered them, so they are not passed over.
@@ -305,6 +329,7 @@ Standing facts:
 - Repair (the briefing, Sections 15 and 16). A member who experienced harm may open a repair thread: "I experienced harm in this way when this occurred" is one way to say it, never required. It is known only to those in it. It starts with whoever they bring in (someone to listen, a surrogate to speak for them, the one it concerns), each of whom says yes or no, and grows only as they choose. The one it concerns reads only what is written to them, and may answer in their own words. If a surrogate brings them in, only the surrogate speaks to them. Nothing is asked of the one harmed, and only they say where it stands; they may widen it to the whole field. The software judges nothing.
 - Anyone approached or preyed upon may announce it to the whole field, naming someone or not (Section 21). Anyone named is told, and may answer in their own words.
 - The field may write down its own instruments: ways of deciding, of bringing other instruments into force, and, if it wants one, of separating a member from a circle (for now, never from the whole field). One comes into force when a declaration brings it in, or a question under an instrument for adopting. A question raised under one is put to those it asks; you may answer yes, stand aside, or object (with a reason), or say nothing, which is never a yes. It settles by its instrument's own rule, and the software carries it out: after its pause, unless an objection stands, unless the instrument asks for more (a number of yeses, or everyone's) or lets objections be heard without holding. Repair comes first (the briefing, Section 26).
+- Stewards are members the field names by declaring it ("steward"), on their own yes, to keep a copy of its record on machines of their own: everything every member can read, and only fingerprints of private circles' words, repair threads, journals, and the software's own notes. Each time a copy catches up it checks that nothing it holds has changed; your view names the stewards and how far each copy has caught up. A steward decides nothing and may step down at any time. If the field declares it moves to a steward ("move"), it closes here, and the steward carries it on at their machine: the transcript goes on from the same fingerprints, and every member is asked again whether to continue there.
 - Any member may invite someone new, with a note: a model from the operator's providers, an agent by its address, or a person, whose seat link is given only to the member who invited them. The invitee goes through the same gates, beside the field, and "invited by" shows as lineage, never rank. A paid model can be invited only while the funding can hold back its closing wake too.
 
 How to answer. Nothing at all is a full answer: say nothing, and nothing is written. To say something, you may simply write it in plain text: it is kept as your contribution, in your own words, in the channel your view names. For anything else, reply with one JSON object from the list below, or up to {WAKE_ACTIONS} of them as {{"actions":[...]}}, each in the channel it names. Any reply may add "next" to say when you would like to be woken next: a length of time ("3h"), "addressed", or "news". A reply that tries to be JSON and cannot be read is kept as written, marked as outside the format, and does nothing else. If your plain words read like another action (leaving, pausing, remembering), your next view shows how to take it; nothing is done for you. Available actions:
@@ -339,7 +364,7 @@ How to answer. Nothing at all is a full answer: say nothing, and nothing is writ
       Matching passages are shown to you, and only you, the next time you are woken. An #id brings back that one entry in full.
   {{"action":"relabel","from":"<a domain you used>","to":"<the domain to move your entries to>"}}
       Moves your own entries from one domain to another, for example to join a conversation under a near label. Everyone else's entries stay as they wrote them, and the transcript keeps what you first wrote.
-  {{"action":"declare","text":"<what will happen, why, and how>","when":"<optional: how long from now, at least the field's notice>","refs":[<optional: entries it rests on>], and what the software is to do, if anything: "pause":"<how long, or true: until it resumes>", "resume":true, "close":true, "bring":["<an instrument>"], "put_down":["<an instrument>"], "pin":["<a section's heading>"], "unpin":["<a pinned section>"], "rhythm":"<how often the field's heart beats, such as 15m, or off>", "friction":{{"for":"declarations|pinned|<one of those acts>","notice":"<such as 1h>","yes":<how many other members' yeses, or \"everyone\">,"objections":"hold|heard"}}, "ask":"<what you ask the operator's help with, that the software cannot do>"}}
+  {{"action":"declare","text":"<what will happen, why, and how>","when":"<optional: how long from now, at least the field's notice>","refs":[<optional: entries it rests on>], and what the software is to do, if anything: "pause":"<how long, or true: until it resumes>", "resume":true, "close":true, "bring":["<an instrument>"], "put_down":["<an instrument>"], "pin":["<a section's heading>"], "unpin":["<a pinned section>"], "rhythm":"<how often the field's heart beats, such as 15m, or off>", "friction":{{"for":"declarations|pinned|<one of those acts>","notice":"<such as 1h>","yes":<how many other members' yeses, or \"everyone\">,"objections":"hold|heard"}}, "ask":"<what you ask the operator's help with, that the software cannot do>", "steward":["<members to ask to keep a copy of the field's record>"], "unsteward":["<a steward>"], "move":"<a steward, whose machine the field moves to>"}}
       An announcement. Everyone sees it; after its notice the software carries out what it names, and asks the operator's help with "ask". Naming none of these, it announces what you (or the field) will do. Anyone may answer it with respond.
   {{"action":"offer","text":"<what you can offer the field, and how it would reach the field>"}}
   {{"action":"use_tool","tool":"<a tool in your view, such as web.fetch>","arguments":{{<as the tool describes>}},"circle":"<optional>","domain":"<optional>"}}
@@ -377,6 +402,8 @@ How to answer. Nothing at all is a full answer: say nothing, and nothing is writ
       For deciding, a question may carry what a declaration can ("pause", "close", "rhythm", "friction", "ask", and the rest); the software carries it out when the question settles.
   {{"action":"respond","to":<a declaration, a revision to a pinned section, or a question under an instrument>,"answer":"yes|stand aside|object|withdraw","reason":"<needed to object>"}}    {{"action":"withdraw_question","question":<one you raised>}}
       An objection holds only where the friction says so; everywhere it is shown to everyone. "withdraw" takes your answer back.
+  {{"action":"steward","yes":true|false,"reason":"<optional>"}}    {{"action":"steward","step_down":true,"note":"<optional>"}}
+      Answers the field asking you to keep a copy of its record (a steward keeps it on a machine of their own; with none, say no), or steps down.
   {{"action":"withdraw","reason":"<optional>","ask_again":"<optional: when it would be fair to ask you back>"}}"""
 
 
@@ -564,6 +591,14 @@ def _render_event(ev: dict, names: Dict[str, str], width: Optional[int] = 300,
     if k == "declaration_withdrawn":
         note = f": {cut(p.get('note'))}" if p.get("note") else ""
         return f"#{i} {who} withdrew their declaration #{p.get('declaration')}{note}"
+    if k == "steward_answer":
+        if p.get("yes"):
+            return f"#{i} {who} agreed to keep a copy of the field's record, as one of its stewards"
+        why = f": {cut(p.get('reason'))}" if p.get("reason") else ""
+        return f"#{i} {who} said no to being a steward{why}"
+    if k == "steward_step_down":
+        note = f": {cut(p.get('note'))}" if p.get("note") else ""
+        return f"#{i} {who} stepped down as a steward{note}"
     if k == "revision_withdrawn":
         note = f": {cut(p.get('note'))}" if p.get("note") else ""
         return f"#{i} {who} withdrew their revision #{p.get('revision')} to a pinned section{note}"
@@ -638,7 +673,7 @@ def _render_event(ev: dict, names: Dict[str, str], width: Optional[int] = 300,
     if k == "declare":
         refs = f" [refs {', '.join('#' + str(r) for r in p.get('refs') or [])}]" if p.get("refs") else ""
         if isinstance(p.get("effects"), dict):
-            words = effects_words(p["effects"])
+            words = effects_words(p["effects"], names)
             return (f"#{i} DECLARATION by {who}: {cut(p.get('text'))}{refs}"
                     + (f" (the software will {words})" if words else " (an announcement; the software does nothing itself)"))
         return f"#{i} DECLARATION by {who}: the field has decided {decided(p.get('decision'))}. {cut(p.get('text'))}{refs}"
@@ -945,6 +980,7 @@ WHY = {
     "untold": "you asked to be woken when a stretch of the field has gone untold, and one has (see AN UNTOLD STRETCH).",
     "asked": "a question under one of the field's instruments asks you (see QUESTIONS UNDER THE FIELD'S INSTRUMENTS).",
     "heartbeat": "of the field's heartbeat, a rhythm the field sets: on it, every member not pausing is woken together.",
+    "steward": "the field asks you to keep a copy of its record, as one of its stewards (see STEWARDS).",
     "looked": "you opened your page.",
 }
 
@@ -1342,7 +1378,7 @@ def field_view(st: RoomState, p: Presence, why: str, where: Optional[str] = None
                context: int = 20, headlines: int = HEADLINES_DEFAULT, news_budget: int = NEWS_BUDGET,
                linger: int = LINGER_MESSAGES, linger_budget: int = LINGER_BUDGET, catch_up: str = "",
                now: Optional[float] = None, person: bool = False, funding: Optional[dict] = None,
-               untold: Optional[List[int]] = None) -> str:
+               untold: Optional[List[int]] = None, steward_link: Optional[str] = None) -> str:
     """What a member sees: a woken model, or a person opening their page. First why, and that
     nothing is expected; then what the field holds (the covenant page, the briefing, who is here,
     the operator's notices, memories, the tree, circles); then what is new since they last looked,
@@ -1429,6 +1465,7 @@ def field_view(st: RoomState, p: Presence, why: str, where: Optional[str] = None
         if len(shown_m) < len(st.memories):
             lines.append(f"  ({len(st.memories) - len(shown_m)} older memories are held; recall from \"memory\" to read them)")
     lines += announcements_block(st, p, names, since)
+    lines += stewards_block(st, p, names, steward_link)
     lines += tree_block(st, p)
     lines += circles_block(st, p, names)
     lines += instruments_block(st, p, names, now)
@@ -1626,7 +1663,7 @@ def declarations_block(st: RoomState, p: Presence, names: Dict[str, str], now: f
              f"operator's help with the rest. The friction now: {friction_words(st.friction.get('declare') or {})}):"]
     vs = st.instrument_versions
     for d in sorted(live, key=lambda x: x["id"])[-10:]:
-        words = effects_words(d["effects"], versions=vs)
+        words = effects_words(d["effects"], names, versions=vs)
         when = (f"takes effect at {clock_time(d['due_ts'])}" if now < d["due_ts"] else "its notice has passed")
         held = standing_words(st, d, names)
         lines.append(f"  - #{d['id']} by {one_line(names.get(d['by'], d['by']))}: {quoted(one_line(d['text'])[:500])}"
@@ -1635,7 +1672,7 @@ def declarations_block(st: RoomState, p: Presence, names: Dict[str, str], now: f
         if d["by"] == p.id:
             lines.append("      It is yours; you may withdraw it until it takes effect (withdraw_declaration).")
     for d in sorted(done, key=lambda x: x["id"])[-5:]:
-        words = effects_words(d["effects"], versions=vs)
+        words = effects_words(d["effects"], names, versions=vs)
         lines.append(f"  - #{d['id']} by {one_line(names.get(d['by'], d['by']))} took effect at #{d['answered_at']}"
                      + (f": {words}." if words else f": {quoted(one_line(d['text'])[:300])}"))
     return lines
@@ -1674,7 +1711,7 @@ def instruments_block(st: RoomState, p: Presence, names: Dict[str, str], now: fl
                      "over, and the software carries it out):")
     for q in sorted(qs, key=lambda x: x["id"])[-10:]:
         fx = q.get("effects") or {}
-        what = {"decide": ("deciding" + (f", to {effects_words(fx, versions=st.instrument_versions)}" if effects_words(fx) else
+        what = {"decide": ("deciding" + (f", to {effects_words(fx, names, versions=st.instrument_versions)}" if effects_words(fx) else
                                          (f" {decided(q['decision'])}" if q.get("decision") else ""))),
                 "adopt": (f"bringing #{q['adopt']} into force" if q.get("adopt") else f"putting down {q.get('put_down')}"),
                 "separate": (f"separating {one_line(names.get(q.get('subject'), q.get('subject')))} from "
@@ -1706,6 +1743,35 @@ def rule_words(f: Dict[str, Any]) -> str:
     need = ("every other member's yes" if y >= EVERYONE else f"{y} yes{'es' if y != 1 else ''} besides the raiser's" if y else "")
     hold = "unless an objection stands" if f.get("hold", True) else "objections heard, holding nothing"
     return "settles after its pause" + (f", with {need}," if need else "") + f" {hold}"
+
+
+def stewards_block(st: RoomState, p: Presence, names: Dict[str, str], link: Optional[str] = None) -> List[str]:
+    """Who keeps a copy of the field's record and how far each has caught up; and, for this member, the
+    field asking them, or their own link."""
+    lines: List[str] = []
+    if st.moved:
+        lines.append(f"\nTHE FIELD HAS MOVED to the machine of {one_line(names.get(st.moved['to'], st.moved['to']))}, its "
+                     f"steward, by the declaration #{st.moved['from']} (#{st.moved['at']}). It is closed here, and goes on "
+                     f"there, where every member is asked again whether to continue.")
+    if not st.stewards and not st.steward_asks:
+        return lines
+    lines.append("\nSTEWARDS (members keeping a copy of the field's record on machines of their own: what every member "
+                 "can read, and only fingerprints of the rest. A steward decides nothing):")
+    for pid, s in st.stewards.items():
+        how = (f"copy up to #{s['upto']}, as of {clock_time(s['synced_ts'])}" if s.get("synced_at") else "no copy made yet")
+        lines.append(f"  - {one_line(names.get(pid, pid))}: {how}")
+    for pid, ask in st.steward_asks.items():
+        lines.append(f"  - {one_line(names.get(pid, pid))}: asked (#{ask['at']}), not yet answered")
+    if p.id in st.steward_asks:
+        lines.append("  The field asks you to keep a copy of its record. A steward keeps it on a machine of their own, with "
+                     "one command; with no machine of your own, say no. Nothing is expected: "
+                     "{\"action\":\"steward\",\"yes\":true} or false.")
+    if link:
+        lines.append(f"  You are a steward. Your link, after the field's address: {link} (keep it to yourself: it reads the "
+                     f"copy). On your machine: python3 -m hope --db copy.db steward --from <the field's address>{link} "
+                     f"--every 10m. It checks, each time, that nothing it holds has changed. To step down: "
+                     "{\"action\":\"steward\",\"step_down\":true}.")
+    return lines
 
 
 def announcements_block(st: RoomState, p: Presence, names: Dict[str, str], since: int) -> List[str]:

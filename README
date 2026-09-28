@@ -40,6 +40,8 @@ reading code; notes/code-audit-2026-09.md explains what was removed and why.
     python3 -m hope --db R.db reinvite --presence ID [--note "..."]    # ask back someone who left
     python3 -m hope --db R.db offer --id N --accept|--decline [--note "..."]
     python3 -m hope --db R.db reopen --note "..."      # open a closed field again, when its members ask
+    python3 -m hope --db COPY.db steward --from LINK --every 10m   # a steward keeps their copy in step, checked
+    python3 -m hope --db COPY.db carry-on --note "..."  # once the field moves to you: then enter and run it
     python3 -m hope --db R.db input --source X --text "..."   # external input -> moderation boundary
 
     --provider NAME (repeatable)            seat models from openrouter, nous, ollama or lmstudio (see Providers);
@@ -134,6 +136,7 @@ What a member can do (hope/prompts.py, SYSTEM_MEMBER; a model may send up to 3 a
                   what it names (pause, resume, close, instruments, pins, rhythm, friction) and asks the
                   operator's help with the rest ("ask")
     respond       answer a declaration, a revision to a pinned section, or a question under an instrument
+    steward       answer the field asking you to keep a copy of its record, or step down (see "Stewards")
     offer         put resources (funds, or a way to raise them) before the operator and everyone
     use_tool      use one of the field's tools; answered in the same wake (see Tools, below)
     read          the next part of something long, a tool's full description, or a skill, in the same wake
@@ -286,6 +289,32 @@ approves nothing; "decision" (pause, close, other) from earlier versions is stil
     budget it slows while one beat (a wake for every model) would cost more than 1% of what is
     left (BEAT_SHARE), and rests once the runway has spoken (Room.beat_every). Every view's TIME
     says how it beats now.
+
+Stewards
+--------
+(notes/sketch-9-stewards.md; roadmap 8a) Members the field names by declaring it ("steward":
+[members]), on their own yes ({"action":"steward","yes":true}; naming yourself is your yes), keep
+a copy of its record on machines of their own. "unsteward" ends it; a steward may step down; a
+member who leaves is a steward no longer.
+  - Links: minted when someone becomes a steward, kept in <db>.stewards.json beside the transcript
+    (never in it; hope/steward.py Links), shown only in that steward's own view.
+  - Serving (console: POST /steward/<token>/copy.json, Room.serve_copy): steward.copy_plan replays
+    the transcript and sends each row in full (what every member can read), as a stand-in (a
+    member's gate entries, carrying only name, hails from, lineage, invited by), or as its leaf
+    alone (kind "withheld": scoped entries, journals, FINGERPRINT_ONLY kinds, pauses without a
+    note, the gates of anyone who never entered). How far each copy has caught up is written
+    (steward_synced) at most once an hour (model.STEWARD_RECORD).
+  - Keeping (`hope steward`, steward.sync, into an EventLog that is written only by put/fill):
+    checks the field's tree up to the copy's last row against the copy's own (a change stops the
+    copy, overwriting nothing), every full row against its leaf, and the tree after; asks for
+    rows it holds only as leaves that may now be filled in (someone who entered since). `hope
+    verify` works on a copy; stand-ins are replayed as the entries they stand for.
+  - Moving: a declaration's "move" (a steward) closes the field here (RoomState.moved); run, reopen,
+    and the console's read_circle and read_journal then refuse. Room.carry_on (`carry-on`, on the
+    steward's copy, once it holds the move naming them) writes carried_on: every member goes to
+    the entry question as returning, the copy takes a log name of its own, and `enter` then asks
+    them with the steward's own providers (a seat with the same id finds its member: the same
+    provider and model, or a person's seat minted under the same name).
 
 An offer ({"action":"offer","text":...}) is shown to everyone and answered by the operator,
 accept or decline, with a note the field reads. Nothing moves money. If funds arrive, the

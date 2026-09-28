@@ -340,6 +340,8 @@ class Console:
             # A journal is its author's. The operator holds the file; in the console, reading one is
             # written into it, where its author sees it, as they were told it would be.
             st = self.room.state()
+            if st.moved:
+                return {"ok": False, "error": "the field moved to its steward's machine; its journals are opened here no more"}
             pid = str(payload.get("presence") or "")
             j = st.journals.get(pid)
             if not j or not j["entries"]:
@@ -355,6 +357,8 @@ class Console:
             # The operator holds the file and could read it with other tools; in the console, reading a
             # private circle is written into it, where its members see it, as they were told it would be.
             st = self.room.state()
+            if st.moved:
+                return {"ok": False, "error": "the field moved to its steward's machine; its private circles are opened here no more"}
             c = st.circles.get(_int(payload.get("circle")) or -1)
             if not c:
                 return {"ok": False, "error": "no such circle"}
@@ -637,6 +641,12 @@ def make_console_handler(console: Console):
                 # the seat as an MCP server (hope/mcp.py); the token in the address is the seat
                 return self._mcp(token)
             payload = self._body()
+
+            parts = [x for x in route.split("/") if x]
+            if len(parts) == 3 and parts[0] == "steward" and parts[2] == "copy.json":
+                # a steward's machine catching its copy up (hope/steward.py); the link is the steward's
+                out = console.room.serve_copy(parts[1], payload.get("since"), payload.get("held"))
+                return self._json(out, 200 if out.get("ok") else 404)
 
             if token is not None:
                 if rv is None or rv.seat_for_token(token) is None:

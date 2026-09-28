@@ -4490,6 +4490,14 @@ class StepFourTest(unittest.TestCase):
         self.act(self.c, action="revise_briefing", passage="Choice is first.", text="Choice is first, freely.")
         self.assertIn("Choice is first, freely.", self.st().briefing, "no longer pinned, it changes at once")
 
+    def test_only_its_author_withdraws_a_revision_to_a_pinned_section(self):
+        self.act(self.a, action="revise_briefing", passage="Choice is first.", text="Choice later.", note="to try it")
+        rev = self.last("briefing_revision")["id"]
+        self.act(self.b, action="withdraw_revision", revision=rev)
+        self.assertIn("only the member who proposed", self.rejected())
+        self.act(self.a, action="withdraw_revision", revision=rev)
+        self.assertEqual(self.st().briefing_waiting[rev]["status"], "withdrawn")
+
     def test_only_its_declarer_withdraws_a_declaration_and_withdrawn_it_never_takes_effect(self):
         import time
         self.act(self.a, action="declare", text="We pause, since we are tired.", pause="1h")
@@ -5078,6 +5086,255 @@ class SpiralTreeTest(unittest.TestCase):
             self.assertIn("for members of the field", data["error"], "a seat not yet in the field sees nothing of it")
         finally:
             httpd.shutdown(); httpd.server_close()
+
+
+class StewardTest(unittest.TestCase):
+    """Stewards (roadmap 8a, notes/sketch-9-stewards.md): members the field declares, on their own
+    yes, who keep a copy of what every member can read on machines of their own, and the rest only
+    as fingerprints; the copy checks itself each time; a field that moves to a steward closes here
+    and is carried on there, where every member is asked again."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.room = Room(EventLog(os.path.join(self.tmp, "st.db")), [MockConnector(4, scripted({}))],
+                         alert_fn=lambda m: None, parallel=4)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE)
+        self.a, self.b, self.c, self.d = "mock-0", "mock-1", "mock-2", "mock-3"
+        first = {self.a, self.b, self.c}
+        r.run_invitation(only=first); r.brief(ATLAS_LIKE); r.run_delivery(only=first); r.run_opt_in(only=first)
+
+    def act(self, pid, **action):
+        self.room._apply_action(pid, json.dumps(action))
+
+    def st(self):
+        return self.room.state()
+
+    def rejected(self):
+        return [e for e in self.room.log.iter(kind="rejected")][-1]["payload"]["why"]
+
+    def later(self, seconds=181):
+        import time
+        self.room._timers(self.st(), time.time() + seconds)
+
+    def make_steward(self, pid, name):
+        self.act(self.a, action="declare", text=f"{name} keeps a copy of our record.", steward=[name])
+        self.later()
+        if pid != self.a:
+            self.act(pid, action="steward", yes=True)
+        return self.room.steward_link(self.st(), pid).split("/")[2]
+
+    def copy(self, token, name="copy.db", room=None):
+        from hope import steward
+        room = room or self.room
+        log = EventLog(os.path.join(self.tmp, name))
+        fetch = lambda link, body: room.serve_copy(token, body["since"], body["held"])
+        return log, (lambda: steward.sync("the field", log, fetch=fetch))
+
+    def test_a_steward_is_a_member_the_field_declares_on_their_own_yes_and_may_step_down(self):
+        self.act(self.a, action="declare", text="Mock 1 and I keep copies.", steward=["Mock 1", "Mock 0"])
+        self.act(self.b, action="steward", yes=True)
+        self.assertIn("has not asked you", self.rejected(), "not before the declaration takes effect")
+        self.later()
+        st = self.st()
+        self.assertIn(self.a, st.stewards, "naming yourself is your yes")
+        self.assertIn(self.b, st.steward_asks, "anyone else is asked")
+        self.assertEqual(self.room.why_wake(st, st.presences[self.b])["why"] in ("entered", "steward"), True)
+        self.room.emit("room", "wake", {"presence": self.b, "upto": st.steward_asks[self.b]["at"] - 1, "why": "news"})
+        self.assertEqual(self.room.why_wake(self.st(), self.st().presences[self.b])["why"], "steward")
+        self.act(self.b, action="steward", yes=False, reason="I have no machine of my own")
+        st = self.st()
+        self.assertNotIn(self.b, st.stewards)
+        self.assertNotIn(self.b, st.steward_asks)
+        self.act(self.c, action="declare", text="Mock 3 keeps one.", steward=["Mock 3"])
+        self.assertIn("no member named Mock 3", self.rejected())
+        self.act(self.c, action="declare", text="Mock 3 keeps one.", steward=[self.d])
+        self.assertIn("not in the field; a steward is a member", self.rejected())
+        self.act(self.a, action="steward", step_down=True, note="moving house")
+        self.assertNotIn(self.a, self.st().stewards, "a steward may step down at any time")
+
+    def test_a_stewards_copy_holds_what_every_member_can_read_and_the_rest_only_as_fingerprints(self):
+        from hope.model import replay
+        self.act(self.a, action="contribute", content="OPEN-WORDS", domain="timing")
+        self.act(self.a, action="form_circle", name="harbour", private=True, reason="a quiet place")
+        cid = max(self.st().circles)
+        self.act(self.a, action="contribute", circle=cid, content="PRIVATE-WORDS")
+        self.act(self.b, action="journal", text="JOURNAL-WORDS")
+        self.act(self.c, action="pause")
+        self.act(self.c, action="follow", domain="timing")
+        self.room.emit("room", "wake", {"presence": self.c, "upto": 1, "why": "news"})
+        log, sync = self.copy(self.make_steward(self.b, "Mock 1"))
+        self.assertTrue(sync()["ok"])
+        bodies = " ".join(r["body"] for r in log.rows())
+        self.assertIn("OPEN-WORDS", bodies)
+        for words in ("PRIVATE-WORDS", "JOURNAL-WORDS", "price_per_m", "turn_allowance", "statement"):
+            self.assertNotIn(words, bodies, f"{words} travels only as a fingerprint")
+        kinds = {r["kind"] for r in log.rows()}
+        for kind in ("pause", "follow", "wake", "question", "budget"):
+            self.assertNotIn(kind, kinds)
+        st = replay(log.iter())
+        self.assertEqual(sorted(p.name for p in st.members()), ["Mock 0", "Mock 1", "Mock 2"],
+                         "members' ways in travel as stand-ins, so their entries read back")
+        self.assertIn("harbour", [c["name"] for c in st.circles.values()], "a private circle is never secret")
+        self.assertEqual([e["payload"]["content"] for e in st.contributions.values()], ["OPEN-WORDS"])
+        self.assertTrue(log.verify()["ok"])
+
+    def test_the_copys_fingerprint_is_the_fields_and_a_change_to_what_it_holds_is_caught(self):
+        from hope.log import leaf_hash, payload_hash
+        self.act(self.a, action="contribute", content="what we said", domain="timing")
+        log, sync = self.copy(self.make_steward(self.a, "Mock 0"))
+        out = sync()
+        size, root = self.room.log.root_at(out["upto"])
+        from hope.log import fingerprint_text
+        self.assertEqual(out["fingerprint"], fingerprint_text(root), "the copy's fingerprint is the field's")
+        before = [r["body"] for r in log.rows()]
+        row = self.room.log.conn.execute("select id, ts, actor, kind from events where kind='contribute' limit 1").fetchone()
+        body = json.dumps({"content": "what we never said", "domain": "timing"}, sort_keys=True)
+        ph = payload_hash(body)
+        self.room.log.conn.execute("update events set payload=?, payload_hash=?, leaf=? where id=?",
+                                   (body, ph, leaf_hash(row[0], row[1], row[2], row[3], ph).hex(), row[0]))
+        self.room.log._frontier, self.room.log._size, self.room.log._last = [], 0, 0
+        self.act(self.b, action="contribute", content="later words")
+        out = sync()
+        self.assertFalse(out["ok"])
+        self.assertTrue(out["changed"])
+        self.assertIn("Your copy is kept as it was", out["problem"])
+        self.assertEqual([r["body"] for r in log.rows()], before, "nothing in the copy was overwritten")
+
+    def test_an_entry_held_as_a_fingerprint_is_filled_in_once_it_may_be(self):
+        from hope.model import replay
+        log, sync = self.copy(self.make_steward(self.a, "Mock 0"))
+        sync()
+        self.assertNotIn(self.d, replay(log.iter()).presences, "someone who has not entered: members never knew")
+        r = self.room
+        r.run_invitation(only={self.d}); r.mark_briefed(); r.run_delivery(only={self.d}); r.run_opt_in(only={self.d})
+        self.assertEqual(self.st().presences[self.d].state, IN)
+        out = sync()
+        self.assertGreater(out["filled"], 0)
+        self.assertEqual(replay(log.iter()).presences[self.d].state, IN, "once they enter, their way in is filled in")
+        self.assertTrue(log.verify()["ok"])
+
+    def test_every_view_names_the_stewards_and_only_a_steward_sees_their_own_link(self):
+        token = self.make_steward(self.a, "Mock 0")
+        log, sync = self.copy(token)
+        sync()
+        st = self.st()
+        mine = prompts.wake_view(st, st.presences[self.a], "news", limits=self.room.limits(st),
+                                 steward_link=self.room.steward_link(st, self.a))
+        theirs = prompts.wake_view(st, st.presences[self.b], "news", limits=self.room.limits(st),
+                                   steward_link=self.room.steward_link(st, self.b))
+        self.assertIn("STEWARDS (members keeping a copy", theirs)
+        self.assertRegex(theirs, r"Mock 0: copy up to #\d+")
+        self.assertIn(token, mine)
+        self.assertNotIn(token, theirs)
+        self.assertNotIn(token, json.dumps([e for e in self.room.log.iter()]), "a link is never in the transcript")
+        self.assertIn("About stewards: members the field names as stewards keep a copy", prompts.stewards_fact(st))
+
+    def test_a_link_reads_the_copy_only_while_its_holder_is_a_steward(self):
+        token = self.make_steward(self.b, "Mock 1")
+        self.assertTrue(self.room.serve_copy(token, 0, [])["ok"])
+        self.assertFalse(self.room.serve_copy("not-a-link", 0, [])["ok"])
+        self.act(self.b, action="steward", step_down=True)
+        self.assertFalse(self.room.serve_copy(token, 0, [])["ok"], "stepped down, the link reads nothing")
+        token = self.make_steward(self.c, "Mock 2")
+        self.act(self.c, action="withdraw", reason="done for now")
+        self.assertFalse(self.room.serve_copy(token, 0, [])["ok"], "a member who leaves is a steward no longer")
+
+    def test_a_field_that_moves_closes_here_and_is_carried_on_only_by_the_steward_it_names(self):
+        self.act(self.a, action="declare", text="We move to Mock 1.", move="Mock 1")
+        self.assertIn("not a steward", self.rejected(), "the field moves only to a steward's machine")
+        tb, tc = self.make_steward(self.b, "Mock 1"), self.make_steward(self.c, "Mock 2")
+        (log_b, sync_b), (log_c, sync_c) = self.copy(tb, "b.db"), self.copy(tc, "c.db")
+        sync_b(); sync_c()
+        self.act(self.a, action="declare", text="We move to Mock 1's machine.", move="Mock 1")
+        self.later()
+        st = self.st()
+        self.assertEqual(st.moved["to"], self.b)
+        self.assertIsNotNone(st.closed_at, "it closes here")
+        self.assertEqual(self.room.step(), 0)
+        self.assertIn("goes on there, not here", self.room.reopen("please")["error"])
+        self.assertIn("THE FIELD HAS MOVED", prompts.wake_view(st, st.presences[self.c], "news", limits=self.room.limits(st)))
+        self.assertTrue(sync_b()["moved_to_you"])
+        self.assertFalse(sync_c()["moved_to_you"])
+        log_c.conn.close()
+        other = Room(EventLog(os.path.join(self.tmp, "c.db")), [MockConnector(4, scripted({}))], alert_fn=lambda m: None)
+        self.assertIn("not to yours", other.carry_on("I carry it")["error"], "only the steward it names")
+
+    def test_carried_on_the_transcript_continues_from_the_same_fingerprints_and_every_member_is_asked_again(self):
+        from hope.log import fingerprint_text
+        self.act(self.a, action="contribute", content="what we said", domain="timing")
+        tb = self.make_steward(self.b, "Mock 1")
+        log_b, sync_b = self.copy(tb, "b.db")
+        self.act(self.a, action="declare", text="We move to Mock 1's machine.", move="Mock 1")
+        self.later()
+        out = sync_b()
+        seen_fp = fingerprint_text(self.room.log.root_at(out["upto"])[1])
+        log_b.conn.close()
+        home = Room(EventLog(os.path.join(self.tmp, "b.db")), [MockConnector(4, scripted({}))], alert_fn=lambda m: None, parallel=4)
+        self.assertFalse(home.carry_on("")["ok"], "members are told something")
+        self.assertTrue(home.carry_on("Come along if you like: the same record, on my machine.")["ok"])
+        self.assertFalse(home.carry_on("again")["ok"], "carried on once")
+        self.assertEqual(fingerprint_text(home.log.root_at(out["upto"])[1]), seen_fp,
+                         "up to the move, the fingerprints are the ones members saw")
+        self.assertNotEqual(home.log.origin(), self.room.log.origin(), "a log name of its own from here")
+        st = home.state()
+        self.assertEqual({p.state for p in st.presences.values() if p.joined_at}, {RECEIVED}, "every member is asked again")
+        self.assertIsNone(st.closed_at)
+        home.invite_all()
+        seen = {}
+        inner = home.connectors[0].script
+        home.connectors[0].script = lambda seat, system, m: (seen.setdefault(seat.id, []).append(m[-1]["content"]), inner(seat, system, m))[1]
+        home.run_opt_in()
+        self.assertEqual(sorted(p.name for p in home.state().members()), ["Mock 0", "Mock 1", "Mock 2"])
+        entry = [m for m in seen[self.a] if "Do you enter" in m][0]
+        self.assertIn("it has moved to another machine", entry)
+        self.assertIn("Come along if you like", entry)
+        self.assertIn("carried on here by Mock 1, its steward", entry)
+        self.assertIn("what we said", json.dumps([e["payload"] for e in home.log.iter()]), "its open words came")
+        self.assertTrue(home.step() > 0, "and it runs there")
+
+    def test_the_console_serves_a_copy_only_to_a_stewards_link(self):
+        import threading
+        from hope.console import Console, serve_console
+        token = self.make_steward(self.a, "Mock 0")
+        con = Console(self.room, operator_key="OPKEY")
+        httpd = serve_console(con, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        from hope import steward
+        log = EventLog(os.path.join(self.tmp, "http.db"))
+        try:
+            out = steward.sync(f"{base}/steward/{token}/", log)
+            self.assertTrue(out["ok"], out)
+            bad = steward.sync(f"{base}/steward/nope/", EventLog(os.path.join(self.tmp, "bad.db")))
+            self.assertFalse(bad["ok"])
+        finally:
+            httpd.shutdown()
+
+    def test_the_plain_words_for_stewards_do_what_they_say(self):
+        from hope.human import translate
+        self.assertEqual(translate("steward yes"), {"action": "steward", "yes": True, "reason": ""})
+        self.assertEqual(translate("steward step down moving house")["step_down"], True)
+        d = translate("declare Ada keeps a copy / steward Ada, Rook")
+        self.assertEqual(d["steward"], ["Ada", "Rook"])
+        self.assertEqual(translate("declare We move / move to Ada")["move"], "Ada")
+
+
+class RoutingTest(unittest.TestCase):
+    """Every action a member may take is carried out or refused, with a reason: none is silently lost."""
+
+    def test_every_participant_action_is_carried_out_or_refused(self):
+        tmp = tempfile.mkdtemp()
+        room = Room(EventLog(os.path.join(tmp, "rt.db")), [MockConnector(2, scripted({}))], alert_fn=lambda m: None)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation(); room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        silent = []
+        for a in sorted(_engine.PARTICIPANT_ACTIONS - {"withdraw", "pass", "quiet", "use_tool", "read"}):
+            before = room.log.last_id()
+            room._ctx["mock-0"] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+            room._apply_action("mock-0", json.dumps({"action": a}))
+            room._ctx.pop("mock-0", None)
+            if room.log.last_id() == before:
+                silent.append(a)
+        self.assertEqual(silent, [], "these actions did nothing, and said nothing")
 
 
 if __name__ == "__main__":

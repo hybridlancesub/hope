@@ -223,7 +223,7 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                 "revisions": [{**h, "by": names.get(h["by"], h["by"])} for h in st.covenant_history]}
     memories = [{**m, "who": names.get(m["by"], m["by"])} for m in sorted(st.memories.values(), key=lambda m: m["id"])]
     declarations = [{**d, "who": names.get(d["by"], d["by"]),
-                     "decided": (effects_words(d["effects"], versions=st.instrument_versions) if "effects" in d
+                     "decided": (effects_words(d["effects"], names, versions=st.instrument_versions) if "effects" in d
                                  else decided(d["decision"])),
                      "answers": [{"who": names.get(x, x), **r} for x, r in (d.get("answers") or {}).items()]}
                     for d in sorted(st.declarations.values(), key=lambda d: d["id"])]
@@ -271,6 +271,11 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
         "declarations": declarations, "offers": offers, "closed_at": st.closed_at,
         # the operator as bridge: what the field asked their help with; the field's own pause, rhythm and friction
         "bridges": bridges, "field_pause": st.paused_now(time.time()), "rhythm": st.rhythm, "friction": st.friction,
+        # stewards (notes/sketch-9-stewards.md): who keeps a copy, and how far it has caught up; never their links
+        "stewards": [{"who": names.get(pid, pid), "upto": s["upto"], "synced_ts": s["synced_ts"] or None}
+                     for pid, s in st.stewards.items()],
+        "moved": ({**st.moved, "who": names.get(st.moved["to"], st.moved["to"])} if st.moved else None),
+        "carried": st.carried,
         "narrator": st.narrator, "tellings": st.tellings[-40:],
         "domains": list(domains.values()), "members": members, "contributions": list(contributions.values()),
         "links": list(links.values()), "operator_notes": st.operator_notes,
