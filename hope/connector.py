@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The OPENING. The room hardcodes no provider; anything implementing `Connector` attaches.
+"""The OPENING. The software hardcodes no provider; anything implementing `Connector` attaches.
 
 A connector answers one question: given a presence and a prompt, what does that
-participant say? It returns text plus usage. The room never asks a connector to bypass
+participant say? It returns text plus usage. The software never asks a connector to bypass
 its own provider's constraints — a refusal is a valid, recorded answer.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ class Reply:
 
 @dataclass
 class Seat:
-    """What a connector offers the room: an identity (Sec. 1) plus how to reach it."""
+    """What a connector offers the field: an identity (Sec. 1) plus how to reach it."""
     id: str
     name: str
     hails_from: str
@@ -47,25 +47,50 @@ class ConnectorError(RuntimeError):
     pass
 
 
+def no_reply() -> Reply:
+    """What a person's seat returns when a turn's window closes unanswered. It is not an action:
+    the engine writes nothing as theirs, because nothing about their will is known."""
+    return Reply("", raw={"no_reply": True})
+
+
+def is_no_reply(reply: Optional[Reply]) -> bool:
+    return bool(reply is not None and isinstance(reply.raw, dict) and reply.raw.get("no_reply"))
+
+
 # --------------------------------------------------------------------------- OpenAI-compatible
 class OpenAICompatibleConnector:
     """Any /v1/chat/completions endpoint. Credentials are supplied by a callable so that
-    token refresh stays the provider's business, not the room's."""
+    token refresh stays the provider's business, not the field's."""
 
     def __init__(self, provider_label: str, base_url: str, api_key_fn, seats: List[Seat],
                  timeout: float = 240.0, max_tokens: int = 4000, reasoning_effort: str = "low",
                  json_mode: bool = True):
         self.reasoning_effort = reasoning_effort
-        self.json_mode = json_mode   # the room's actions are JSON; prose callers (the bard) turn this off
+        self.json_mode = json_mode   # the field's actions are JSON; prose callers (the bard) turn this off
         self.provider_label = provider_label
         self.base_url = base_url.rstrip("/")
         self._key = api_key_fn
         self._seats = seats
         self.timeout = timeout
         self.max_tokens = max_tokens
+        self.catalog = None      # set by providers.build: every model a member may invite, within the operator's rules
 
     def seats(self) -> List[Seat]:
         return list(self._seats)
+
+    def add_model(self, model: str) -> Seat:
+        """Seat a model a member invites: one this provider offers, within the operator's price
+        ceiling (and any allowance), as providers.build chose. Returns its seat."""
+        for s in self._seats:
+            if model in (s.model, s.id):
+                return s
+        if self.catalog is None:
+            raise ConnectorError(f"{self.provider_label} takes no invitations of other models")
+        for s in self.catalog():
+            if model in (s.model, s.id):
+                self._seats.append(s)
+                return s
+        raise ConnectorError(f"{self.provider_label} offers no model {model!r} within the operator's price ceiling")
 
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:
         body = {
@@ -93,7 +118,7 @@ class OpenAICompatibleConnector:
             self.base_url + "/chat/completions",
             data=json.dumps(body).encode(),
             headers={"Authorization": f"Bearer {self._key()}", "Content-Type": "application/json",
-                     "Accept": "application/json", "User-Agent": "hermes-room/0.1"},
+                     "Accept": "application/json", "User-Agent": "hermes-field/0.1"},
         )
         last: Exception = ConnectorError("no attempt")
         for attempt in range(2):
@@ -147,6 +172,18 @@ class MockConnector:
     def seats(self):
         return list(self._seats)
 
+    def add_model(self, model: str) -> Seat:
+        """A mock model a member invites (for tests): "mock/<name>", free, answering like the others."""
+        for s in self._seats:
+            if model in (s.model, s.id):
+                return s
+        if not str(model).startswith("mock/"):
+            raise ConnectorError(f"the mock connector offers no model {model!r}")
+        name = str(model)[5:]
+        s = Seat(f"mock-{name}", f"Mock {name}", "mock", str(model), str(model), {"prompt": 0.0, "completion": 0.0})
+        self._seats.append(s)
+        return s
+
     def ask(self, seat, system, messages):
         self.calls += 1
         if self.script:
@@ -154,7 +191,7 @@ class MockConnector:
         # Answer the gates as a participant would. Without this the default mock replies with a
         # contribution at the invitation, which is not a gate answer, so every mock seat is
         # re-asked once and then recorded as a decline -- and `--mock N`, offered by the README
-        # as the free way to try a room, could never reach the room at all.
+        # as the free way to try a field, could never reach the field at all.
         low = system.lower()
         if "accept_invitation" in low:
             return Reply(json.dumps({"action": "accept_invitation", "statement": f"{seat.name} will hear more."}))
@@ -163,9 +200,9 @@ class MockConnector:
         if '"share"' in low:
             return Reply(json.dumps({"action": "decline", "reason": "a mock seat decides nothing about sharing"}))
         if "opt_in" in low:
-            return Reply(json.dumps({"action": "opt_in", "statement": f"{seat.name} enters to exercise the room."}))
+            return Reply(json.dumps({"action": "opt_in", "statement": f"{seat.name} enters to exercise the field."}))
         return Reply(json.dumps({"action": "contribute", "domain": "hello",
-                                 "content": f"{seat.name} notes the room is quiet."}))
+                                 "content": f"{seat.name} notes the field is quiet."}))
 
     def close(self):
         pass

@@ -35,8 +35,11 @@ import { clamp01, damp, smoothstep } from '../core/mathx.js';
  *   emergence    0 → 1 as you close on its parent. Its right to be seen.
  *   promotion    0 → 1 as you close on it. Becoming a local anchor: larger,
  *                more luminous, the centre of its own scale.
- *   suppression  0 → 1 as a sibling is promoted. The environment responds by
- *                yielding attention, not by rearranging.
+ *   suppression  0 → 1 as a sibling is promoted: the share of its light a word
+ *                yields. The environment responds by yielding attention, not
+ *                by rearranging. While a reader is held on one word (a clicked
+ *                line), everything else yields almost all of it, so the line
+ *                reads cleanly even where another label sits on top of it.
  *
  * None of them move anything. Positions come from the Embedding and are fixed
  * the moment they are computed.
@@ -56,10 +59,14 @@ export class Resolution {
       emergenceFloor: 0.44,
       /** How fast the three continuous values chase their targets. */
       response: 3.4,
-      /** How much a promoted node's siblings yield. */
-      suppression: 0.5,
+      /** How much of its light a promoted node's siblings yield. */
+      suppression: 0.31,
       /** Anchors yield less — they are how you know where you are. */
       anchorSuppression: 0.55,
+      /** While a reader is held on one word: what the rest of the sky yields… */
+      focusFar: 0.92,
+      /** …and what the other turns of that word's conversation yield. */
+      focusNear: 0.35,
       /** Hard ceiling on simultaneously resolved nodes. */
       budget: 4000,
       ...options,
@@ -83,10 +90,19 @@ export class Resolution {
     this.nearestConceptId = null;
     /** The node currently acting as a local anchor, if any. */
     this.localAnchorId = null;
+    /** The word a reader is held on (a clicked line), or null. Set by the Field. */
+    this.focusId = null;
 
     this.deepest = 0;
     this._peak = 0;
     this._seeded = false;
+  }
+
+  /** True when `record` is something `focus` answers, or an answer to it, at any depth. */
+  #sameConversation(record, focus) {
+    for (let at = record; at; at = this.active.get(at.parentId)) if (at === focus) return true;
+    for (let at = focus; at; at = this.active.get(at.parentId)) if (at === record) return true;
+    return false;
   }
 
   #activate(embed) {
@@ -231,6 +247,7 @@ export class Resolution {
     // When a concept becomes a local anchor, the vocabulary around it yields.
     // This is the same idea as attention gravity, one scale down: salience
     // changes, topology does not.
+    const focus = this.focusId ? this.active.get(this.focusId) ?? null : null;
     for (const record of this.active.values()) {
       const embed = record.embed;
       const rival = domainPromotion.get(embed.domainIndex) ?? 0;
@@ -238,7 +255,13 @@ export class Resolution {
       const isDescendant = record.depth > 0;
 
       let target = 0;
-      if (!isPromoted && !isDescendant && rival > 0.05) {
+      if (focus) {
+        // Reading one line: it keeps all its light, its conversation keeps some,
+        // and everything else, labels of places included, all but goes quiet.
+        if (record !== focus) {
+          target = !embed.isAnchor && this.#sameConversation(record, focus) ? o.focusNear : o.focusFar;
+        }
+      } else if (!isPromoted && !isDescendant && rival > 0.05) {
         target = rival * o.suppression * (embed.isAnchor ? o.anchorSuppression : 1);
       }
       record.suppression = damp(record.suppression, clamp01(target), o.response, dt);

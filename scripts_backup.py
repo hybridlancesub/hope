@@ -1,24 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Copy a room's transcript safely, and check the copy before trusting it.
+"""Copy a field's transcript safely, and check the copy before trusting it.
 
-    python3 scripts_backup.py room3.db backups/            # one copy, timestamped
-    python3 scripts_backup.py room3.db backups/ --keep 30  # and prune to the last 30
+    python3 scripts_backup.py field.db backups/            # one copy, timestamped
+    python3 scripts_backup.py field.db backups/ --keep 30  # and prune to the last 30
 
-The transcript is the room's memory: members are told it is kept so the room can remember. A
+The transcript is the field's memory: members are told it is kept so the field can remember. A
 memory that lives on exactly one disk is one dead disk from gone, so this exists.
 
 Two things it does that `cp` does not:
 
-  It uses SQLite's own online backup, so a copy taken while the room is running is consistent.
+  It uses SQLite's own online backup, so a copy taken while the field is running is consistent.
   The database runs in WAL mode; copying the .db file by hand while a round is in flight can
   capture a torn state, or miss committed events still in the -wal file.
 
   It checks the COPY before reporting success: SQLite's own integrity check, and that every
   event reads back. A backup nobody has checked is a belief rather than a backup.
 
-Cron it. Hourly while a room is live, and keep the copies somewhere that is not this machine:
+Cron it. Hourly while a field is live, and keep the copies somewhere that is not this machine:
 
-    17 * * * * cd /home/you/hope && python3 scripts_backup.py room3.db /var/backups/room --keep 48
+    17 * * * * cd /home/you/hope && python3 scripts_backup.py field.db /var/backups/field --keep 48
 
 Then get them off the box -- rsync, restic, an object store, anything. The failure this guards
 against is the machine, so a copy that only lives on the machine guards against nothing.
@@ -69,7 +69,7 @@ def backup(db: str, out_dir: str, keep: int = 0) -> str:
 def _verify(path: str):
     """Check the copy. Returns (events, last_id, problem_or_None)."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from room.log import EventLog
+    from hope.log import EventLog
     log = EventLog(path)
     try:
         ok = log.integrity()
@@ -97,7 +97,7 @@ def _prune(out_dir: str, base: str, keep: int) -> int:
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="back up a room's transcript and check the copy")
+    ap = argparse.ArgumentParser(description="back up a field's transcript and check the copy")
     ap.add_argument("db")
     ap.add_argument("out_dir")
     ap.add_argument("--keep", type=int, default=0, help="keep only the newest N copies (0 = keep all)")

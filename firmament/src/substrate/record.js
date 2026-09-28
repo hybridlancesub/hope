@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * ┌─────────────────────────────────────────────────────────────────────────┐
- * │  THE RECORD — the room's log, read as a substrate                       │
+ * │  THE RECORD — the field's log, read as a substrate                       │
  * └─────────────────────────────────────────────────────────────────────────┘
  *
- * The only module that knows what a room is. It takes the read-only state the
- * room serves (`/state.json`) and answers with substrate data: domains, concepts,
+ * The only module that knows what a field is. It takes the read-only state the
+ * field serves (`/state.json`) and answers with substrate data: domains, concepts,
  * relationships. No coordinates, no colours. The Embedding turns this into space
  * exactly as it would an authored ontology.
  *
@@ -19,7 +19,7 @@
  *                      target, or a target in another domain. Its weight is how
  *                      much it drew (replies), so the most-answered contributions
  *                      are largest and resolve first as you arrive.
- *   nested deeper   <- a reply to it (earlier rooms: an affirm or challenge), under
+ *   nested deeper   <- a reply to it (earlier versions: an affirm or challenge), under
  *                      it, recursively. A thread is a cluster you fly into.
  *   domain strand   <- replies whose target sits in another domain, aggregated.
  *                      (Strands between individual entries wait on positions that
@@ -32,7 +32,7 @@
  *
  * Topology is stable: ids are event ids, so a contribution embeds in the same
  * place on every load, and a new contribution never moves an old one. The seed
- * is the briefing's event id, so two viewers of the same room see the same sky.
+ * is the briefing's event id, so two viewers of the same field see the same sky.
  */
 
 const HANDLE_WORDS = 4;
@@ -109,14 +109,14 @@ export function substrateFromRecord(state, { minContributions = 1 } = {}) {
     between: p.between,
     weight: 0.25 + 0.75 * Math.log1p(p.count) / Math.log1p(maxLink),
     strength: p.count >= maxLink * 0.5 ? 'strong' : p.count > 2 ? 'medium' : 'light',
-    // Earlier rooms labelled replies affirm or challenge; a reply now says what it means in its own
-    // words, so a strand is only "contested" or "affirmed" when an earlier room's labels say so.
+    // Earlier versions labelled replies affirm or challenge; a reply now says what it means in its own
+    // words, so a strand is only "contested" or "affirmed" when an earlier version's labels say so.
     type: p.challenges > p.affirms ? 'contested' : p.affirms > p.challenges ? 'affirmed' : 'reply',
     note: `${p.count} replies across these domains` + (p.affirms || p.challenges ? ` (${p.affirms} affirm, ${p.challenges} challenge)` : ''),
   }));
 
   return {
-    id: 'room-record',
+    id: 'field-record',
     version: state.last_event,
     title: state.briefing?.opening || 'the record',
     seed: state.briefing?.event ?? 1,

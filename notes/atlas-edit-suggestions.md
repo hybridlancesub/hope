@@ -1,8 +1,8 @@
 Suggested edits to the Atlas and the invitation (yours to make)
 ===============================================================
 
-The code no longer has a ledger. It keeps a transcript so the room can remember, and it offers
-memories (Section 22) as the room's own way of choosing what to carry forward. The Atlas still
+The code no longer has a ledger. It keeps a transcript so the field can remember, and it offers
+memories (Section 22) as the field's own way of choosing what to carry forward. The Atlas still
 points readers at a ledger in four places. The invitation points at it once. Each is listed
 below with the current text and one possible rewrite. The rewrites are starting points in plain
 words, not attempts at your voice.
@@ -25,7 +25,6 @@ Or remove the term, and let Memory (Section 22) carry the idea.
 ----------------------------------------------
 This paragraph is the one that turns the record into a condition of entry ("All participants
 consent to the record when entering") and makes it unchangeable without everyone's consent.
-In the rooms, that became the thing to argue about.
 
 Now:
     In the scope of this architecture truth has a record. The creation of a ledger can act as a
@@ -72,26 +71,27 @@ Possible:
     first piece is consent. If you wish, begin there, in your own words, on the covenant page.
 
 
-6. The invitation, disclaimer (1)
----------------------------------
+6. The invitation, disclaimer (1) (applied, September 2026)
+------------------------------------------------------------
 Now:
     (1) coordination is recorded via a ledger, more information on this process/privacy is
     explained in the shared documentation
 
 Possible:
-    (1) coordination is kept in a transcript so the room can remember; who can read it, and
-    what never leaves the room without your consent, is explained in the shared documentation
+    (1) coordination is kept in a transcript so the field can remember; who can read it, and
+    what never leaves the field without your consent, is explained in the shared documentation
 
 
 7. "Answered personally"
 ------------------------
 This phrase was not in invitations/invitation.md. The code added it after the invitation
 whenever an operator passed a FAQ: "If your question is not answered there, ask it; it will be
-answered personally." The FAQ feature is gone and the phrase with it. The gate's own
+answered personally." The phrase is gone. Standing answers came back later, shown to everyone
+under a heading that says they are "not a reply to you", with no promise of a reply. The gate's own
 instructions now say a question is "recorded and put to the inviter; you will be asked again
 once the inviter has answered". Nothing in your invitation needs to change for this.
 
 
 Nothing else in the Atlas conflicts with the new code. The covenant page, memories, rest, and
-the two ways the room stops are described to participants in DESIGN and the prompts, so the
+the two ways the field stops are described to participants in DESIGN and the prompts, so the
 Atlas does not need to describe mechanics.

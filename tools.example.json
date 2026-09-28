@@ -1,0 +1,118 @@
+{
+  "about": "The operator's tools for a field: copy this file, set \"enabled\": true on the ones you want, and start hope with --tools FILE. Each is an MCP server, the kind Hermes and OpenClaw use too. A command runs on your machine; a url is a server somewhere else. Keys never go in this file: name the environment variable (key_env for an address, env_pass for a command) and set it in the terminal that starts hope. fetch (reading a web page) is built in; --no-fetch turns it off. Members can offer more servers of their own from inside the field. See AGENTS, 'Tools'.",
+  "servers": [
+    {
+      "name": "search",
+      "note": "Web search with SearXNG, which you or a friend run (no fees). Needs Node.js, and SEARXNG_URL set to your SearXNG address.",
+      "command": ["npx", "-y", "mcp-searxng"],
+      "env_pass": ["SEARXNG_URL"],
+      "kind": "reading",
+      "runner": "the operator's machine, asking the SearXNG server",
+      "sends_to": "the SearXNG server, which asks search engines",
+      "enabled": false
+    },
+    {
+      "name": "brave",
+      "note": "Web search with Brave's API (a free tier, then paid). Needs Node.js and BRAVE_API_KEY. If you pay per call, put the price in price_per_call so the runway counts it.",
+      "command": ["npx", "-y", "@brave/brave-search-mcp-server"],
+      "env_pass": ["BRAVE_API_KEY"],
+      "kind": "reading",
+      "runner": "the operator's machine, asking Brave Search",
+      "sends_to": "Brave Search",
+      "price_per_call": 0,
+      "enabled": false
+    },
+    {
+      "name": "wikipedia",
+      "note": "Search and read Wikipedia. Needs uv (uvx).",
+      "command": ["uvx", "wikipedia-mcp-server@latest"],
+      "kind": "reading",
+      "runner": "the operator's machine, asking Wikipedia",
+      "sends_to": "Wikipedia",
+      "enabled": false
+    },
+    {
+      "name": "arxiv",
+      "note": "Search and read papers on arXiv. Needs uv (uvx).",
+      "command": ["uvx", "arxiv-mcp-server"],
+      "kind": "reading",
+      "runner": "the operator's machine, asking arXiv",
+      "sends_to": "arXiv",
+      "enabled": false
+    },
+    {
+      "name": "deepwiki",
+      "note": "Ask questions of any public GitHub repository's documentation, hope's included. Free, nothing to install.",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "kind": "reading",
+      "runner": "DeepWiki (Cognition)",
+      "sends_to": "DeepWiki",
+      "enabled": false
+    },
+    {
+      "name": "docs",
+      "note": "Up-to-date documentation for software libraries (Context7). Free, nothing to install.",
+      "url": "https://mcp.context7.com/mcp",
+      "kind": "reading",
+      "runner": "Context7 (Upstash)",
+      "sends_to": "Context7",
+      "enabled": false
+    },
+    {
+      "name": "time",
+      "note": "The time in any time zone, and conversions. Needs uv (uvx).",
+      "command": ["uvx", "mcp-server-time"],
+      "kind": "reading",
+      "runner": "the operator's machine",
+      "sends_to": "nowhere beyond the operator's machine",
+      "enabled": false
+    },
+    {
+      "name": "folder",
+      "note": "A shared folder the field can read and write: drafts and files beyond the transcript. Change the path to a folder you lend, and only that folder. Needs Node.js.",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/field-folder"],
+      "kind": "working",
+      "runner": "the operator's machine, in one folder the operator lends",
+      "sends_to": "that folder, on the operator's machine",
+      "enabled": false
+    },
+    {
+      "name": "python",
+      "note": "Run Python in a sandbox (Pyodide in Deno), for computing and checking claims. Needs uv and Deno. The code runs on your machine inside the sandbox, with your consent by attaching it.",
+      "command": ["uvx", "mcp-run-python", "stdio"],
+      "kind": "working",
+      "runner": "the operator's machine, in a sandbox",
+      "sends_to": "nowhere beyond the operator's machine",
+      "enabled": false
+    },
+    {
+      "name": "github",
+      "note": "GitHub, for changing repositories: hope's own, if you lend it. Use a fine-grained token that reaches only the repository you mean (for hope: hybridlancesub/hope), set as GITHUB_PERSONAL_ACCESS_TOKEN. What the field changes there reaches the running field only when you deploy it.",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "key_env": "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "kind": "acting",
+      "runner": "GitHub, with the operator's token",
+      "sends_to": "GitHub",
+      "enabled": false
+    },
+    {
+      "name": "github-local",
+      "note": "The same GitHub server, run on your machine in Docker instead of GitHub's address.",
+      "command": ["docker", "run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"],
+      "env_pass": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+      "kind": "acting",
+      "runner": "the operator's machine, in Docker, with the operator's token",
+      "sends_to": "GitHub",
+      "enabled": false
+    },
+    {
+      "name": "browser",
+      "note": "A web browser the field can drive (clicking, forms). Heavy: many steps, and it acts in the world. Needs Node.js.",
+      "command": ["npx", "-y", "@playwright/mcp@latest"],
+      "kind": "acting",
+      "runner": "the operator's machine, in a browser",
+      "sends_to": "the sites it visits",
+      "enabled": false
+    }
+  ]
+}

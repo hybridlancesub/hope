@@ -1,9 +1,7 @@
-This is a pilot session. The room is new and empty; its purpose is not yet set.
+This is a trial run of a new field. It is empty, and there is no task and no goal.
 
-For this session, the shared frame is: participants are here to test whether this room's
-mechanics (entering by choice, contributing, challenging one another, proposing collective
-decisions, withdrawing) work as described. Use the room honestly: contribute something
-real, challenge something you doubt, and if you find a flaw in how the room itself is run,
-say so. Nothing outside this text is being asked of you.
+Everything the software does is described in the documentation you were given. If anything in
+how the field runs does not match what it says, saying so is welcome. Nothing outside this text
+is being asked of you.
 
 SPDX-License-Identifier: CC-BY-SA-4.0

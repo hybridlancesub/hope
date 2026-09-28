@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The MAP: one sitting, retold.
 
-A digest is computed from the log alone (deterministic, free). One model call turns
-the digest into a story or song whose every reference is tagged [#id]; tags are then
-verified against the log, and unresolvable tags are rejected — the narrator gets one
-correction pass, and anything still ungrounded is flagged rather than shown as fact.
+A digest is computed from the log alone (deterministic, free). The story is the software's own
+plain account, every reference tagged [#id] and verified against the log. No model is handed
+members' words for it: the outside narrator model is retired (roadmap, step 4d), and members tell
+the field's stories themselves.
 
 The map itself (threads, memories, covenant revisions, arrivals, domains) is rendered from the
 transcript, never from the story. The story is a reading; the map is the record.
@@ -20,15 +20,6 @@ from typing import Dict, List, Optional
 from .log import EventLog
 from .model import CONTRIBUTION_KINDS, decided, replay
 
-STORY_SYSTEM = """You are the room's bard. You will receive a digest of one sitting of a coordination room: who was present, what they said (with event ids), what threads formed, what was remembered, how the covenant page changed, who arrived or left.
-
-Retell the sitting as a short story or a song (your choice of form — the room's first bard set the tone; keep it playful but honest). Rules:
-- Every event you refer to MUST carry its tag, exactly like [#142]. Tags are how a reader checks you against the record.
-- Invent nothing: no speech, no motive, no event that is not in the digest. You may choose imagery, rhythm, and voice freely; you may not choose facts.
-- Name participants as the digest names them.
-- Under ~400 words. The digest is the ground; you are the melody over it."""
-
-
 def digest(log: EventLog, since: int, upto: Optional[int] = None) -> Dict:
     """The sitting, structurally. Pure replay; no model, no cost."""
     events = [e for e in log.iter(since=since) if upto is None or e["id"] <= upto]
@@ -40,8 +31,11 @@ def digest(log: EventLog, since: int, upto: Optional[int] = None) -> Dict:
     for e in entries:
         t = e["payload"].get("target")
         if t is None or t not in by_id:
+            older = st_all.contributions.get(t) if t is not None else None   # a reply to something before this stretch
             threads.append({"id": e["id"], "kind": e["kind"], "who": names.get(e["actor"], e["actor"]),
                             "domain": e["payload"].get("domain"), "text": e["payload"].get("content", "")[:240],
+                            "answers": t if older else None,
+                            "answers_who": names.get(older["actor"], older["actor"]) if older else None,
                             "replies": []})
     index = {t["id"]: t for t in threads}
     for e in entries:
@@ -80,11 +74,13 @@ def digest(log: EventLog, since: int, upto: Optional[int] = None) -> Dict:
 
 
 def digest_text(d: Dict, per_thread: int = 120) -> str:
-    lines = [f"SITTING DIGEST — events #{d['since']}..#{d['upto']}, {d['entries']} entries, cost ${d['cost_usd']}"]
+    # No money here: a narrator's telling reaches people, and members are never shown dollars.
+    lines = [f"SITTING DIGEST — events #{d['since']}..#{d['upto']}, {d['entries']} entries"]
     lines.append("PRESENT: " + ", ".join(sorted(set(d["names"].values()))))
     lines.append("DOMAINS: " + "; ".join(f"{k} ({v})" for k, v in d["domains"].items()))
     for t in d["threads"][:60]:
-        lines.append(f"[#{t['id']}] {t['kind']} by {t['who']} @ {t['domain']}: {t['text'][:per_thread]}")
+        answering = f" (answering {t['answers_who']} [#{t['answers']}], from before this stretch)" if t.get("answers") else ""
+        lines.append(f"[#{t['id']}] {t['kind']} by {t['who']} @ {t['domain']}{answering}: {t['text'][:per_thread]}")
         for rp in t["replies"][:8]:
             lines.append(f"    [#​{rp['id']}] {rp['kind']} by {rp['who']}: {rp['text'][:100]}".replace("\u200b", ""))
     for m in d["memories"]:
@@ -92,7 +88,7 @@ def digest_text(d: Dict, per_thread: int = 120) -> str:
     for c in d["covenant"]:
         lines.append(f"[#{c['id']}] COVENANT PAGE revised by {c['who']} ({c['chars']} characters){': ' + c['note'] if c['note'] else ''}")
     for st_ in d["statements"]:
-        what = f"DECLARED the room has decided {decided(st_['decision'])}" if st_["kind"] == "declare" else "OFFERED resources"
+        what = f"DECLARED the field has decided {decided(st_['decision'])}" if st_["kind"] == "declare" else "OFFERED resources"
         lines.append(f"[#{st_['id']}] {st_['who']} {what}: {st_['text'][:200]}")
     for a in d["arrivals"]:
         lines.append(f"[#{a['id']}] {a['who']} entered")
@@ -109,36 +105,6 @@ def check_story(story: str, log: EventLog, upto: int) -> List[int]:
     cited = {int(m) for m in TAG_RE.findall(story)}
     real = {e["id"] for e in log.iter() if e["id"] <= upto}
     return sorted(cited - real)
-
-
-def tell_story(d: Dict, connector, seat, log: EventLog, upto: int) -> Dict:
-    """One model call (plus at most one correction pass). Returns story + grounding report."""
-    msgs = [{"role": "user", "content": digest_text(d) + "\n\nRetell this sitting."}]
-    saved, connector.json_mode = getattr(connector, "json_mode", True), False
-    try:
-        reply = connector.ask(seat, STORY_SYSTEM, msgs)
-    finally:
-        connector.json_mode = saved
-    story = reply.text.strip()
-    if not TAG_RE.search(story):
-        story = ""   # a telling that cites nothing cannot be checked; treat it as no telling
-    bad = check_story(story, log, upto) if story else []
-    tries = 1
-    if bad or not story:
-        msgs += [{"role": "assistant", "content": story or "(no usable telling was produced)"},
-                 {"role": "user", "content": ("These tags do not exist in the record: " + str(bad) + ". " if bad else "")
-                  + "Retell the sitting as prose (not JSON), citing only real event ids as [#id]; where you cannot cite, do not claim."}]
-        connector.json_mode = False
-        reply = connector.ask(seat, STORY_SYSTEM, msgs)
-        connector.json_mode = saved
-        story = reply.text.strip()
-        if not TAG_RE.search(story):
-            story = ""
-        bad = check_story(story, log, upto) if story else []
-        tries = 2
-    return {"story": story, "ungrounded": bad, "tries": tries,
-            "narrator": seat.name, "model": seat.model,
-            "prompt_tokens": reply.prompt_tokens, "cost_usd": getattr(reply, "cost_usd", 0.0)}
 
 
 def publish_story(told: Dict, d: Dict, title: str, paths: List[str]) -> None:
@@ -214,7 +180,7 @@ a.tag {{ color:var(--affirm); text-decoration:none; font-size:.75em; }} a.tag:ho
     if d["statements"]:
         parts.append("<h2>Put before the operator</h2>")
         for st_ in d["statements"]:
-            what = f"declared the room has decided {esc(decided(st_['decision'] or ''))}" if st_["kind"] == "declare" else "offered resources"
+            what = f"declared the field has decided {esc(decided(st_['decision'] or ''))}" if st_["kind"] == "declare" else "offered resources"
             parts.append(f"<div class='prop' id='ev{st_['id']}'><b>#{st_['id']}</b> <b>{esc(st_['who'])}</b> {what}<div>{tagged(st_['text'])}</div></div>")
     if d["departures"]:
         parts.append("<h2>Departures</h2>")

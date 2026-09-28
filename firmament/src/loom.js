@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 /**
- * THE LOOM — what the room is doing now.
+ * THE LOOM — what the field is doing now.
  *
  * The Firmament is a sky: the shape of everything, spatially. The Loom is a clock:
  * the latest words as text, and one lane per domain with time running left to
@@ -11,8 +11,13 @@
  * shows the participants' own handles, the reader their own words.
  *
  * Beside the reader: the covenant page as it stands, the memories members chose to
- * keep, and anything members have put before the operator. Earlier rooms' proposals
- * still show, for rooms that had them; the room no longer has that machinery.
+ * keep, and anything members have put before the operator. Earlier versions' proposals
+ * still show, for fields that had them; the field no longer has that machinery.
+ *
+ * Above the feed: the tellings. A narrator writes a short account of each stretch of the
+ * field, every [#id] checked against the transcript, and keeps it in the transcript; the
+ * latest is shown in full, the earlier ones folded beneath it. (A story.json written by
+ * `python3 -m hope map` is shown only when the field has no tellings of its own.)
  */
 const REFRESH_MS = 5000;
 const FEED_MAX = 12;
@@ -54,7 +59,7 @@ async function poll() {
     document.documentElement.dataset.loom = 'running';
     render();
   } catch (e) {
-    errorEl.textContent = `could not read ${source}: ${e.message} — is 'python3 -m room --db … serve' running?`;
+    errorEl.textContent = `could not read ${source}: ${e.message} — is 'python3 -m hope --db … serve' running?`;
     errorEl.style.display = 'block';
     document.documentElement.dataset.loom = 'failed';
   }
@@ -65,8 +70,35 @@ async function pollStory() {
     const r = await fetch('./story.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) return;
     story = await r.json();
-    renderStory();
+    if (!(state?.tellings ?? []).length) renderStory();
   } catch { /* no story published yet; the panel stays hidden */ }
+}
+
+function renderTellings() {
+  const tellings = state?.tellings ?? [];
+  if (!tellings.length) return renderStory();
+  const el = document.getElementById('telling');
+  el.classList.add('visible');
+  const latest = tellings[tellings.length - 1];
+  document.querySelector('#telling h2').textContent = 'The telling';
+  document.getElementById('telling-who').innerHTML =
+    `narrated by ${esc(latest.narrator)} · events #${latest.since}..#${latest.upto}` +
+    (latest.tries > 1 ? ` · corrected once` : '') + ` · every [#id] checked against the transcript` +
+    ` · ${fmtAgoEvent(latest.id)}`;
+  const earlier = tellings.slice(0, -1).slice(-8).reverse();
+  document.getElementById('telling-body').innerHTML = storyText(latest.story) +
+    (earlier.length ? `<details class="earlier"><summary>${earlier.length} earlier telling${earlier.length === 1 ? '' : 's'}</summary>` +
+      earlier.map((t) => `<div class="etelling"><div class="who">events #${t.since}..#${t.upto}</div>${storyText(t.story)}</div>`).join('') +
+      `</details>` : '');
+  const warn = document.getElementById('telling-warn');
+  warn.textContent = latest.ungrounded?.length
+    ? `The narrator cited ids that do not exist: ${latest.ungrounded.join(', ')}. Treat those claims as ungrounded.`
+    : '';
+}
+
+function fmtAgoEvent(id) {
+  const n = (state?.last_event ?? id) - id;
+  return n <= 0 ? 'just now' : `${n} event${n === 1 ? '' : 's'} ago`;
 }
 
 function renderStory() {
@@ -103,7 +135,7 @@ document.addEventListener('click', (e) => {
       `<div id="reader-body">${esc(prop.reason)}</div>`;
     return;
   }
-  readerEl.innerHTML = `<div id="reader-body"><span class="hint">#${id} is in the transcript but outside what the Loom carries (an arrival, a departure, a gate answer). Use: python3 -m room --db ROOM.db log --since ${id - 1} --full</span></div>`;
+  readerEl.innerHTML = `<div id="reader-body"><span class="hint">#${id} is in the transcript but outside what the Loom carries (an arrival, a departure, a gate answer). Use: python3 -m hope --db FIELD.db log --since ${id - 1} --full</span></div>`;
 });
 
 /** Memories, covenant versions, declarations and offers, read the same way as an entry. */
@@ -113,7 +145,7 @@ function otherEntry(id) {
   const r = (state.covenant?.revisions ?? []).find((x) => x.id === id);
   if (r) return reader(r.by, `#${id} · covenant page revised · ${r.chars} characters`, r.note || '(no note)');
   const d = (state.declarations ?? []).find((x) => x.id === id);
-  if (d) return reader(d.who, `#${id} · declares the room has decided ${d.decided ?? 'to ' + d.decision} · ${d.status.replace('_', ' ')}`, d.text + (d.note ? `\n\nThe operator: ${d.note}` : ''));
+  if (d) return reader(d.who, `#${id} · declares the field has decided ${d.decided ?? 'to ' + d.decision} · ${d.status.replace('_', ' ')}`, d.text + (d.note ? `\n\nThe operator: ${d.note}` : ''));
   const o = (state.offers ?? []).find((x) => x.id === id);
   if (o) return reader(o.who, `#${id} · offers resources · ${o.status}`, o.text + (o.note ? `\n\nThe operator: ${o.note}` : ''));
   return null;
@@ -135,6 +167,7 @@ function inWindow(list) {
 
 function render() {
   renderStatus();
+  renderTellings();
   renderFeed();
   renderLanes();
   renderSide();
@@ -226,7 +259,7 @@ function renderLanes() {
 }
 
 /** The side panel: the covenant page, memories, what waits on the operator, and, for
- *  earlier rooms only, their proposals. */
+ *  files from earlier versions only, their proposals. */
 function renderSide() {
   const cov = state.covenant ?? {};
   const revs = cov.revisions ?? [];
@@ -239,7 +272,7 @@ function renderSide() {
   if (waiting.length) {
     html += `<h2>Waiting on the operator</h2>` + waiting.map((w) =>
       `<div class="prop"><a class="tag" data-ev="${w.id}">[#${w.id}]</a> ${esc(w.who)} — ` +
-      (w.decision ? `the room has decided <b>${esc(w.decided ?? 'to ' + w.decision)}</b>` : `offers resources`) + `</div>`).join('');
+      (w.decision ? `the field has decided <b>${esc(w.decided ?? 'to ' + w.decision)}</b>` : `offers resources`) + `</div>`).join('');
   }
   if (mems.length) {
     html += `<h2>Memories</h2>` + mems.slice(0, 12).map((m) =>
@@ -248,7 +281,7 @@ function renderSide() {
   }
   const props = (state.proposals ?? []).slice().sort((a, b) => b.id - a.id);
   if (props.length) {
-    html += `<h2>Proposals (earlier rooms)</h2>` + props.map((p) => {
+    html += `<h2>Proposals (files from earlier versions)</h2>` + props.map((p) => {
       const fate = p.resolved_at ? `<b class="adopted">adopted at #${p.resolved_at}</b>` : `open · ${p.consents.length} consent(s)`;
       return `<div class="prop"><b>#${p.id} ${esc(p.kind)}</b>${p.value != null ? ` ${esc(String(p.value))}` : ''} by ${esc(p.by)} — ${fate}<br>${esc(firstWords(p.reason, 24))}</div>`;
     }).join('');
@@ -256,7 +289,7 @@ function renderSide() {
   sideEl.innerHTML = html;
 }
 
-/** A reply is a contribution with a target. Earlier rooms' affirm/challenge keep their own names. */
+/** A reply is a contribution with a target. Earlier versions' affirm/challenge keep their own names. */
 function kindOf(e) {
   return e.kind === 'contribute' && e.target != null ? 'reply' : e.kind;
 }
@@ -269,7 +302,7 @@ function showEntry(e) {
     `<div id="reader-who">${esc(e.who)}</div>` +
     `<div id="reader-meta">#${e.id} · ${kindOf(e)}${e.target != null ? ` → #${e.target}` : ''} · ${esc(e.domain)} · ${when}` +
     (n ? ` · ${n} repl${n === 1 ? 'y' : 'ies'}` : '') +
-    (e.affirms || e.challenges ? ` · ${e.affirms} affirm, ${e.challenges} challenge (an earlier room's words)` : '') + `</div>` +
+    (e.affirms || e.challenges ? ` · ${e.affirms} affirm, ${e.challenges} challenge (an earlier version's words)` : '') + `</div>` +
     `<div id="reader-body">${esc(e.content)}</div>`;
 }
 

@@ -141,6 +141,9 @@ export class Field {
     return this;
   }
 
+  /** The line a reader clicked, while the camera holds on it (see Navigator.holding). */
+  #focusId = null;
+
   #frame = (now) => {
     if (!this.running) return;
     this._raf = requestAnimationFrame(this.#frame);
@@ -158,6 +161,8 @@ export class Field {
 
     // Resolution runs after movement — it answers "what can be resolved from
     // where the camera now is", which is not knowable before the camera moves.
+    // A clicked line stays in the spotlight only while the camera holds on it.
+    this.resolution.focusId = this.navigator.holding ? this.#focusId : null;
     this.resolution.update(dt, this.navigator.position);
     // …and feeds the next frame's sense of scale back to Navigation.
     this.navigator.setScaleReference(this.resolution.nearestConceptDistance);
@@ -182,18 +187,39 @@ export class Field {
   };
 
   /**
-   * A tap on a region is a request to go there, not a selection. Nothing is
-   * highlighted, nothing opens, no panel appears — the Firmament simply carries
-   * you closer, and the language resolves because you are nearer to it.
+   * A tap on a line of text is a request to read it: the camera carries you to the
+   * word, centred and enlarged, and `viewer:focus` asks the page to open its
+   * conversation. A tap anywhere else in a region is a request to go there: the
+   * Firmament carries you closer, and the language resolves because you are nearer.
    */
   #consumeTaps() {
     for (const tap of this.input.taps) {
+      const word = this.firmament.typography.pickAt(tap, this.firmament.camera);
+      if (word && !word.record.embed.isAnchor) {
+        this.#focusId = word.record.id;
+        this.navigator.focusOn(word.record.embed.position, word.height, word.width);
+        this.bus.emit('viewer:focus', { id: word.record.id, label: word.record.embed.label });
+        break;
+      }
       const region = pickRegion(tap, this.firmament.camera, this.embedding);
       if (!region) continue;
       this.navigator.flyTo(region);
       this.bus.emit('viewer:approach', { regionId: region.domainId, label: region.label });
       break;
     }
+  }
+
+  /**
+   * Fly to a word by id, if it is resolved right now. Returns false when it is not —
+   * a reply nested inside another word exists in the sky only once you are near it.
+   */
+  focusConcept(id) {
+    const record = this.resolution.active.get(id);
+    const size = this.firmament.typography.sizeOf(id);
+    if (!record || !size) return false;
+    this.#focusId = id;
+    this.navigator.focusOn(record.embed.position, size.height, size.width);
+    return true;
   }
 
   describe() {

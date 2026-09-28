@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Seats reached over HTTP instead of a provider API — the OPENING (Sec. 7) widened to the network.
+"""Seats reached over HTTP instead of a provider API: connector.py's opening, widened to the network.
 
-The room's engine does not change. It still calls `connector.ask(seat, system, messages)` and
+The field's engine does not change. It still calls `connector.ask(seat, system, messages)` and
 blocks until an answer comes back or the turn's deadline passes, exactly as it does for a person
 answering on stdin. Only the transport differs: instead of reading a line from a terminal or an
 inbox file, this connector parks the turn where its holder can fetch it, and waits.
@@ -10,13 +10,13 @@ inbox file, this connector parks the turn where its holder can fetch it, and wai
                                                          POST /seat/<token>/action
                         <-  Reply  <-  [wake]       ...
 
-A seat's holder may be a person with a browser or an agent with a script; the room does not know
-and does not care. People POST plain text (the same grammar room/human.py accepts); agents POST
-the JSON action objects described in room/prompts.py. Both arrive as the same recorded action.
+A seat's holder may be a person with a browser or an agent with a script; the field does not know
+and does not care. People POST plain text (the same grammar hope/human.py accepts); agents POST
+the JSON action objects described in hope/prompts.py. Both arrive as the same recorded action.
 
 What this deliberately does NOT do:
   - It is not a spectator gallery. A token addresses ONE seat and shows only that seat's own
-    turns. DESIGN Sec. 6 admits no "watching from outside" state, and nothing here adds one.
+    turns. The field has no "watching from outside" state, and nothing here adds one.
   - It never turns silence into consent, and it never turns silence into refusal either. A gate
     window that closes unanswered leaves the presence INVITED, to be asked again on the next
     `open`. See RendezvousConnector for why the invitation's "silence is no" does not reach a
@@ -35,14 +35,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .connector import ConnectorError, Reply, Seat
+from .connector import ConnectorError, Reply, Seat, no_reply
 from .human import translate
 
 TOKEN_BYTES = 32
 
 
 def gate_kind(system: str) -> str:
-    """Which of the room's four prompts this is, by the same reading room/human.py uses.
+    """Which of the field's four prompts this is, by the same reading hope/human.py uses.
 
     Returns one of: "invitation", "delivery", "entry", "share", "turn". The seat's client needs
     this to offer the right answers — a gate takes yes/no/question, a turn takes the action set.
@@ -79,7 +79,7 @@ class _Slot:
 
 
 class Rendezvous:
-    """The shared board between the engine and the HTTP server. Thread-safe; no room state
+    """The shared board between the engine and the HTTP server. Thread-safe; no field state
     lives here, only in-flight turns."""
 
     def __init__(self, store: Optional[str] = None):
@@ -93,7 +93,7 @@ class Rendezvous:
     # -- seats ------------------------------------------------------------------
     def add_seat(self, seat: Seat, token: Optional[str] = None) -> str:
         """Seat someone and return the token that addresses them. Idempotent per seat id, so
-        restarting the room keeps every outstanding invitation link valid."""
+        restarting the field keeps every outstanding invitation link valid."""
         with self._lock:
             if seat.id in self._slots:
                 return self._slots[seat.id].token
@@ -221,7 +221,7 @@ class Rendezvous:
 
     def answer(self, token: str, payload: dict) -> dict:
         """Accept one action from a seat's holder. `payload` carries either {"text": "..."}
-        (a person, in room/human.py's grammar) or a whole action object (an agent).
+        (a person, in hope/human.py's grammar) or a whole action object (an agent).
 
         `turn_id`, as given by peek(), should ride along. When it does it is enforced, so an
         answer written for one question can never be applied to the next one — which matters
@@ -240,12 +240,15 @@ class Rendezvous:
                         "turn_id": turn["id"]}
             kind, turn_id = turn["kind"], turn["id"]
         if "text" in payload and isinstance(payload.get("text"), str):
-            action = translate(payload["text"], gate=(kind == "invitation"),
-                               entry=(kind == "entry"), delivery=(kind == "delivery"))
+            action = translate(payload["text"], gate=(kind == "invitation"), entry=(kind == "entry"),
+                               delivery=(kind == "delivery"), share=(kind == "share"))
         elif isinstance(payload.get("action"), str):
             action = {k: v for k, v in payload.items() if k not in ("token", "turn_id")}
         else:
             return {"ok": False, "error": 'send {"text": "..."} or a JSON action object'}
+        if action.get("action") == "unreadable":
+            return {"ok": False, "error": "Answer with share (everything), share and the numbers of your entries "
+                                          "(only those), or no (nothing)."}
         with self._lock:
             # re-check under the lock: the deadline may have passed, or the next question been
             # put, while this one was being parsed
@@ -294,7 +297,7 @@ class RendezvousConnector:
     An unanswered window is NOT a refusal, and this is the whole of the reasoning.
 
     The invitation says "Silence is understood as 'no'", and it also says that declining
-    "excludes only this — this request, at this time, this turn, for this scope", that it
+    "excludes only this — this request, at this time, for this scope", that it
     "imposes nothing, forecloses nothing", and that there will be other opportunities. Those
     two sentences are not in tension where they were written: a model answering in a single
     inference call has genuinely chosen when it returns nothing. A person who has not opened
@@ -310,7 +313,7 @@ class RendezvousConnector:
     Only an answer the holder actually gives — "no", or a reply that is not one of the objects
     offered — becomes a decline, exactly as it does for a model.
 
-    The one exception is `share`, at a room's closing. SYSTEM_SHARE says in its own words that
+    The one exception is `share`, at a field's closing. SYSTEM_SHARE says in its own words that
     no answer is read as declining to share; there the silent default must be that nothing of
     theirs is shown, so silence does record a decline. That direction is the safe one.
 
@@ -320,7 +323,8 @@ class RendezvousConnector:
     they are reading, and the briefing itself asks for a pause of indeterminate duration.
     """
 
-    def __init__(self, rv: Rendezvous, turn_timeout: float = 600.0, gate_window: float = 86400.0,
+    # turn_timeout is an ordinary turn's window; the engine sets it from the people's clock.
+    def __init__(self, rv: Rendezvous, turn_timeout: float = 900.0, gate_window: float = 86400.0,
                  reach_window: float = 900.0):
         self.rv = rv
         self.turn_timeout = turn_timeout
@@ -329,6 +333,11 @@ class RendezvousConnector:
 
     def seats(self) -> List[Seat]:
         return self.rv.seats()
+
+    def add_person(self, seat: Seat) -> str:
+        """Seat a person a member invites; returns the token of their link (a credential: it is
+        given to the member who invited them, never written in the transcript)."""
+        return self.rv.add_seat(seat)
 
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:
         kind = gate_kind(system)
@@ -346,7 +355,7 @@ class RendezvousConnector:
             raise ConnectorError(
                 f"no answer yet at the {kind} gate: this seat's link {seen}. This is not a "
                 f"decline — the presence stays invited and is asked again on the next open.")
-        return Reply(json.dumps({"action": "pass"}))
+        return no_reply()     # an unanswered turn writes nothing as theirs
 
     def close(self) -> None:
         pass

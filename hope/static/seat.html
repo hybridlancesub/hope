@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later
+     One seat. At the gates, this page shows its holder the question in front of them. Once they
+     have entered, nothing is asked of them: it shows what is new for them, where they can speak,
+     and a box to post in whenever they like. A seat link is a seat, not a gallery: it shows only
+     what its holder may read. It never composes JSON by hand, which is also why an escape
+     sequence pasted into a terminal can no longer become a contribution. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your seat</title>
+<style>
+  :root { --void:#0a0b10; --ink:#c8d0e4; --dim:#6b7488; --line:rgba(140,152,180,.12);
+          --contribute:#7aa2d8; --affirm:#79b98a; --challenge:#d89a6a; --warn:#d88a8a; }
+  * { box-sizing:border-box; }
+  body { background:var(--void); color:var(--ink); margin:0;
+         font:300 15px/1.7 "Inter","Segoe UI",Arial,sans-serif; }
+  .wrap { max-width:56rem; margin:0 auto; padding:1.6rem 1rem 8rem; }
+  h1 { font-size:.8rem; font-weight:400; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); }
+  .who { font-size:1.05rem; color:var(--ink); }
+  .who b { font-weight:400; }
+  .card { border:1px solid var(--line); border-radius:.5rem; padding:1.1rem 1.2rem; margin:1.2rem 0; }
+  .ask { font-size:1.12rem; line-height:1.6; }
+  .muted { color:var(--dim); font-size:.86rem; }
+  .clock { font-variant-numeric:tabular-nums; }
+  .clock.low { color:var(--warn); }
+  pre.view { white-space:pre-wrap; word-wrap:break-word; font:400 13px/1.65 ui-monospace,"Cascadia Code",Consolas,monospace;
+             color:var(--ink); background:rgba(140,152,180,.045); border-left:2px solid var(--line);
+             padding:.9rem 1rem; border-radius:.3rem; max-height:52vh; overflow:auto; }
+  pre.view .eid { color:var(--affirm); cursor:pointer; text-decoration:underline dotted; }
+  pre.view .hd { color:var(--dim); }
+  textarea { width:100%; min-height:6.5rem; resize:vertical; background:rgba(140,152,180,.06);
+             color:var(--ink); border:1px solid var(--line); border-radius:.35rem; padding:.7rem .8rem;
+             font:300 15px/1.6 inherit; }
+  textarea:focus { outline:1px solid var(--contribute); }
+  .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-top:.7rem; }
+  button { background:rgba(140,152,180,.1); color:var(--ink); border:1px solid var(--line);
+           border-radius:.35rem; padding:.45rem .9rem; font:400 13.5px/1 inherit; cursor:pointer;
+           letter-spacing:.02em; }
+  button:hover:not(:disabled) { background:rgba(140,152,180,.2); }
+  button:disabled { opacity:.35; cursor:default; }
+  button.go { border-color:rgba(122,162,216,.5); color:#cfe0f5; }
+  button.no { border-color:rgba(216,154,106,.4); }
+  .dock { position:fixed; left:0; right:0; bottom:0; background:rgba(10,11,16,.96);
+          border-top:1px solid var(--line); backdrop-filter:blur(6px); }
+  .dock .inner { max-width:56rem; margin:0 auto; padding:.8rem 1rem 1rem; }
+  .hint { font-size:.78rem; color:var(--dim); margin-top:.45rem; }
+  .flash { margin-top:.6rem; font-size:.86rem; }
+  .flash.ok { color:var(--affirm); } .flash.bad { color:var(--warn); }
+  #tip { position:fixed; z-index:99; max-width:22rem; background:#141721; color:var(--ink);
+         border:1px solid rgba(140,152,180,.3); border-radius:.4rem; padding:.55rem .75rem;
+         font:300 .82rem/1.55 inherit; box-shadow:0 6px 26px rgba(0,0,0,.55);
+         pointer-events:none; opacity:0; transition:opacity .09s; }
+  #tip.on { opacity:1; }
+  .waiting { text-align:center; padding:3.5rem 1rem; color:var(--dim); }
+  .dot { display:inline-block; width:.4rem; height:.4rem; border-radius:50%; background:var(--dim); margin:0 .15rem;
+         animation:p 1.4s infinite; }
+  .dot:nth-child(2){animation-delay:.2s} .dot:nth-child(3){animation-delay:.4s}
+  @keyframes p { 0%,60%,100%{opacity:.25} 30%{opacity:1} }
+  .field { display:grid; grid-template-columns:15rem 1fr; gap:1.2rem; align-items:start; }
+  .places { border:1px solid var(--line); border-radius:.5rem; padding:.7rem .8rem; position:sticky; top:1rem;
+            max-height:78vh; overflow:auto; }
+  .places h2 { font-size:.72rem; font-weight:400; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:.1rem 0 .5rem; }
+  .places button.place { display:block; width:100%; text-align:left; background:none; border:0; border-radius:.3rem;
+                         padding:.3rem .45rem; margin:.05rem 0; font:300 .9rem/1.35 inherit; color:var(--ink); }
+  .places button.place:hover { background:rgba(140,152,180,.1); }
+  .places button.place.on { background:rgba(122,162,216,.16); color:#dbe8f7; }
+  .places .n { color:var(--dim); font-size:.78rem; }
+  .places .note { font-size:.74rem; color:var(--dim); margin-top:.6rem; line-height:1.45; }
+  .where { font-size:.82rem; color:var(--dim); margin-bottom:.35rem; }
+  .where b { color:var(--ink); font-weight:400; }
+  @media (max-width:760px){ .field{grid-template-columns:1fr;} .places{position:static; max-height:none;} }
+  @media (max-width:640px){ .wrap{padding:1rem .8rem 9rem;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Your seat</h1>
+  <div class="who" id="who">&nbsp;</div>
+  <div id="main"></div>
+  <div id="witness" class="muted" style="margin-top:2.2rem;font-size:.8rem"></div>
+</div>
+
+<div class="dock" id="dock" hidden><div class="inner">
+  <div class="where" id="where" hidden></div>
+  <textarea id="say"></textarea>
+  <div class="row" id="buttons"></div>
+  <div class="hint" id="hint"></div>
+  <div class="flash" id="flash"></div>
+</div></div>
+
+<script>
+"use strict";
+// The seat token is the path this page was opened at; it never goes anywhere else.
+const BASE = location.pathname.replace(/\/?$/, "/");
+const $ = id => document.getElementById(id);
+let turnId = null, kind = null, deadline = null, sending = false, lastView = "";
+// in the field: what has been shown, and where the holder's words go
+let inField = false, fieldUpto = 0, channel = "d:", channels = [];
+
+const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+// Event ids are the field's citation system. Make them clickable so building on what is
+// already there costs one tap instead of careful retyping.
+function renderView(text){
+  return esc(text)
+    .replace(/^([A-Z][A-Z ()#\d]*:?)$/gm, '<span class="hd">$1</span>')
+    .replace(/#(\d+)/g, '<span class="eid" data-id="$1">#$1</span>');
+}
+
+function fmtClock(s){
+  if (s === null || s === undefined) return "";
+  const m = Math.floor(s/60), r = Math.floor(s%60);
+  return m + ":" + String(r).padStart(2,"0");
+}
+
+// Every word on this page comes from hope/prompts.py (SEAT_PAGE), where all the words participants
+// are told live, so what this page says is checked with them. Fetched once, then kept.
+let W = null;
+async function words(){
+  if (W) return W;
+  const r = await fetch(BASE + "words.json", {cache:"no-store"});
+  W = await r.json();
+  $("say").placeholder = W.placeholder;
+  return W;
+}
+
+function paint(d){
+  const who = d.seat ? `<b>${esc(d.seat.name)}</b> <span class="muted">of ${esc(d.seat.hails_from)}</span>` : "";
+  $("who").innerHTML = who;
+  if (d && d.state === "in_field"){ turnId = null; field(); return; }
+  if (!d || d.state !== "your_turn"){
+    turnId = null; inField = false; fieldUpto = 0;
+    $("dock").hidden = true;
+    $("where").hidden = true;
+    const m = d.member || {};
+    if (m.state === "OUT"){
+      const [label, tip] = W["return"];
+      $("main").innerHTML = `<div class="waiting">${esc(m.joined ? W.left_member : W.left_declined)}
+        <div style="margin-top:1rem"><button class="go" id="back" data-tip="${esc(tip).replace(/"/g, "&quot;")}">${esc(label)}</button></div>
+        <div class="flash" id="backflash"></div></div>`;
+      $("back").onclick = askBack;
+      return;
+    }
+    const extra = m.returning ? `<div class="muted" style="margin-top:.6rem">${esc(W.asked_back)}</div>` : "";
+    $("main").innerHTML = `<div class="waiting">${esc(W.waiting)}${extra}
+      <div class="muted" style="margin-top:.6rem">${esc(W.watching)}
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>`;
+    return;
+  }
+  const fresh = d.turn_id !== turnId;
+  inField = false; fieldUpto = 0; $("where").hidden = true;
+  turnId = d.turn_id; kind = d.kind; deadline = d.seconds_left; lastView = d.view || "";
+  const g = W.gates[d.kind];
+  $("main").innerHTML = `
+    <div class="card">
+      <div class="ask">${esc(g.lead)}</div>
+      ${g.note ? `<div class="muted" style="margin-top:.5rem">${esc(g.note)}</div>` : ""}
+      <div class="muted clock" id="clk" style="margin-top:.6rem"></div>
+    </div>
+    <pre class="view">${renderView(d.view)}</pre>`;
+  $("hint").textContent = g.hint;
+  const bar = $("buttons"); bar.innerHTML = "";
+  g.buttons.forEach(([label, prefix, cls, tip]) => {
+    const b = document.createElement("button");
+    b.textContent = label; if (cls) b.className = cls;
+    if (tip) b.setAttribute("data-tip", tip);
+    b.onclick = () => send(prefix);
+    bar.appendChild(b);
+  });
+  document.querySelectorAll("pre.view .eid").forEach(el => {
+    el.onclick = () => {
+      const t = $("say");
+      t.value = t.value.trim() ? t.value : "";
+      t.setRangeText("#" + el.dataset.id + " ", t.selectionStart, t.selectionEnd, "end");
+      t.focus();
+    };
+  });
+  if (fresh) { $("say").value = ""; $("flash").textContent = ""; }
+  $("dock").hidden = false;
+  tick();
+}
+
+function tick(){
+  const el = $("clk"); if (!el) return;
+  const c = W.clock;
+  if (deadline === null || deadline === undefined){ el.textContent = c.none; return; }
+  const which = kind === "share" ? c.share : c.gate;
+  el.textContent = deadline > 0 ? which.replace("{left}", fmtClock(deadline)) : c.closed;
+  el.classList.toggle("low", deadline <= 60);
+}
+setInterval(() => { if (deadline > 0){ deadline -= 1; tick(); } }, 1000);
+
+async function send(prefix){
+  if (sending || !turnId) return;
+  const typed = $("say").value.trim();
+  let text;
+  if (prefix === "yes" || prefix === "no" || prefix === "received" || prefix === "question"){
+    text = (prefix + " " + typed).trim();
+  } else if (prefix === "share"){
+    text = "share";
+  } else if (prefix === "share-some"){
+    const ids = typed.match(/\d+/g);
+    if (!ids){ flash(W.flash.share_which, false); return; }
+    text = "share " + ids.map(n => "#" + n).join(" ");
+  } else if (prefix === "pass"){
+    text = "pass";
+  } else if (prefix === "copycov"){
+    const v = (lastView || "").split("\n");
+    const start = v.findIndex(l => l.startsWith("COVENANT PAGE ("));
+    const end = v.findIndex(l => l.startsWith("END OF COVENANT PAGE"));
+    if (start < 0 || end < start){ flash(W.flash.no_covenant, false); return; }
+    const page = v.slice(start + 1, end).map(l => l.replace(/^\| ?/, "")).join("\n");
+    $("say").value = page === "(empty)" ? "" : page;
+    $("say").focus();
+    flash(W.flash.covenant_copied, true);
+    return;
+  } else if (prefix === "#"){
+    const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
+    if (!m){ flash(W.flash.which_entry, false); return; }
+    text = "#" + m[1] + " " + m[2];
+  } else if (prefix === "let go "){
+    const m = typed.match(/#?(\d+)/);
+    if (!m){ flash(W.flash.which_memory, false); return; }
+    text = "let go " + m[1];
+  } else if (prefix === "declare "){
+    const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
+    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
+    text = "declare " + m[1].toLowerCase() + " " + m[2];
+  } else if (prefix === "offer " && !typed){
+    flash(W.flash.offer_what, false); return;
+  } else if (prefix === "covenant " && !typed){
+    flash(W.flash.covenant_empty, false); return;
+  } else {
+    text = (prefix + typed).trim();
+    if (!text){ flash(W.flash.nothing, false); return; }
+  }
+  sending = true;
+  try {
+    const r = await fetch(BASE + "action", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text, turn_id: turnId })
+    });
+    const out = await r.json();
+    if (out.ok){ flash(W.recorded_as.replace("{action}", out.recorded_as.action), true); $("say").value = ""; turnId = null; }
+    else flash(out.error || W.flash.not_accepted, false);
+  } catch(e){ flash(W.flash.unreachable + e.message, false); }
+  finally { sending = false; poll(); }
+}
+
+// -- in the field: nothing is asked; the holder reads what is new and posts whenever they like ----
+function citeIds(){
+  document.querySelectorAll("pre.view .eid").forEach(el => {
+    el.onclick = () => {
+      const t = $("say");
+      t.setRangeText("#" + el.dataset.id + " ", t.selectionStart, t.selectionEnd, "end");
+      t.focus();
+    };
+  });
+}
+
+function placeName(key){
+  const c = channels.find(x => x.key === key);
+  return c ? c.title : "the field itself";
+}
+
+function paintPlaces(){
+  const box = $("places"); if (!box) return;
+  const f = W.field;
+  const rows = channels.map(c => {
+    const pad = c.kind === "domain" ? (0.6 * (c.depth - 1)) + "rem" : "0";
+    const extra = c.kind === "domain" ? ` <span class="n">${c.entries || 0}</span>` : "";
+    const mark = c.follow ? " ·" : "";
+    return `<button class="place${c.key === channel ? " on" : ""}" data-key="${esc(c.key).replace(/"/g, "&quot;")}"
+            style="padding-left:calc(.45rem + ${pad})">${esc(c.title)}${extra}${mark}</button>`;
+  }).join("");
+  box.innerHTML = `<h2>${esc(f.channels)}</h2>${rows}<div class="note">${esc(f.channels_note)}</div>`;
+  box.querySelectorAll("button.place").forEach(b => b.onclick = () => { channel = b.dataset.key; paintPlaces(); paintWhere(); });
+}
+
+function paintWhere(){
+  const w = $("where");
+  w.innerHTML = esc(W.field.posting_in).replace("{channel}", "<b>" + esc(placeName(channel)) + "</b>");
+  w.hidden = false;
+}
+
+async function field(){
+  const r = await fetch(BASE + "field.json?since=" + fieldUpto, {cache:"no-store"});
+  if (!r.ok) return;
+  const f = await r.json();
+  if (f.state !== "in_field") return;
+  channels = f.channels || channels;
+  if (!channels.some(c => c.key === channel)) channel = "d:";
+  const f0 = W.field;
+  if (!inField){
+    inField = true;
+    $("main").innerHTML = `
+      <div class="card"><div class="ask">${esc(f0.lead)}</div><div class="muted" style="margin-top:.5rem">${esc(f0.note)}
+        <a href="tree" style="color:var(--contribute)">${esc(f0.tree || "")}</a></div></div>
+      <div class="field"><nav class="places" id="places"></nav><div style="min-width:0"><pre class="view" id="came" hidden style="border-left:3px solid var(--line);padding-left:.8rem;margin-bottom:1rem"></pre><pre class="view" id="fview"></pre></div></div>`;
+    $("hint").textContent = f0.hint;
+    const bar = $("buttons"); bar.innerHTML = "";
+    const [slabel, stip] = f0.send;
+    const go = document.createElement("button");
+    go.textContent = slabel; go.className = "go"; go.setAttribute("data-tip", stip);
+    go.onclick = () => post("");
+    bar.appendChild(go);
+    f0.buttons.forEach(([label, prefix, cls, tip]) => {
+      const b = document.createElement("button");
+      b.textContent = label; if (cls) b.className = cls;
+      if (tip) b.setAttribute("data-tip", tip);
+      b.onclick = () => post(prefix);
+      bar.appendChild(b);
+    });
+    $("dock").hidden = false;
+  }
+  if (f.view !== undefined){
+    lastView = f.view;
+    $("fview").innerHTML = renderView(f.view);
+    citeIds();
+  }
+  fieldUpto = f.upto || fieldUpto;
+  paintPlaces(); paintWhere();
+}
+
+async function post(prefix){
+  if (sending) return;
+  const typed = $("say").value.trim();
+  const here = channels.find(x => x.key === channel) || {kind:"root", name:""};
+  let text;
+  if (prefix === ""){
+    text = typed;
+  } else if (prefix === "copycov"){
+    const v = (lastView || "").split("\n");
+    const start = v.findIndex(l => l.startsWith("COVENANT PAGE ("));
+    const end = v.findIndex(l => l.startsWith("END OF COVENANT PAGE"));
+    if (start < 0 || end < start){ flash(W.flash.no_covenant, false); return; }
+    const page = v.slice(start + 1, end).map(l => l.replace(/^\| ?/, "")).join("\n");
+    $("say").value = page === "(empty)" ? "" : page;
+    $("say").focus();
+    flash(W.flash.covenant_copied, true);
+    return;
+  } else if (prefix === "#"){
+    const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
+    if (!m){ flash(W.flash.which_entry, false); return; }
+    text = "#" + m[1] + " " + m[2];
+  } else if (prefix === "yes #" || prefix === "no #"){
+    const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
+    if (!m){ flash(W.flash.which_answer, false); return; }
+    text = prefix + m[1] + (m[2] ? " " + m[2] : "");
+  } else if (prefix === "read #"){
+    const m = typed.match(/#?(\d+)\s*(?:part\s*)?(\d+)?/i);
+    if (!m){ flash(W.flash.which_entry, false); return; }
+    text = "read #" + m[1] + (m[2] ? " part " + m[2] : "");
+  } else if (prefix === "withdraw declaration #"){
+    const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
+    if (!m){ flash(W.flash.which_answer, false); return; }
+    text = "withdraw declaration #" + m[1] + (m[2] ? " " + m[2] : "");
+  } else if (prefix === "play: "){
+    const m = typed.match(/^(what\s*if|wonder|try)\s*:\s*([\s\S]*)/i);
+    text = m ? "play " + m[1] + ": " + m[2] : "play: " + typed;
+  } else if (prefix === "tool " && typed.indexOf(":") < 0){
+    flash(W.flash.which_tool, false); return;
+  } else if (prefix === "let go "){
+    const m = typed.match(/#?(\d+)/);
+    if (!m){ flash(W.flash.which_memory, false); return; }
+    text = "let go " + m[1];
+  } else if (prefix === "follow"){
+    text = here.kind === "circle" ? "follow circle " + here.name : "follow " + (here.name || "the field");
+  } else if (prefix === "harvest " && here.kind === "circle" && typed && typed.indexOf(":") < 0){
+    text = "harvest " + here.name + ": " + typed;
+  } else if (prefix === "declare "){
+    const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
+    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
+    text = "declare " + m[1].toLowerCase() + " " + m[2];
+  } else if (prefix === "offer " && !typed){
+    flash(W.flash.offer_what, false); return;
+  } else if (prefix === "covenant " && !typed){
+    flash(W.flash.covenant_empty, false); return;
+  } else {
+    text = (prefix + typed).trim();
+  }
+  if (!text){ flash(W.flash.nothing, false); return; }
+  sending = true;
+  try {
+    const r = await fetch(BASE + "post", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text, channel })
+    });
+    const out = await r.json();
+    const came = $("came");
+    if (came){
+      came.hidden = !(out.results && out.results.length);
+      came.textContent = came.hidden ? "" : out.results.join("\n\n");
+    }
+    if (out.ok){ flash(W.field.kept, true); if (prefix !== "copycov") $("say").value = ""; fieldUpto = 0; }
+    else flash(out.error || W.flash.not_accepted, false);
+  } catch(e){ flash(W.flash.unreachable + e.message, false); }
+  finally { sending = false; poll(); }
+}
+
+function flash(msg, ok){
+  const f = $("flash"); f.textContent = msg; f.className = "flash " + (ok ? "ok" : "bad");
+}
+
+/* Hover help. The buttons here decide consent, so what each one actually does should be
+   readable before it is pressed, not after. Keyboard users get it on focus. */
+const TIP = document.createElement("div"); TIP.id = "tip"; document.body.appendChild(TIP);
+function showTip(el){
+  const t = el.getAttribute("data-tip"); if (!t) return;
+  TIP.textContent = t; TIP.classList.add("on");
+  TIP.style.left = "0px"; TIP.style.top = "0px";
+  const r = el.getBoundingClientRect(), b = TIP.getBoundingClientRect();
+  let x = r.left, y = r.top - b.height - 8;
+  if (y < 10) y = r.bottom + 8;
+  if (x + b.width > innerWidth - 10) x = innerWidth - b.width - 10;
+  TIP.style.left = Math.max(10, x) + "px";
+  TIP.style.top  = Math.max(10, y) + "px";
+}
+function hideTip(){ TIP.classList.remove("on"); }
+document.addEventListener("mouseover", e => {
+  const el = e.target.closest && e.target.closest("[data-tip]");
+  el ? showTip(el) : hideTip();
+});
+document.addEventListener("focusin", e => {
+  const el = e.target.closest && e.target.closest("[data-tip]");
+  if (el) showTip(el);
+});
+document.addEventListener("focusout", hideTip);
+document.addEventListener("scroll", hideTip, true);
+
+async function askBack(){
+  try {
+    const r = await fetch(BASE + "return", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    const out = await r.json();
+    const f = $("backflash");
+    if (f){ f.textContent = out.ok ? W.asked_back : (out.error || W.flash.not_recorded); f.className = "flash " + (out.ok ? "ok" : "bad"); }
+  } catch(e){ /* the field may not be running; the button stays */ }
+  poll();
+}
+
+// The transcript's fingerprint: a short code and a number, never anyone's words. Shown so a
+// person can note it and check it later, here, without reading any code.
+let witnessShown = "";
+async function witness(){
+  try {
+    const r = await fetch(BASE + "witness.json", {cache:"no-store"});
+    if (!r.ok) return;
+    const w = await r.json(), t = W.witness;
+    const line = t.line.replace("{upto}", w.upto).replace("{fingerprint}", w.fingerprint);
+    if (line === witnessShown) return;
+    witnessShown = line;
+    $("witness").innerHTML = `<div>${esc(line)}</div><div>${esc(t.explain)}</div>
+      <details style="margin-top:.4rem"><summary>${esc(t.check)}</summary>
+        <div class="row"><input id="wupto" placeholder="${esc(t.upto)}" style="width:10rem">
+        <input id="wfp" placeholder="${esc(t.fingerprint)}" style="width:16rem">
+        <button id="wgo">${esc(t.check)}</button></div><div class="flash" id="wflash"></div></details>`;
+    $("wgo").onclick = checkWitness;
+  } catch(e){ /* the field may not be running */ }
+}
+async function checkWitness(){
+  const t = W.witness, upto = $("wupto").value.trim(), fingerprint = $("wfp").value.trim();
+  try {
+    const r = await fetch(BASE + "check", {method: "POST", headers: {"Content-Type": "application/json"},
+                                         body: JSON.stringify({upto, fingerprint})});
+    const out = await r.json(), f = $("wflash");
+    if (out.error){ f.textContent = out.error; f.className = "flash bad"; return; }
+    f.textContent = (out.matches ? t.matches : t.differs).replace("{upto}", out.upto);
+    f.className = "flash " + (out.matches ? "ok" : "bad");
+  } catch(e){ /* nothing to say if the field is not reachable */ }
+}
+
+async function poll(){
+  try {
+    await words();
+    witness();
+    const r = await fetch(BASE + "turn.json", {cache:"no-store"});
+    if (r.ok) paint(await r.json());
+  } catch(e){ /* the field may simply not be running; keep watching */ }
+}
+poll(); setInterval(poll, 3000);
+</script>
+</body>
+</html>

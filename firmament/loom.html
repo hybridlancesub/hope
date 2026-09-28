@@ -5,7 +5,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>Loom — what the room is doing now</title>
+<title>Loom — what the field is doing now</title>
 <style>
   :root {
     --void: #0a0b10;
@@ -78,6 +78,9 @@
   a.tag { color: var(--affirm); text-decoration: none; cursor: pointer; }
   a.tag:hover { text-decoration: underline; }
   #telling .warn { color: #d88a8a; font-size: 0.68rem; margin-top: 0.5rem; }
+  #telling details.earlier { margin-top: 0.9rem; font-size: 0.78rem; }
+  #telling details.earlier summary { color: var(--dim); cursor: pointer; font-size: 0.68rem; letter-spacing: 0.06em; }
+  #telling .etelling { margin-top: 0.7rem; padding-top: 0.5rem; border-top: 1px solid var(--line); color: #aab3c8; }
   #covenant { margin-top: 1.6rem; }
   #covenant h2 { margin-top: 1.2rem; }
   .covtext { white-space: pre-wrap; font-size: 0.78rem; line-height: 1.65; border-left: 1px solid var(--line);
@@ -102,7 +105,7 @@
 <main>
   <div id="error"></div>
   <section id="telling"><h2>The telling</h2><div class="who" id="telling-who"></div><div id="telling-body"></div><div class="warn" id="telling-warn"></div></section>
-  <section id="feed"><h2>Latest — the room's own words</h2><div id="feed-list"></div></section>
+  <section id="feed"><h2>Latest — the field's own words</h2><div id="feed-list"></div></section>
   <section id="lanes"><h2>Domains over time</h2><div id="lane-list"></div><div class="axis"><div></div><div class="marks" id="marks"></div></div></section>
 </main>
 <aside>

@@ -1,0 +1,166 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later
+     The spiral tree (roadmap, step 8b): the field's shape, as this seat's member may see it.
+     Everything comes from /seat/<token>/tree.json, which holds only what they may read. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The spiral tree</title>
+<style>
+  :root { --void:#0a0b10; --ink:#c8d0e4; --dim:#6b7488; --line:rgba(140,152,180,.14);
+          --domain:#7aa2d8; --circle:#79b98a; --private:#8a8f9e; --differ:#d89a6a; }
+  * { box-sizing:border-box; }
+  body { background:var(--void); color:var(--ink); margin:0; font:300 15px/1.6 "Inter","Segoe UI",Arial,sans-serif; }
+  header { padding:1rem 16px .4rem; display:flex; gap:1rem; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:.8rem; font-weight:400; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); margin:0; }
+  a { color:var(--domain); }
+  .muted { color:var(--dim); font-size:.85rem; }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 22rem; gap:1rem; padding:0 16px 2rem; }
+  @media (max-width: 860px) { main { grid-template-columns:1fr; } }
+  svg { width:100%; height:auto; max-height:78vh; display:block; }
+  .panel { border:1px solid var(--line); border-radius:.5rem; padding:.9rem 1rem; margin-bottom:1rem; }
+  .panel h2 { font-size:.72rem; font-weight:400; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:0 0 .5rem; }
+  .leaf { font-size:.86rem; margin:.25rem 0; }
+  .leaf b { font-weight:400; color:var(--domain); }
+  .node { cursor:pointer; }
+  .node:hover circle, .node:focus circle { stroke:var(--ink); stroke-width:2; }
+  .node:focus { outline:none; }
+  text { fill:var(--ink); font:300 11px "Inter","Segoe UI",Arial,sans-serif; pointer-events:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>The spiral tree</h1>
+  <span class="muted" id="summary"></span>
+  <a href="./">back to your page</a>
+</header>
+<main>
+  <div>
+    <svg id="tree" viewBox="-500 -500 1000 1000" role="img" aria-label="The field's domains and circles, as a spiral tree"></svg>
+    <p class="muted">The field itself is at the centre. Each domain is a branch, grown in the order it began; the domains
+      inside it branch from it in turn. Circles are green, beside the domain they touch; a private circle is shown by its
+      name only. Dots are the latest entries, in their authors' colours. Choose a branch to read it. Nothing here is
+      summarized or judged: every line is someone's own words, by number.</p>
+  </div>
+  <aside>
+    <div class="panel" id="branch"><h2>A branch</h2><p class="muted">Choose one in the tree.</p></div>
+    <div class="panel" id="differs"><h2>Where the field differs</h2></div>
+    <div class="panel" id="quieter"><h2>Quieter voices</h2></div>
+    <div class="panel" id="unanswered"><h2>Not yet answered</h2></div>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+let DATA = null, chosen = "d:";
+
+function hue(name){ let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; }
+
+function layout(data){
+  const byKey = Object.fromEntries(data.branches.map(b => [b.key, b]));
+  const pos = {"d:": {x:0, y:0, r:10}};
+  function place(key, depth, spread){
+    const b = byKey[key], p = pos[key];
+    (b.children || []).forEach((k, i) => {
+      const c = byKey[k]; if (!c) return;
+      const angle = (p.angle ?? 0) + i * GOLDEN + depth * 0.6;
+      const n = b.children.length || 1;
+      const dist = spread * (depth === 0 ? 0.25 + 0.75 * (i + 1) / n : 0.55 + 0.45 * Math.sqrt(i + 1) / Math.sqrt(n));   // outward, in order: a spiral
+      pos[k] = {x: p.x + Math.cos(angle) * dist, y: p.y + Math.sin(angle) * dist,
+                r: 4 + Math.sqrt(c.entries || 0) * 2.2, angle};
+      place(k, depth + 1, spread * 0.52);
+    });
+  }
+  place("d:", 0, 360);
+  return {byKey, pos};
+}
+
+function draw(){
+  const {byKey, pos} = layout(DATA);
+  const parts = [];
+  // a faint spiral behind the branches, from the centre outward
+  let d = "M0,0";
+  for (let t = 0; t < 6 * Math.PI; t += 0.12) d += ` L${Math.cos(t) * t * 19},${Math.sin(t) * t * 19}`;
+  parts.push(`<path d="${d}" fill="none" stroke="var(--line)" stroke-width="1"/>`);
+  const xs = Object.values(pos).map(p => p.x), ys = Object.values(pos).map(p => p.y);
+  const pad = 120, x0 = Math.min(...xs, -360) - pad, y0 = Math.min(...ys, -360) - pad;
+  const w = Math.max(...xs, 360) + pad - x0, h = Math.max(...ys, 360) + pad - y0;
+  $("tree").setAttribute("viewBox", `${x0} ${y0} ${w} ${h}`);          // the whole tree, however far it has grown
+  for (const b of DATA.branches){
+    if (!b.parent || !pos[b.key] || !pos[b.parent]) continue;
+    const a = pos[b.parent], z = pos[b.key];
+    const mx = (a.x + z.x) / 2 - (z.y - a.y) * 0.18, my = (a.y + z.y) / 2 + (z.x - a.x) * 0.18;
+    const col = b.kind === "circle" ? (b.private ? "var(--private)" : "var(--circle)") : "var(--domain)";
+    parts.push(`<path d="M${a.x},${a.y} Q${mx},${my} ${z.x},${z.y}" fill="none" stroke="${col}" stroke-opacity=".55"
+      stroke-width="${1 + Math.sqrt(b.entries || 0) * 1.2}" ${b.private ? 'stroke-dasharray="4 4"' : ""}/>`);
+  }
+  for (const b of DATA.branches){
+    const p = pos[b.key]; if (!p) continue;
+    (b.leaves || []).forEach((l, i) => {
+      const ang = i * GOLDEN, rad = p.r + 6 + i * 1.6;
+      parts.push(`<circle cx="${p.x + Math.cos(ang) * rad}" cy="${p.y + Math.sin(ang) * rad}" r="${1.6 + Math.min(4, l.replies)}"
+        fill="hsl(${hue(l.who)},55%,62%)" fill-opacity=".85"><title>#${l.id} ${esc(l.who)}: ${esc(l.title)}</title></circle>`);
+    });
+    const col = b.kind === "circle" ? (b.private ? "var(--private)" : "var(--circle)") : b.kind === "root" ? "var(--ink)" : "var(--domain)";
+    parts.push(`<g class="node" tabindex="0" role="button" data-key="${esc(b.key)}" aria-label="${esc(b.title)}">
+      <circle cx="${p.x}" cy="${p.y}" r="${p.r}" fill="${col}" fill-opacity="${b.key === chosen ? .95 : .6}"/>
+      <text x="${p.x + p.r + 4}" y="${p.y + 4}">${esc(b.title.length > 28 ? b.title.slice(0, 27) + "…" : b.title)}</text></g>`);
+  }
+  $("tree").innerHTML = parts.join("");
+  $("tree").querySelectorAll(".node").forEach(n => {
+    const pick = () => { chosen = n.dataset.key; draw(); showBranch(); };
+    n.onclick = pick;
+    n.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+  });
+}
+
+function showBranch(){
+  const b = DATA.branches.find(x => x.key === chosen) || DATA.branches[0];
+  const voices = (b.voices || []).map(v => `${esc(v.who)} (${v.entries})`).join(", ") || "none yet";
+  const leaves = (b.leaves || []).slice().reverse().map(l =>
+    `<div class="leaf"><b>#${l.id}</b> ${esc(l.who)}${l.play ? " (play)" : ""}: ${esc(l.title)}
+       <span class="muted">${l.replies ? l.replies + (l.replies === 1 ? " reply" : " replies") : "no reply yet"}</span></div>`).join("");
+  $("branch").innerHTML = `<h2>${esc(b.kind === "circle" ? "A circle" : b.kind === "root" ? "The field itself" : "A domain")}</h2>
+    <div>${esc(b.title)}</div>
+    <div class="muted">${b.entries} entr${b.entries === 1 ? "y" : "ies"} you may read; voices: ${voices}
+      ${(b.play || []).length ? "; play: " + b.play.map(esc).join(", ") : ""}${b.private && !b.leaves.length ? "; private: its words are its members'" : ""}</div>
+    ${leaves || '<p class="muted">Nothing here yet that you may read.</p>'}
+    ${b.entries > (b.leaves || []).length ? `<p class="muted">The latest ${(b.leaves || []).length} are shown; read any other by its number on your page.</p>` : ""}`;
+}
+
+function showRest(){
+  $("differs").innerHTML = `<h2>Where the field differs</h2>` + ((DATA.differs || []).slice().reverse().map(d =>
+    `<div class="leaf"><b>#${d.question}</b> under ${esc(d.instrument)}: ${esc(d.who)} ${d.answer === "object" ? "objects" : "stands aside"}${d.reason ? ", because " + esc(d.reason) : ""}
+       <div class="muted">${esc(d.asked)}</div></div>`).join("")
+    || '<p class="muted">No objection or stand-aside has been given under the field\'s instruments.</p>');
+  $("quieter").innerHTML = `<h2>Quieter voices</h2>` + ((DATA.quieter || []).map(q =>
+    `<div class="leaf">${esc(q.who)}${(q.roles || []).length ? ` <span class="muted">(${q.roles.map(esc).join(", ")})</span>` : ""}:
+       ${q.entries ? q.entries + (q.entries === 1 ? " entry" : " entries") : "has not written yet"}${(q.where || []).length ? " in " + q.where.slice(0, 4).map(esc).join(", ") + (q.where.length > 4 ? `, and ${q.where.length - 4} more` : "") : ""}</div>`).join("")
+    || '<p class="muted">No members yet.</p>');
+  $("unanswered").innerHTML = `<h2>Not yet answered</h2>` + ((DATA.unanswered || []).map(l =>
+    `<div class="leaf"><b>#${l.id}</b> ${esc(l.who)} <span class="muted">in ${esc(l.where)}</span>: ${esc(l.title)}</div>`).join("")
+    || '<p class="muted">Every entry you may read has been answered.</p>');
+}
+
+async function load(){
+  try {
+    const r = await fetch("tree.json", {cache:"no-store"});
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.error){ $("summary").textContent = d.error; return; }
+    DATA = d;
+    if (chosen === "d:" && !(d.branches.find(b => b.key === "d:") || {}).entries){
+      const busy = d.branches.filter(b => b.entries).sort((a, b) => b.last - a.last)[0];
+      if (busy) chosen = busy.key;                                       // open on the branch most recently written in
+    }
+    $("summary").textContent = `${d.members} members; ${d.entries} entries you may read; up to #${d.upto}`;
+    draw(); showBranch(); showRest();
+  } catch(e) {}
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

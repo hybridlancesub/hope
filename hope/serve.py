@@ -3,7 +3,7 @@
 
 Serves the replayed state as JSON on localhost. It writes nothing, accepts nothing, and is
 not a participant-facing surface: participants never see it, and nothing here can reach the
-room. It is the operator reading their own room, in a form a renderer can use.
+field. It is the operator reading their own field, in a form a renderer can use.
 
     GET /state.json          domains, members, contributions (with reply threads), the covenant
                              page and its revisions, memories, declarations and offers, admission
@@ -13,7 +13,7 @@ room. It is the operator reading their own room, in a form a renderer can use.
     GET /                    the viewer, if a directory was given
 
 `proposals`, `halted`, `settings` and `reflections` are still present in state.json, always
-empty, so viewers written for earlier rooms keep working. The machinery behind them is gone.
+empty, so viewers written for earlier versions keep working. The machinery behind them is gone.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ GATE_ORDER = ["INVITED", "ACCEPTED", "BRIEFED", "RECEIVED", "IN", "OUT"]
 
 
 def admission_json(st) -> List[Dict[str, Any]]:
-    """Every presence the room knows of, at whatever gate it has reached -- including the ones
+    """Every presence the field knows of, at whatever gate it has reached -- including the ones
     that never became members. One row per seat, in the order the gates are walked."""
     rows = []
     for p in st.presences.values():
@@ -40,7 +40,7 @@ def admission_json(st) -> List[Dict[str, Any]]:
             "id": p.id, "name": p.name, "hails_from": p.hails_from, "people": p.people,
             "stage": p.state, "stage_index": GATE_ORDER.index(p.state) if p.state in GATE_ORDER else -1,
             "joined_at": p.joined_at, "left_at": p.left_at, "left_reason": p.left_reason,
-            "ask_again": p.ask_again, "self_described": p.self_described,
+            "ask_again": p.ask_again, "self_described": p.self_described, "returning": p.returning,
             "unreachable": p.unreachable, "exhausted": p.exhausted,
             "turns": p.turns, "turn_allowance": p.turn_allowance, "price_per_m": p.price_per_m,
             "resting_until": p.rest_until if st.resting(p) else None,
@@ -52,42 +52,53 @@ def admission_json(st) -> List[Dict[str, Any]]:
     return rows
 
 
-def spend_json(log: EventLog, budget: Optional[float] = None,
-               seats_per_round: Optional[int] = None) -> Dict[str, Any]:
-    """What the room has cost and, at the current rate, how much room is left. Projection is
-    arithmetic on the log, not a promise: a typical recent call times the seats a round asks."""
+def spend_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
+    """What the field has cost and, at the rate of the last five minutes, how long the budget lasts.
+    Projection is arithmetic on the log, not a promise."""
     by_presence = [{"presence": pres, "model": model, "calls": n,
                     "prompt_tokens": pt, "completion_tokens": ct, "usd": usd}
                    for pres, model, pt, ct, usd, n in log.cost_by_presence()]
     total = log.total_cost()
     typical = log.median_recent_cost()
-    seats = seats_per_round or len([r for r in by_presence if r["calls"]]) or None
-    # a median of 0.0 is a measurement (free seats), not a missing one -- keep it distinct from None
-    per_round = (typical * seats) if (typical is not None and seats) else None
+    now = time.time()
+    recent, first = log.spent_since(now - 300)
+    rate = recent / max(60.0, now - first) if recent and first is not None else 0.0   # USD a second
     out: Dict[str, Any] = {
         "total_usd": total, "typical_call_usd": typical, "by_presence": by_presence,
-        "seats_counted_per_round": seats, "projected_round_usd": per_round, "budget_usd": budget,
+        "rate_usd_per_minute": rate * 60, "budget_usd": budget,
     }
     if budget is not None:
         out["remaining_usd"] = budget - total
-        out["rounds_left"] = int(max(0.0, budget - total) / per_round) if per_round else None
+        out["seconds_left"] = round(max(0.0, budget - total) / rate) if rate > 0 else None
     return out
 
 
 def record_text(log: EventLog, everything: bool = False) -> str:
-    """The transcript as plain text, in order, nothing summarized. The raw stream, for reading."""
+    """The transcript as plain text, in order, nothing summarized. The raw stream, for reading.
+    Words written in a private circle are never here: the console opens a private circle only on
+    purpose (read_circle), and records that in the circle, where its members see it."""
     st = replay(log.iter())
     names = {pid: p.name for pid, p in st.presences.items()}
     out: List[str] = []
     for ev in log.iter():
         k, p, who = ev["kind"], ev["payload"], names.get(ev["actor"], ev["actor"])
+        if ev["id"] in st.scoped:
+            if st.scoped[ev["id"]].get("journal") is not None:
+                out.append(f"#{ev['id']} (in a member's journal; not shown here. Opening it from the console is "
+                           f"recorded in the journal)\n")
+            else:
+                out.append(f"#{ev['id']} (written in a private circle; not shown here. Opening it from the console is "
+                           f"recorded in the circle)\n")
+            continue
         if k in ("connector_ok", "connector_error", "briefed") and not everything:
             continue
         if k in ("brief", "brief_page", "invitation", "documentation", "faq") and not everything:
             out.append(f"#{ev['id']} {k} by {who}: ({len(p.get('text', ''))} chars, omitted; see the source files)\n")
             continue
-        if k == "round":
+        if k == "round":          # earlier versions' rounds
             out.append(f"—— round {p.get('n')} ——\n")
+            continue
+        if k in ("wake", "seen") and not everything:
             continue
         t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ev["ts"]))
         head = f"#{ev['id']} [{t}] {k} by {who}"
@@ -101,21 +112,33 @@ def record_text(log: EventLog, everything: bool = False) -> str:
             out.append(f"{head}\n{p.get('text') or '(let go by its author; the words were removed)'}\n")
         elif k == "declare":
             refs = f" (cites {', '.join('#' + str(r) for r in p.get('refs') or [])})" if p.get("refs") else ""
-            out.append(f"{head}: the room has decided {decided(p.get('decision'))}{refs}\n{p.get('text', '')}\n")
+            out.append(f"{head}: the field has decided {decided(p.get('decision'))}{refs}\n{p.get('text', '')}\n")
         elif k == "offer":
             out.append(f"{head}\n{p.get('text', '')}\n")
-        elif k == "propose":   # earlier rooms only
+        elif k == "telling":
+            flag = f" (ungrounded tags: {p['ungrounded']})" if p.get("ungrounded") else ""
+            out.append(f"{head} ({p.get('narrator')}, #{p.get('since')}..#{p.get('upto')}){flag}\n{p.get('story', '')}\n")
+        elif k == "propose":   # files from earlier versions only
             out.append(f"{head}: {p.get('kind')} value={p.get('value')!r}\n{p.get('reason', '')}\n")
+        elif k == "tool_call":
+            where = p.get("domain") or (f"circle #{p['circle']}" if p.get("circle") is not None else "the field")
+            out.append(f"{head} @ {where}: {p.get('tool')}, sending {json.dumps(p.get('arguments'), ensure_ascii=False)} "
+                       f"(to {p.get('sends_to')})\n")
+        elif k == "tool_result":
+            text = p.get("text") or ""
+            shown = text if everything or len(text) <= 4000 else text[:4000] + f"\n... (the first 4,000 of {len(text):,} characters)"
+            out.append(f"{head} @ {p.get('domain')}: what {p.get('tool')} sent back for #{p.get('call')}, from outside "
+                       f"the field (run by {p.get('runner')})\n{shown}\n")
         else:
             body = {kk: v for kk, v in p.items() if v not in (None, "", {}, [])}
             out.append(f"{head}: {json.dumps(body, ensure_ascii=False)}\n")
     return "\n".join(out)
 
 
-def state_json(log: EventLog, budget: Optional[float] = None,
-               seats_per_round: Optional[int] = None) -> Dict[str, Any]:
+def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
     """Everything a viewer needs, derived only from the transcript. Contributions carry their
-    thread (the replies targeting them); cross-domain replies become relationships."""
+    thread (the replies targeting them); cross-domain replies become relationships. Words written
+    in a private circle are not here: opening one is done in the console, and recorded there."""
     st = replay(log.iter())
     budget = budget if budget is not None else st.budget
     names = {pid: p.name for pid, p in st.presences.items()}
@@ -125,10 +148,13 @@ def state_json(log: EventLog, budget: Optional[float] = None,
             continue
         if st.presences[ev["actor"]].joined_at is None:
             continue  # recorded but never applied (acted before entry)
+        if ev["id"] in st.scoped:
+            continue  # written in a private circle
         p = ev["payload"]
         contributions[ev["id"]] = {
             "id": ev["id"], "ts": ev["ts"], "kind": ev["kind"], "actor": ev["actor"],
-            "who": names.get(ev["actor"], ev["actor"]), "domain": p.get("domain") or "(unplaced)",
+            "who": names.get(ev["actor"], ev["actor"]),
+            "domain": st.relabeled.get(ev["id"]) or p.get("domain") or "(unplaced)",   # where its author filed it
             "title": p.get("title") or "", "content": p.get("content", ""), "target": p.get("target"),
             "set_aside": False, "affirms": 0, "challenges": 0, "responses": 0, "replies": [],
         }
@@ -138,7 +164,7 @@ def state_json(log: EventLog, budget: Optional[float] = None,
             tgt = contributions[t]
             tgt["replies"].append(c["id"])
             tgt["responses"] += 1
-            if c["kind"] in ("affirm", "challenge"):          # earlier rooms' replies
+            if c["kind"] in ("affirm", "challenge"):          # earlier versions' replies
                 tgt["affirms" if c["kind"] == "affirm" else "challenges"] += 1
     # Reading-side consolidation of label variants. `domain` becomes the group's most-used
     # spelling; `label_as_written` keeps what the participant actually typed.
@@ -183,7 +209,9 @@ def state_json(log: EventLog, budget: Optional[float] = None,
                 "domain": p.domain, "joined_at": p.joined_at, "left_at": p.left_at, "left_reason": p.left_reason,
                 "turns": p.turns, "turn_allowance": p.turn_allowance, "exhausted": p.exhausted,
                 "unreachable": p.unreachable, "self_described": p.self_described,
-                "resting_until": p.rest_until if st.resting(p) else None}
+                "pausing": bool(p.pause), "pause_note": (p.pause or {}).get("note") or None, "roles": list(p.roles),
+                "invited_by": names.get(p.invited_by, p.invited_by) if p.invited_by else None,
+                "resting_until": None}
                for p in st.presences.values() if p.joined_at is not None]
     covenant = {"text": st.covenant, "by": names.get(st.covenant_by, st.covenant_by) if st.covenant_by else None,
                 "at": st.covenant_at,
@@ -193,22 +221,57 @@ def state_json(log: EventLog, budget: Optional[float] = None,
                     for d in sorted(st.declarations.values(), key=lambda d: d["id"])]
     offers = [{**o, "who": names.get(o["by"], o["by"])} for o in sorted(st.offers.values(), key=lambda o: o["id"])]
     return {
-        "generated": time.time(), "last_event": st.last_event, "round": st.round,
+        "generated": time.time(), "last_event": st.last_event,
+        "wakes": sum(p.turns for p in st.presences.values() if p.last_wake_ts),
+        "circles": [{"id": c["id"], "name": c["name"], "private": c["private"], "members": len(c["members"]),
+                     "domains": c["domains"], "dispersed": c["dispersed_at"] is not None,
+                     "reason": c["reason"] if c["private"] else ""} for c in st.circles.values() if not st.secret(c)],
+        # the field's instruments, and the questions under them (what the operator carries out)
+        "instruments": [{"name": i["name"], "status": i["status"], "purpose": i["purpose"], "scope": i["scope"],
+                         "pause": i["pause"], "current": i.get("current"), "latest": i.get("latest"),
+                         "text": i["text"]} for i in st.instruments.values()],
+        "instrument_questions": [{**{k: q[k] for k in ("id", "status", "purpose", "question", "decision", "refs",
+                                                       "adopt", "put_down", "circle", "pause", "ts", "instrument_name")},
+                                  "who": names.get(q["by"], q["by"]),
+                                  "subject": names.get(q.get("subject"), q.get("subject")) if q.get("subject") else None,
+                                  "answers": [{"who": names.get(x, x), **r} for x, r in q["answers"].items()]}
+                                 for q in st.iquestions.values() if q["id"] not in st.scoped],
+        # repair threads, for the operator only: how many people, and where each stands; never who, never words
+        "repair_threads": [{"id": c["id"], "people": len(c["members"]), "status": c["repair"]["status"]}
+                           for c in st.circles.values() if st.secret(c) and c["dispersed_at"] is None],
+        "private_entries": len(st.scoped),
+        # the field's tools as every member sees them: who runs each, where what is sent goes, flags, uses
+        "tools": [{"server": s["server"], "by": names.get(s["by"], s["by"]), "runner": s["runner"],
+                   "sends_to": s["sends_to"], "kind": s["kind"], "price": s["price"], "url": s["url"],
+                   "tools": [t["tool"] for t in s["tools"]], "uses": s["uses"], "removed_at": s["removed_at"],
+                   "note": s["note"], "flags": [{"id": f["id"], "by": names.get(f["by"], f["by"]), "tool": f["tool"],
+                                                 "reason": f["reason"]} for f in s["flags"].values()]}
+                  for s in st.tools.values()],
+        # journals: how many entries each holds, never their words (the console opens one only on purpose)
+        "journals": [{"presence": pid, "by": names.get(pid, pid), "entries": len(j["entries"]),
+                      "open": "everyone" if j["everyone"] else len(j["open_to"])}
+                     for pid, j in st.journals.items() if j["entries"]],
+        "briefing_edition": {"revisions": len(st.briefing_history), "firm": st.firm,
+                             "waiting": [r["id"] for r in st.briefing_waiting.values() if r["status"] == "waiting"]},
+        "skills": [{"name": k["name"], "description": k["description"], "chars": len(k.get("text") or ""),
+                    "authors": [names.get(a, a) for a in k["authors"]], "revisions": len(k["revisions"])}
+                   for k in st.skills.values() if k.get("text")],
         "briefing": {"event": st.briefing_event, "words": len((st.briefing or "").split()), "source": st.briefing_source,
                      "opening": (st.briefing or "").strip().splitlines()[0][:200] if st.briefing else ""},
         "covenant": covenant, "memories": memories, "runway": st.runway,
         "declarations": declarations, "offers": offers, "closed_at": st.closed_at,
+        "narrator": st.narrator, "tellings": st.tellings[-40:],
         "domains": list(domains.values()), "members": members, "contributions": list(contributions.values()),
         "links": list(links.values()), "operator_notes": st.operator_notes,
         "admission": admission_json(st),
-        "spend": spend_json(log, budget=budget, seats_per_round=seats_per_round),
-        # kept, always empty, so viewers written for earlier rooms keep working
+        "spend": spend_json(log, budget=budget),
+        # kept, always empty, so viewers written for earlier versions keep working
         "proposals": [], "halted": False, "halt_reason": None, "settings": {}, "reflections": [],
     }
 
 
 def make_handler(log: EventLog, viewer_dir: str, budget: Optional[float] = None,
-                 seats_per_round: Optional[int] = None):
+                 _unused: Optional[int] = None):
     class H(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=viewer_dir, **kw)
@@ -227,9 +290,9 @@ def make_handler(log: EventLog, viewer_dir: str, budget: Optional[float] = None,
         def do_GET(self):
             route = self.path.split("?")[0]
             if route == "/state.json":
-                return self._json(state_json(log, budget=budget, seats_per_round=seats_per_round))
+                return self._json(state_json(log, budget=budget))
             if route == "/spend.json":
-                return self._json(spend_json(log, budget=budget, seats_per_round=seats_per_round))
+                return self._json(spend_json(log, budget=budget))
             if route == "/admission.json":
                 return self._json(admission_json(replay(log.iter())))
             if route == "/record.txt":
@@ -257,9 +320,9 @@ def make_handler(log: EventLog, viewer_dir: str, budget: Optional[float] = None,
 
 
 def serve(db: str, port: int = 8080, viewer_dir: str = "", budget: Optional[float] = None,
-          seats_per_round: Optional[int] = None, bind: str = "127.0.0.1") -> None:
+          _unused: Optional[int] = None, bind: str = "127.0.0.1") -> None:
     log = EventLog(db)
-    httpd = ThreadingHTTPServer((bind, port), make_handler(log, viewer_dir, budget, seats_per_round))
+    httpd = ThreadingHTTPServer((bind, port), make_handler(log, viewer_dir, budget))
     print(f"read-only view of {db} at http://{bind}:{port}/" + ("" if viewer_dir else "state.json"), file=sys.stderr)
     try:
         httpd.serve_forever()

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { Field } from './field/Field.js';
 import { substrateFromRecord } from './substrate/record.js';
+import { tintFor } from './firmament/palette.js';
 
 /**
- * Entry point. Fetches the room's read-only state, reads it as a substrate, and
+ * Entry point. Fetches the field's read-only state, reads it as a substrate, and
  * opens the Firmament onto it.
  *
  * One departure from the seed's silence: a reader pane. A contribution is not a
@@ -129,6 +130,7 @@ function open(state, data, quality, label) {
       document.documentElement.dataset.fieldQuality = label;
       if (diagnostics) diagnostics.textContent = JSON.stringify({ ...field.describe(), lastEvent: state.last_event, quality: label }, null, 2);
       bindReader(field, state);
+      bindConversation(field, state);
       bindThreshold(field);
       window.addEventListener('beforeunload', () => field.dispose());
       resolve();
@@ -170,10 +172,84 @@ function bindReader(field, state) {
       who: `${rec.who}`,
       meta: `#${rec.event} · ${kind}${target} · ${rec.domain} · ${when}` +
         (rec.replies ? ` · ${rec.replies} repl${rec.replies === 1 ? 'y' : 'ies'}` : '') +
-        (rec.affirms || rec.challenges ? ` · ${rec.affirms} affirm, ${rec.challenges} challenge (an earlier room's words)` : ''),
+        (rec.affirms || rec.challenges ? ` · ${rec.affirms} affirm, ${rec.challenges} challenge (an earlier version's words)` : ''),
       title: rec.title || '',
       body: rec.content,
     });
+  });
+}
+
+/**
+ * The conversation panel. A click on a line of text flies the camera to it (Field) and
+ * opens this: what the entry answered, back to where the thread began, then the entry
+ * itself, then every reply beneath it, indented by depth. Participants' own words, in
+ * full, attributed. Clicking another turn flies to it if it is in the sky right now.
+ */
+function bindConversation(field, state) {
+  const panel = document.getElementById('conversation');
+  if (!panel) return;
+  const byId = new Map(state.contributions.map((c) => [c.id, c]));
+  const domainColor = (label) => {
+    const node = field.substrate.domains.find((d) => d.label === label);
+    const tint = node ? tintFor(node.id) : null;
+    return tint ? `rgb(${tint.map((v) => Math.round(v * 255)).join(',')})` : '#cfd6e6';
+  };
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  const show = (eventId) => {
+    const focus = byId.get(eventId);
+    if (!focus) return close();
+    const chain = [];
+    for (let at = focus, guard = 0; at && at.target != null && guard < 30; guard++) {
+      at = byId.get(at.target);
+      if (at) chain.unshift(at);
+    }
+    const below = [];
+    const walk = (c, depth) => {
+      for (const id of c.replies ?? []) {
+        const r = byId.get(id);
+        if (!r) continue;
+        below.push([r, depth]);
+        walk(r, depth + 1);
+      }
+    };
+    walk(focus, 1);
+    const turn = (c, depth, isFocus) => {
+      const when = new Date(c.ts * 1000).toLocaleString();
+      return `<div class="turn${isFocus ? ' focus' : ''}" data-id="${c.id}" style="margin-left:${Math.min(depth, 6) * 0.9}rem;--dom:${domainColor(c.domain)}">` +
+        `<div class="meta"><b>${esc(c.who)}</b> · #${c.id}${c.target != null ? ` · answering #${c.target}` : ''} · ${esc(c.domain)} · ${esc(when)}</div>` +
+        (c.title ? `<div class="meta">${esc(c.title)}</div>` : '') +
+        `<div class="body">${esc(c.content)}</div></div>`;
+    };
+    panel.innerHTML =
+      `<div class="head"><span class="title">Conversation</span><button type="button" data-close>close</button></div>` +
+      (chain.length ? `<div class="note">what it answers</div>` + chain.map((c) => turn(c, 0, false)).join('') : '') +
+      turn(focus, 0, true) +
+      (below.length ? `<div class="note">${below.length} repl${below.length === 1 ? 'y' : 'ies'}</div>` + below.map(([c, d]) => turn(c, d, false)).join('')
+                    : `<div class="note">no replies yet</div>`);
+    panel.hidden = false;
+    panel.querySelector('.turn.focus')?.scrollIntoView({ block: 'nearest' });
+  };
+
+  const close = () => {
+    panel.hidden = true;
+    field.navigator.release();
+  };
+
+  panel.addEventListener('click', (event) => {
+    if (event.target.closest('[data-close]')) return close();
+    const turnEl = event.target.closest('.turn');
+    if (!turnEl) return;
+    const id = Number(turnEl.dataset.id);
+    field.focusConcept(`e${id}`);
+    show(id);
+  });
+  window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !panel.hidden) close(); });
+
+  field.bus.on('viewer:focus', ({ id }) => {
+    const node = field.substrate.concept(id);
+    const eventId = node?.record?.event;
+    if (eventId != null) show(eventId);
   });
 }
 
