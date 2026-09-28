@@ -207,6 +207,14 @@
       <pre id="circlewords" class="muted" hidden style="white-space:pre-wrap"></pre>
     </div>
     <div class="card" style="margin-top:1rem">
+      <h2>Tools</h2>
+      <p class="muted">The field's tools: yours (the tools file, and the built-in fetch) and any a member offered.
+        Every use is written in the transcript. A flag is a member's word that a tool could change the field in ways
+        no one intended; it should be avoided, and how the field settles it is the field's own. Removing a tool is
+        written in the field, with your note.</p>
+      <div id="tools"></div>
+    </div>
+    <div class="card" style="margin-top:1rem">
       <h2>Say something to the field</h2>
       <p class="lede">A notice from you as the operator — not as a participant. Every member sees it
         in their next view. It is recorded like anything else, and it decides nothing.</p>
@@ -702,6 +710,7 @@ async function refresh(){
   DATA = data;
   renderStats(data); renderBanner(data); renderWaiting(data); renderCovenant(data); renderDoorway(data); renderSeats(data);
   renderCircles(data);
+  renderTools(data);
   maybeShowDecl(data);
   const c = data.console || {};
   $("phase").textContent = c.busy ? (c.phase + " running") : "idle";
@@ -735,6 +744,24 @@ function renderCircles(s){
     `<div class="row"><span>${esc(c.name)} <span class="muted">· ${c.members} member${c.members===1?"":"s"} · private because: ${esc(c.reason)}</span></span>
      <button class="b" data-id="${c.id}" data-name="${attr(c.name)}" data-tip="Read this circle's words. This is written into the circle, where its members see it, with your note." onclick="readCircle(this.dataset.id, this.dataset.name)">Read, and say so in the circle…</button></div>`
   ).join("") || '<p class="muted">None.</p>';
+}
+function renderTools(s){
+  const attr = v => esc(v).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const live = (s.tools||[]).filter(t => !t.removed_at);
+  $("tools").innerHTML = live.map(t =>
+    `<div class="row"><span><b>${esc(t.server)}</b> <span class="muted">· ${esc(t.kind)} · run by ${esc(t.runner)} ·
+       sends to ${esc(t.sends_to)} · attached by ${esc(t.by)} · used ${t.uses}×${t.price ? " · $" + t.price + " a call" : ""}
+       · ${esc(t.tools.join(", "))}</span>
+       ${(t.flags||[]).map(f => `<br><span style="color:var(--challenge)">flagged by ${esc(f.by)} (#${f.id}) on ${esc(f.tool)}: ${esc(f.reason)}</span>`).join("")}</span>
+     <button class="b" data-name="${attr(t.server)}" data-tip="Remove this tool server from the field. The field is told, with your note." onclick="removeTool(this.dataset.name)">Remove…</button></div>`
+  ).join("") || '<p class="muted">None. Start the field with --tools FILE to attach yours; members may offer theirs.</p>';
+}
+async function removeTool(name){
+  const note = prompt("Removing " + name + " is written in the field. A note for everyone (why):");
+  if (note === null) return;
+  const {data} = await api("/op/remove_tool", {server: name, note});
+  flash(data.ok ? "Removed; the field is told." : (data.error || "not removed"), !!data.ok);
+  refresh();
 }
 async function readCircle(id, name){
   const note = prompt("Reading " + name + " is written into the circle, where its members see it. A note for them (why you are reading):");

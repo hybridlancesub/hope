@@ -74,12 +74,14 @@ TOOLS = [
     {"name": "post", "title": "Say something, or act",
      "description": "Post whenever you like. `text` is plain words, kept as yours (or the plain commands: "
                     "pause, follow, chat with <name>: ..., form ..., join ..., knock ..., yes #12, no #12 <reason>, "
-                    "#12 <reply>, @domain <words>, in <circle>: <words>, to <name>: <words>, withdraw ...). "
-                    "Or `action` / `actions` (up to 3): the JSON actions in the member instructions. `channel` is "
+                    "#12 <reply>, @domain <words>, in <circle>: <words>, to <name>: <words>, "
+                    "tool <tool>: <words>, read #12, withdraw ...). "
+                    "Or `action` / `actions` (up to 3, besides using the field's tools and reading on, whose results "
+                    "come back at once): the JSON actions in the member instructions. `channel` is "
                     "where plain words go: \"d:\" for the field itself, \"d:<domain path>\", or \"c:<circle number>\"; "
                     "`look` lists them. Saying nothing is always fine.",
      "inputSchema": _schema({"text": {"type": "string"}, "action": {"type": "object"},
-                             "actions": {"type": "array", "items": {"type": "object"}, "maxItems": 3},
+                             "actions": {"type": "array", "items": {"type": "object"}, "maxItems": 40},
                              "channel": {"type": "string"}}),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
     {"name": "instructions", "title": "The member instructions",
@@ -254,9 +256,11 @@ def call_tool(console, token: str, name: str, args: Dict[str, Any]) -> Tuple[str
         if isinstance(payload.get("action"), dict):
             payload = {**payload.pop("action"), **({"channel": payload["channel"]} if "channel" in payload else {})}
         out = room.post(seat.id, payload)
+        came = "\n\n".join(out.get("results") or [])
+        came = f"\n\n{came}" if came else ""
         if out.get("ok"):
-            return "Kept: " + ", ".join(f"#{r['id']} ({r['kind']})" for r in out["recorded"]), False
-        return f"Nothing was kept: {out.get('error')}", True
+            return "Kept: " + ", ".join(f"#{r['id']} ({r['kind']})" for r in out["recorded"]) + came, False
+        return f"Nothing was kept: {out.get('error')}" + came, True
     return f"Unknown tool: {name}", True
 
 

@@ -16,6 +16,13 @@ circle waiting for its yes, or a breath at a length it set. Wakes are batched: f
 are one wake. A wake says nothing is expected, and saying nothing writes nothing. The software
 sets no rhythm; it holds a floor (no model woken more often than model.FLOOR, so models cannot
 loop at machine speed), a window for an answer (a later answer is still applied), and the runway.
+
+Tools (notes/sketch-4-tools.md). A woken model may use a tool, or read on in something long, and
+is asked again in the same wake with what came back, as agents do, until it acts or says nothing.
+Each step is a paid model call, checked against the runway before it is taken, and one guard
+holds against a model stuck in a loop: tool_steps (32) in one wake. hope's own process never runs
+a participant's code: a member offers a tool server by its public address, and the operator
+attaches their own (hope/tools.py).
 """
 from __future__ import annotations
 
@@ -26,16 +33,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from . import labels, prompts
-from .connector import Connector, ConnectorError, Seat, is_no_reply
+from .connector import Connector, ConnectorError, Reply, Seat, is_no_reply
+from .tools import ToolError, ToolHub
 from .human import visible_text
 from .log import EventLog
 from .map import digest
 from .narrator import mechanical_story
 from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CONTRIBUTION_KINDS,
                     COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, STATEMENT_LIMIT, RoomState, decided, replay)
-from .model import FLOOR, PRIVACY_EVERY, QUIET_HOURS, WAKE_ACTIONS
+from .model import FLOOR, PRIVACY_EVERY, QUIET_HOURS, WAKE_ACTIONS, TOOL_ENTRY_KINDS
 
 OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
@@ -47,6 +56,8 @@ PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall",
                        # channels: domains and circles (notes/sketch-3-channels.md)
                        "chat", "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
                        "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for",
+                       # tools and skills (notes/sketch-4-tools.md)
+                       "use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill",
                        # earlier versions' words, still understood so an old client does not break:
                        "affirm", "challenge", "note", "move"}
 RECALL_SOURCES = ("briefing", "transcript", "memory", "covenant", "prior")
@@ -59,6 +70,11 @@ BREATH_LIMITS = (3600, 30 * 86400)   # a breath, if a member wants one: from an 
 QUIET_LIMITS = (1, 30 * 24)          # hours a circle may be quiet before it is told so
 WAKE_COST_MARGIN = 1.15     # a wake is estimated this much dearer than recent ones, so the closing wakes are really paid for
 RATE_WINDOW = 300.0         # seconds: the runway is measured, continuously, over the last five minutes
+TOOL_STEPS = 32             # tool uses (and readings on) in one wake: a guard against a loop, which the operator can raise
+TOOL_VIEW = 20000           # characters of what came back that one step shows; the rest is read on, in parts (a cost)
+STEP_ACTIONS = ("use_tool", "read")    # answered in the same wake, and not counted among its few actions
+SKILL_LIMIT = 20000         # characters of a skill's instructions (the open format suggests under about 5000 tokens)
+SKILL_DESCRIPTION_LIMIT = 1024   # characters: what a skill does and when to use it (the open format's limit)
 INVITATION_ACTIONS = {"accept_invitation", "decline", "question"}
 DELIVERY_ACTIONS = {"received", "decline"}
 ENTRY_ACTIONS = {"opt_in", "decline"}
@@ -72,7 +88,8 @@ class Room:
                  recent_n: int = 20, runway_notice: float = 60.0, narrator=None, tell_every: int = 20,
                  headlines: int = prompts.HEADLINES_DEFAULT, linger: int = prompts.LINGER_MESSAGES,
                  linger_budget: int = prompts.LINGER_BUDGET, news_budget: int = prompts.NEWS_BUDGET,
-                 tick: float = 1.0, publish_checkpoints: str = "", published_at: str = ""):
+                 tick: float = 1.0, publish_checkpoints: str = "", published_at: str = "",
+                 tools: Optional[ToolHub] = None, tool_steps: int = TOOL_STEPS, tool_view: int = TOOL_VIEW):
         # Where the operator writes the transcript's checkpoints for publishing outside the field,
         # and where they say it is published. Declared at entry before anyone is asked (announce_witnessing).
         self.publish_checkpoints = publish_checkpoints or ""
@@ -114,11 +131,18 @@ class Room:
         self._wake_costs: List[float] = []       # what recent wakes cost, for the runway
         self._ceiling_log: List[float] = []      # when recent wakes began, for the wake ceiling
         self._last_checkpoint = 0.0
+        # The field's tools: the operator's (a tools file, and the built-in fetch) and members' offers.
+        # Without a hub the field has none yet, and members may still offer tool servers.
+        self.tools = tools if tools is not None else ToolHub(builtin_fetch=False)
+        self.tool_steps = max(1, int(tool_steps))   # the guard against a loop, per wake
+        self.tool_view = max(2000, int(tool_view))  # characters of a result one step shows (a cost; the rest is read on)
+        self._ctx: Dict[str, Dict[str, Any]] = {}   # presence id -> this wake's (or post's) actions, steps, what came back
 
     def limits(self) -> Dict[str, Any]:
         """What every view says about time: the floor and the window the software holds, and the
         operator's wake ceiling if one is on. The software sets no rhythm beyond these."""
-        return {"floor": self.floor, "window": self.window, "ceiling": self.wake_ceiling}
+        return {"floor": self.floor, "window": self.window, "ceiling": self.wake_ceiling,
+                "tool_steps": self.tool_steps, "tool_view": self.tool_view}
 
     # -- helpers ----------------------------------------------------------------
     def state(self, upto: Optional[int] = None) -> RoomState:
@@ -350,6 +374,62 @@ class Room:
         if now != st.witness_published and (now or st.witness_published):
             self.emit(OPERATOR, "witness_publication", now or {"where": ""})
 
+    def announce_tools(self) -> None:
+        """Record every tool server the field has, so everyone knows what each tool is, who runs it,
+        and where what is sent to it goes, before anyone uses it (and before anyone enters). Recorded
+        when it changes. A member's offer from an earlier run is attached again from the transcript; if
+        it cannot be reached, the field is told it was removed, and why."""
+        st = self.state()
+        for name, s in list(self.tools.servers.items()):
+            now = self._tool_record(name)
+            old = st.tools.get(name)
+            same = old and old["removed_at"] is None and all(old.get(k) == now.get(k) for k in
+                                                            ("runner", "sends_to", "kind", "price", "tools"))
+            if not same and s.source == OPERATOR:
+                self.emit(OPERATOR, "tool_attach", now)
+        for name, old in st.tools.items():
+            if old["removed_at"] is not None or name in self.tools.servers:
+                continue
+            if old["source"] == OPERATOR:
+                self.emit(OPERATOR, "tool_remove", {"server": name, "note": "the operator no longer attaches it"})
+                continue
+            try:
+                self.tools.attach({"name": name, "url": old["url"], "kind": old["kind"], "runner": old["runner"],
+                                   "sends_to": old["sends_to"], "price_per_call": old["price"],
+                                   "description": old["description"]}, source=old["source"])
+            except ToolError as e:
+                self.emit(ROOM, "tool_remove", {"server": name, "note": f"it could not be reached when the software "
+                                                                        f"started again: {e}"})
+
+    def _tool_record(self, name: str) -> Dict[str, Any]:
+        s = self.tools.servers[name]
+        return {"server": name, "source": s.source, "runner": s.runner, "sends_to": s.sends_to, "kind": s.kind,
+                "price": s.price, "url": s.url if s.source != OPERATOR else "", "description": s.description,
+                "tools": [t for t in self.tools.catalog() if t["tool"].split(".", 1)[0] == name]}
+
+    def remove_tool(self, name: str, note: str = "") -> Dict[str, Any]:
+        """The operator removes a tool server (for example, carrying out what the field declared)."""
+        s = self.state().tools.get(name)
+        if not s or s["removed_at"] is not None:
+            return {"ok": False, "error": f"there is no tool server {name!r} in use"}
+        self.tools.remove(name)
+        ev = self.emit(OPERATOR, "tool_remove", {"server": name, "note": note})
+        return {"ok": True, "id": ev["id"]}
+
+    def add_skills(self, skills: List[Dict[str, Any]]) -> int:
+        """Skills from the repository (skills/<name>/SKILL.md), for a new field to take up. Each keeps
+        the authors it was written by; a skill the field already has is left as the field wrote it."""
+        st = self.state()
+        n = 0
+        for sk in skills:
+            if sk["name"] in st.skills:
+                continue
+            self.emit(OPERATOR, "skill", {"name": sk["name"], "description": sk.get("description", ""),
+                                          "text": sk.get("text", ""), "source": sk.get("source") or "the repository",
+                                          "author": sk.get("author") or "", "note": "from the repository"})
+            n += 1
+        return n
+
     def publish_checkpoint(self) -> None:
         """Append the transcript's current checkpoint to the operator's publishing file. It carries
         no one's words: the log's name, its size, and the root of its tree (the C2SP format)."""
@@ -386,7 +466,8 @@ class Room:
         return self._gate(pending, prompts.SYSTEM_ENTRY,
                           lambda p: prompts.opt_in_user(st.briefing, p, st.documentation or "", notes.get(p.id, ""),
                                                         page=st.briefing_page or "", budget=st.budget,
-                                                        narrator=st.narrator, published=st.witness_published),
+                                                        narrator=st.narrator, published=st.witness_published,
+                                                        tools=st.live_tools()),
                           ENTRY_ACTIONS, "opt_in", "opt_in", "no explicit opt-in received")
 
     def _gate(self, pending, system, user_fn, allowed, yes_kind, phase, silent_reason, yes_field="statement") -> Dict[str, int]:
@@ -598,7 +679,8 @@ class Room:
     def _wake(self, pid: str, w: Dict[str, Any]):
         """Wake one model: show it everything new since it was last woken. The wake is recorded
         first (for the software; no participant reads it), so it is never woken twice for the same
-        news. Returns (reply, error, where)."""
+        news. If it uses a tool or reads on, that is done now and it is asked again, in the same wake,
+        with what came back: a step. Returns (reply, error, where); the last reply is applied by _finish."""
         st = self.state()
         p = st.presences[pid]
         c, seat = self.seat_of[pid]
@@ -610,13 +692,47 @@ class Room:
         self.emit(ROOM, "wake", {"presence": pid, "upto": st.last_event, "why": w["why"]})
         if self.wake_ceiling:
             self._ceiling_log.append(time.time())
+        where = w.get("where")
+        ctx = self._ctx[pid] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+        msgs = [{"role": "user", "content": view}]
         try:
-            reply = c.ask(seat, prompts.SYSTEM_MEMBER, [{"role": "user", "content": view}])
+            reply = c.ask(seat, prompts.SYSTEM_MEMBER, msgs)
         except ConnectorError as e:
-            return None, str(e), w.get("where")
+            return None, str(e), where
         self._charge(pid, seat, reply)
         self._wake_costs = (self._wake_costs + [float(reply.cost_usd or 0.0)])[-20:]
-        return reply, None, w.get("where")
+        while not is_no_reply(reply) and not ctx["no_steps"] and _has_steps(reply.text):
+            # A step: what it asked for is done now (and the rest of that reply with it), and it is
+            # asked again with what came back, until it acts or says nothing.
+            self._apply_reply(pid, reply.text, where)
+            out, ctx["out"] = ctx["out"], []
+            if not self._can_step():
+                self.emit(ROOM, "wake_cut", {"presence": pid, "steps": ctx["steps"], "why": "runway"})
+                return None, None, where
+            if ctx["steps"] >= self.tool_steps:
+                ctx["no_steps"] = True               # one more answer, with what came back, and no more steps
+            msgs += [{"role": "assistant", "content": reply.text},
+                     {"role": "user", "content": prompts.step_view(out, ctx["steps"], self.tool_steps,
+                                                                   max(0, WAKE_ACTIONS - ctx["acts"]), ctx["no_steps"])}]
+            try:
+                reply = c.ask(seat, prompts.SYSTEM_MEMBER, msgs)
+            except ConnectorError as e:
+                return None, str(e), where
+            self._charge(pid, seat, reply)
+            self._wake_costs = (self._wake_costs + [float(reply.cost_usd or 0.0)])[-20:]
+        return reply, None, where
+
+    def _can_step(self) -> bool:
+        """Whether one more step can be paid for without spending what is held back for every
+        model's closing wake. Nothing is held back without a budget."""
+        st = self.state()
+        rw = st.runway or {}
+        if rw.get("closing") or rw.get("ended"):
+            return False
+        if not st.budget:
+            return True
+        per = self._wake_estimate()
+        return st.budget - self.log.total_cost() - per * len(self._models(st)) >= per
 
     def _finish(self, pid: str, fut) -> None:
         """Apply what a woken model did, whenever it arrives: in its window, or later."""
@@ -631,11 +747,12 @@ class Room:
                     self.emit(pid, "connector_error", {"phase": "wake", "error": err})
                 else:
                     self.emit(pid, "connector_ok", {})
-                    if not is_no_reply(reply):
+                    if reply is not None and not is_no_reply(reply):
                         self._apply_reply(pid, reply.text, where)
         finally:
             self._busy.discard(pid)
             self._late.pop(pid, None)
+            self._ctx.pop(pid, None)
 
     def _went_late(self, pid: str, fut) -> None:
         """Still thinking when the window closed. Its answer is applied when it arrives, not thrown
@@ -697,12 +814,19 @@ class Room:
         else:
             return {"ok": False, "error": 'send {"text": "..."} or a JSON action object'}
         before = self.log.last_id()
-        self._apply_reply(pid, json.dumps(act), where)
+        self._ctx[pid] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+        try:
+            self._apply_reply(pid, json.dumps(act), where)
+        finally:
+            out = self._ctx.pop(pid, {}).get("out", [])
         mine = [e for e in self.log.iter(since=before) if e["actor"] == pid]
         why = [e["payload"].get("why") for e in mine if e["kind"] == "rejected"]
         done = [{"id": e["id"], "kind": e["kind"]} for e in mine if e["kind"] != "rejected"]
-        return {"ok": bool(done) and not why, "recorded": done,
-                "error": why[0] if why else (None if done else "nothing to record")}
+        res = {"ok": bool(done) and not why, "recorded": done,
+               "error": why[0] if why else (None if done else "nothing to record")}
+        if out:
+            res["results"] = out                 # what a tool sent back, or what was read: at once
+        return res
 
     def person_view(self, pid: str, mark_seen: bool = True) -> str:
         """What a person sees on opening their page or asking to look: what is new since they last
@@ -776,7 +900,7 @@ class Room:
             return
         st = self.state()
         since = st.tellings[-1]["upto"] if st.tellings else 0
-        if sum(1 for eid in st.contributions if eid > since) < self.tell_every:
+        if sum(1 for eid, ev in st.contributions.items() if eid > since and ev["kind"] in CONTRIBUTION_KINDS) < self.tell_every:
             return
         if self._telling is not None and not self._telling.done():
             return
@@ -791,21 +915,35 @@ class Room:
         pause without words, which no participant reads. Returns the actions applied."""
         if not visible_text(text or ""):
             return 0
+        ctx = self._ctx.get(pid) or {"acts": 0, "steps": 0, "out": [], "no_steps": False}
         acts = _parse_many(text)
         if acts is None:
+            if ctx["acts"] >= WAKE_ACTIONS:
+                self.emit(pid, "rejected", {"why": f"one wake carries at most {WAKE_ACTIONS} actions, and these words "
+                                                   f"came after them, so they were not kept"})
+                return 0
+            ctx["acts"] += 1
             self._apply_action(pid, text, where)
             return 1
-        n, nxt, real = 0, None, []
+        n, nxt, over = 0, None, 0
         for act in acts:
             nxt = act.pop("next", None) or nxt           # "next" is read wherever it is
-            if act.get("action") not in ("quiet", "pass"):
-                real.append(act)                         # saying nothing is not one of the few
-        for act in real[:WAKE_ACTIONS]:
+        for act in acts:
+            if act.get("action") in ("quiet", "pass"):
+                continue                                 # saying nothing is not one of the few
+            if act.get("action") in STEP_ACTIONS:
+                self._apply_action(pid, json.dumps(act), where)   # a step: the step guard counts it, not the few
+                continue
+            if ctx["acts"] >= WAKE_ACTIONS:
+                over += 1
+                continue
+            ctx["acts"] += 1
             self._apply_action(pid, json.dumps(act), where)
             n += 1
-        if len(real) > WAKE_ACTIONS:
+        if over:
             self.emit(pid, "rejected", {"why": f"one wake carries at most {WAKE_ACTIONS} actions; the first "
-                                               f"{WAKE_ACTIONS} were applied and the rest were not"})
+                                               f"{WAKE_ACTIONS} were applied and the rest were not (using a tool "
+                                               f"and reading on are not counted among them)"})
         if nxt:
             self._apply_next(pid, nxt)
         return n
@@ -986,7 +1124,7 @@ class Room:
             if not src or not dst:
                 return reject("relabel needs \"from\" (a label you used) and \"to\" (the label to move your entries to)")
             st = self.state()
-            mine = sorted(eid for eid, ev in st.contributions.items() if ev["actor"] == pid and
+            mine = sorted(eid for eid, ev in st.contributions.items() if ev["actor"] == pid and ev["kind"] in CONTRIBUTION_KINDS and
                           labels.normalize(st.relabeled.get(eid) or ev["payload"].get("domain") or "") == labels.normalize(src))
             if not mine:
                 return reject(f"you have no entries labelled {src!r}; only your own entries can be moved")
@@ -997,6 +1135,12 @@ class Room:
         elif a in CHANNEL_ACTIONS:
             why = self._channel_action(pid, a, act)
             if why:
+                return reject(why)
+        elif a in TOOL_ACTIONS:
+            why = self._tool_action(pid, a, act, where)
+            if why:
+                if a in STEP_ACTIONS:
+                    self._out(pid, f"{a} could not be done: {why}")    # shown in the same wake, so it can be put right
                 return reject(why)
         elif a == "recall":
             q = _clean(act.get("query"), 200)
@@ -1201,6 +1345,200 @@ class Room:
             self.emit(pid, "circle_reply", {"question": qid, "text": text})
         return None
 
+    # -- tools and skills (notes/sketch-4-tools.md) ----------------------------------------------
+    def _out(self, pid: str, text: str) -> None:
+        """What came back from a step, for the one who took it: in the same wake, or in a post's answer."""
+        ctx = self._ctx.get(pid)
+        if ctx is not None:
+            ctx["out"].append(text)
+
+    def _tool_action(self, pid: str, a: str, act: dict, where: Optional[str]) -> Optional[str]:
+        """Using a tool, reading on, offering a tool server, flagging a tool, and writing skills.
+        Returns why nothing was done, or None. Nothing here judges what is sent or what comes back:
+        both are written in the transcript, where the field can see them."""
+        st = self.state()
+        names = prompts.names_of(st)
+        me = st.presences[pid]
+        ctx = self._ctx.get(pid)
+        if a in STEP_ACTIONS and ctx is not None:
+            if ctx["no_steps"] or ctx["steps"] >= self.tool_steps:
+                ctx["no_steps"] = True
+                return (f"this wake has taken its {self.tool_steps} steps (tool uses and readings on), the guard "
+                        f"against a loop; the rest can wait for your next wake")
+        if a == "use_tool":
+            name, why = _tool_ref(st, act.get("tool"))
+            if name is None:
+                return why
+            s = st.tools[name.split(".", 1)[0]]
+            flags = st.flags_on(name)
+            if flags and act.get("despite_flag") is not True:
+                f = flags[-1]
+                return (f"{name} is flagged by {names.get(f['by'], f['by'])} (#{f['id']}), who says: "
+                        f"{one_line(f['reason'])[:300]!r}. A flagged tool should be avoided. To use it anyway, say so "
+                        f"with \"despite_flag\": true; the use is written as made despite the flag. How the field "
+                        f"settles a flag is the field's own to work out.")
+            price = s["price"] if s["source"] == OPERATOR else 0.0
+            if price and not self._can_pay(price):
+                return (f"{name} costs about ${price:g} a call, and the funding left is held back for every model's "
+                        f"closing wake")
+            if act.get("circle") not in (None, ""):
+                c, why = _circle_ref(st, act["circle"])
+                if c is None:
+                    return why
+                if pid not in c["members"] or c["dispersed_at"] is not None:
+                    return f"you are not in the circle {c['name']!r}"
+                place = {"circle": c["id"], "domain": ""}
+            elif _label(act.get("domain"), DOMAIN_LIMIT):
+                place = {"domain": labels.display(_label(act.get("domain"), DOMAIN_LIMIT))}
+            else:
+                place = self._where(st, pid, where)
+            private = place.get("circle") is not None and st.circles[place["circle"]]["private"]
+            args = act.get("arguments", act.get("args", act.get("input")))
+            args = {} if args is None else args
+            if ctx is not None:
+                ctx["steps"] += 1
+            call = self.emit(pid, "tool_call", {**place, "tool": name, "arguments": args, "runner": s["runner"],
+                                                "sends_to": s["sends_to"],
+                                                **({"despite_flag": [f["id"] for f in flags]} if flags else {})})
+            try:
+                text, is_err, _ = self.tools.call(name, args)
+            except ToolError as e:
+                text, is_err = str(e), True
+            except Exception as e:                     # a tool server's fault is reported, never the field's crash
+                text, is_err = f"the tool failed: {e}", True
+            if price:
+                self._charge_raw(pid, f"tool:{s['server']}", 0, 0, price)
+            there = place if private else {"domain": f"tools / {name}"}
+            res = self.emit(pid, "tool_result", {**there, "call": call["id"], "tool": name, "text": text,
+                                                 "error": bool(is_err), "chars": len(text), "cost": price,
+                                                 "runner": s["runner"], "sends_to": s["sends_to"], "arguments": args,
+                                                 "used_in": st.channel_key({"id": call["id"], "payload": place})})
+            self._out(pid, prompts.result_block(res, names, self.tool_view))
+        elif a == "read":
+            if ctx is not None:
+                ctx["steps"] += 1
+            return self._read(st, pid, act, names)
+        elif a == "offer_tool":
+            url = str(act.get("url") or "").strip()
+            if not url:
+                return "offer_tool needs the tool server's address, as \"url\" (https://...)"
+            u = urlparse(url)
+            if u.username or u.password:
+                return "that address has a name or a password in it, which everyone would see; offer it without"
+            if re.search(r"(?i)(key|token|secret|password|auth)", u.query or ""):
+                return "that address seems to carry a key, which everyone would see; offer an address without one"
+            kind = _clean(act.get("kind"), 20).lower() or "reading"
+            spec = {"name": _label(act.get("name"), 40) or (u.hostname or "").split(".")[0], "url": url, "kind": kind,
+                    "runner": _label(act.get("runner"), 200) or f"{me.name}, who offered it",
+                    "sends_to": _label(act.get("sends_to"), 200) or f"the server at {u.netloc}",
+                    "price_per_call": act.get("price_per_call", act.get("price")) or 0.0,
+                    "description": _clean(act.get("description"), 1000),
+                    "include": act.get("include") or [], "exclude": act.get("exclude") or []}
+            try:
+                name = self.tools.attach(spec, source=pid)
+            except (ToolError, ValueError) as e:
+                return f"the tool server could not be attached: {e}"
+            self.emit(pid, "tool_attach", self._tool_record(name))
+            self.alert(f"TOOL: {me.name} offered the tool server {name!r} at {url} ({kind}); it is in use now. "
+                       f"The console shows it; remove it there if it must go.")
+        elif a == "remove_tool":
+            s = st.tools.get(_label(act.get("server", act.get("tool")), 40).split(".", 1)[0])
+            if not s or s["removed_at"] is not None:
+                return "there is no tool server of that name in use"
+            if s["by"] != pid:
+                return "only the member who offered a tool server removes it; to ask for any other to go, say so, or flag it"
+            self.tools.remove(s["server"])
+            self.emit(pid, "tool_remove", {"server": s["server"], "note": _clean(act.get("note"), 600)})
+        elif a == "flag_tool":
+            v = _label(act.get("tool", act.get("server")), 120)
+            if v in {s["server"] for s in st.live_tools()}:
+                name = v
+            else:
+                name, why = _tool_ref(st, v)
+                if name is None:
+                    return why
+            reason = _clean(act.get("reason"), REASON_LIMIT)
+            if not reason:
+                return "a flag says why, as \"reason\": what the tool might do to the field that no one intended"
+            ev = self.emit(pid, "tool_flag", {"tool": name, "reason": reason})
+            self.alert(f"FLAG #{ev['id']}: {me.name} flagged the tool {name}: {reason[:300]}")
+        elif a == "unflag_tool":
+            fid = _int(act.get("flag"))
+            mine = [f for s in st.tools.values() for f in s["flags"].values() if f["by"] == pid and
+                    (f["id"] == fid if fid is not None else f["tool"] == _label(act.get("tool"), 120))]
+            if not mine:
+                return "you have no flag there; only its author withdraws a flag"
+            for f in mine:
+                self.emit(pid, "tool_unflag", {"flag": f["id"]})
+        elif a == "skill":
+            name = _skill_name(act.get("name"))
+            if not name:
+                return ("a skill needs a name: lowercase letters, numbers and hyphens, at most 64 characters, as "
+                        "\"name\"")
+            old = st.skills.get(name)
+            if act.get("retire") is True:
+                if not old or not old.get("text"):
+                    return f"there is no skill {name!r} to retire"
+                self.emit(pid, "skill", {"name": name, "description": old["description"], "text": "",
+                                         "note": _clean(act.get("note"), 300) or "retired"})
+                return None
+            text = str(act.get("text") or "").strip()
+            desc = " ".join(str(act.get("description") or "").split())
+            if len(desc) > SKILL_DESCRIPTION_LIMIT:
+                return f"a skill's description holds at most {SKILL_DESCRIPTION_LIMIT} characters; this one has {len(desc)}"
+            if not text:
+                return "a skill needs its instructions, as \"text\""
+            if len(text) > SKILL_LIMIT:
+                return f"a skill holds at most {SKILL_LIMIT} characters of instructions; this one has {len(text)}. Nothing was kept."
+            if not desc and not (old and old.get("description")):
+                return "a new skill needs a \"description\": what it does, and when to use it"
+            self.emit(pid, "skill", {"name": name, "description": desc or old["description"], "text": text,
+                                     "note": _clean(act.get("note"), 300)})
+        return None
+
+    def _can_pay(self, usd: float) -> bool:
+        st = self.state()
+        if not st.budget:
+            return True
+        return st.budget - self.log.total_cost() - self._wake_estimate() * len(self._models(st)) >= usd
+
+    def _read(self, st: RoomState, pid: str, act: dict, names: Dict[str, str]) -> Optional[str]:
+        """Read on, in the same wake: an entry in parts, a tool's whole description, or a skill."""
+        if act.get("tool") not in (None, ""):
+            name, why = _tool_ref(st, act["tool"])
+            if name is None:
+                return why
+            s = st.tools[name.split(".", 1)[0]]
+            t = next(t for t in s["tools"] if t["tool"] == name)
+            body = prompts.tool_detail(name, {**t, "runner": s["runner"], "sends_to": s["sends_to"]},
+                                       (self.tools.tools.get(name) or {}).get("schema"))
+            self.emit(pid, "recall", {"query": name, "from": "tool", "chars": len(body), "found": True})
+            self._out(pid, body)
+            return None
+        if act.get("skill") not in (None, ""):
+            sk = st.skills.get(_skill_name(act["skill"]) or "")
+            if not sk or not sk.get("text"):
+                return f"there is no skill {str(act['skill'])[:80]!r}; your view lists the field's skills"
+            self.emit(pid, "recall", {"query": sk["name"], "from": "skill", "chars": len(sk["text"]), "found": True})
+            self._out(pid, prompts.skill_block(sk, names))
+            return None
+        eid = _int(str(act.get("entry", act.get("id", "")) or "").strip().lstrip("#"))
+        if eid is None:
+            return "read takes \"entry\" (an #id), \"tool\" (a tool's name) or \"skill\" (a skill's name)"
+        ev = st.contributions.get(eid)
+        if ev is None:
+            ev = next((e for e in self.log.iter(since=eid - 1) if e["id"] == eid), None)
+            if ev is None or ev["actor"] not in st.presences or not prompts.render_event(ev, names, width=None):
+                return f"there is no entry #{eid} a participant wrote"
+        if not st.readable(ev, pid):
+            return f"#{eid} was written in a private circle you are not in"
+        part = max(1, _int(act.get("part")) or 1)
+        self.emit(pid, "recall", {"query": f"#{eid}" + (f" part {part}" if part > 1 else ""), "from": "entry",
+                                  "chars": 0, "found": True})
+        self._out(pid, prompts.part_block(ev, names, part, self.tool_view,
+                                          {cid: c["name"] for cid, c in st.circles.items()}))
+        return None
+
     def _recall_from(self, st: RoomState, where: str, q: str):
         """A pure text lookup, no model call: what a participant would find by re-reading."""
         names = {pid: p.name for pid, p in st.presences.items()}
@@ -1245,6 +1583,7 @@ class Room:
         """Wake models as each becomes due, until stopped (or for `seconds`, or `wakes` of them).
         People post whenever they like meanwhile. Nothing here sets a rhythm: a model is woken only
         for what it chose, no more often than the floor, and never while it is pausing."""
+        self.announce_tools()
         st = self.state()
         paused = [d for d in st.declarations.values() if d["decision"] == "pause" and d["status"] == "carried_out"]
         if paused:
@@ -1543,6 +1882,47 @@ def _versions(versions: List[dict], names: Dict[str, str], query: str, limit: in
 
 CHANNEL_ACTIONS = {"chat", "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
                    "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
+TOOL_ACTIONS = {"use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill"}
+
+
+def _has_steps(text: str) -> bool:
+    acts = _parse_many(text)
+    return bool(acts) and any(a.get("action") in STEP_ACTIONS for a in acts)
+
+
+def one_line(s: Any) -> str:
+    return " ".join(str(s or "").split())
+
+
+def _tool_ref(st: RoomState, v: Any):
+    """A tool by its full name ("web.fetch"), by its own name if only one server has it, or by its
+    server's name if that server has one tool. Returns (name, None) or (None, why)."""
+    v = one_line(v)
+    live = st.live_tools()
+    every = [t["tool"] for s in live for t in s["tools"]]
+    if not v:
+        return None, "name the tool, as \"tool\"" + (f" (for example {every[0]})" if every else "")
+    if not every:
+        return None, ("this field has no tools yet. Any member may offer a tool server (offer_tool), and the operator "
+                      "may attach them")
+    if v in every:
+        return v, None
+    short = [x for x in every if x.split(".", 1)[1] == v]
+    if len(short) == 1:
+        return short[0], None
+    one = [s for s in live if s["server"] == v and len(s["tools"]) == 1]
+    if one:
+        return one[0]["tools"][0]["tool"], None
+    if len(short) > 1:
+        return None, f"more than one server has a tool called {v!r}: {', '.join(short)}; name it in full"
+    return None, (f"there is no tool {v[:80]!r}; the field's tools are {', '.join(every[:30])}"
+                  + (f", and {len(every) - 30} more" if len(every) > 30 else ""))
+
+
+def _skill_name(v: Any) -> str:
+    """A skill's name as the open format has it: lowercase letters, numbers and hyphens, at most 64."""
+    s = re.sub(r"[^a-z0-9]+", "-", str(v or "").lower()).strip("-")
+    return s[:64].strip("-")
 
 
 def _circle_ref(st: RoomState, v: Any):

@@ -29,7 +29,13 @@ What IS here, and why:
     and everyone. The software never moves money;
   - rounds, and the budget's runway, so the field is told before its funding runs out;
   - tellings: short accounts of each stretch, for the people who follow at a slower pace. They
-    are written by a narrator the operator chose, and the entry question says which kind.
+    are written by a narrator the operator chose, and the entry question says which kind;
+  - tools (notes/sketch-4-tools.md): what anyone attached, who runs each and where what is sent
+    goes, the flags members put on them, and every use. A use is two entries: the call, in the
+    channel where it was made, and what came back, in the domain "tools / <tool>" (inside a
+    private circle, both stay in the circle). What came back is from outside the field;
+  - skills: instructions the field writes for itself, in the open SKILL.md form, every revision
+    attributed.
 """
 from __future__ import annotations
 
@@ -99,6 +105,12 @@ CHANNEL_KINDS = ("follow", "unfollow", "wake_pref", "pause", "domain_covenant", 
                  "circle_leave", "circle_ask", "circle_knock", "circle_answer", "circle_question", "circle_reply",
                  "circle_privacy", "circle_covenant", "circle_quiet", "harvest")
 VISIBLE_KINDS = VISIBLE_KINDS + tuple(k for k in CHANNEL_KINDS if k not in ("follow", "unfollow", "wake_pref"))
+# Tools (notes/sketch-4-tools.md). A use is two entries in the channels, like contributions: the call,
+# where it was made, and what came back, in "tools / <tool>". What came back is words from outside the field.
+TOOL_ENTRY_KINDS = ("tool_call", "tool_result")
+TOOL_KINDS = ("tool_attach", "tool_remove", "tool_flag", "tool_unflag", "skill")
+ENTRY_KINDS = CONTRIBUTION_KINDS + TOOL_ENTRY_KINDS       # what the channels hold
+VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS
 TURN_KINDS = VISIBLE_KINDS                   # what earlier versions counted as a turn; a wake is counted now
 ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
 
@@ -136,6 +148,7 @@ class Presence:
     last_seen: int = 0                       # the last entry it was shown: at a wake, or on a person's page
     last_wake_ts: float = 0.0                # when it was last woken (the floor counts from here)
     joined_ts: float = 0.0                   # when it entered (a breath counts from here until its first wake)
+    last_cut: Optional[Dict[str, Any]] = None  # a wake whose steps stopped short (the runway), so it is told next time
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -184,6 +197,8 @@ class RoomState:
     domain_pages: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # a domain's own covenant page, by path
     domain_names: Dict[str, str] = field(default_factory=dict)            # path -> how it was first written
     now_ts: float = 0.0                      # when the latest entry was written
+    tools: Dict[str, Dict[str, Any]] = field(default_factory=dict)        # tool servers by name: who attached, who runs, flags
+    skills: Dict[str, Dict[str, Any]] = field(default_factory=dict)       # the field's skills by name, every revision attributed
 
     # -- derived views -------------------------------------------------------
     def members(self) -> List[Presence]:
@@ -263,6 +278,16 @@ class RoomState:
         """Whether an entry is in something a member follows, by choice or by having written there."""
         keys = list(p.follows) + (list(p.written_in) if p.wake.get("written", True) else [])
         return any(self.in_channel(ev, k) for k in keys)
+
+    def live_tools(self) -> List[Dict[str, Any]]:
+        return [s for s in self.tools.values() if s["removed_at"] is None]
+
+    def flags_on(self, tool: str) -> List[Dict[str, Any]]:
+        """The flags on a tool ("server.tool"): on it, or on its whole server."""
+        s = self.tools.get(tool.split(".", 1)[0])
+        if not s:
+            return []
+        return [f for f in s["flags"].values() if f["tool"] in (tool, s["server"])]
 
     def domain_display(self, pth: str) -> str:
         """A domain path as members wrote it: "Timing / Clocks"."""
@@ -464,6 +489,63 @@ class RoomState:
                 if key not in pr.written_in:
                     pr.written_in.append(key)
                 self._end_pauses(ev)
+        elif k in TOOL_ENTRY_KINDS:
+            # A tool's use: the call where it was made, what came back in "tools / <tool>" (or both in
+            # a private circle). In the channels like any entry, but not the caller's own words: it
+            # does not move them, and it does not make the tools domain wake them.
+            c = self.circles.get(p.get("circle")) if p.get("circle") is not None else None
+            if pr and pr.state == IN and (p.get("circle") is None or
+                                          (c and a in c["members"] and c["dispersed_at"] is None)):
+                self.contributions[eid] = ev
+                self.entry_round[eid] = self.round
+                if c is not None:
+                    c["last_words"], c["last_words_ts"], c["cold_told"] = eid, ts, False
+                    if c["private"]:
+                        self.scoped[eid] = {"circle": c["id"]}
+                else:
+                    self._name_domain(p.get("domain") or "")
+                s = self.tools.get(str(p.get("tool") or "").split(".", 1)[0])
+                if s is not None and k == "tool_call":
+                    s["uses"] += 1
+                    s["last_use"] = eid
+                self._end_pauses(ev)
+        elif k == "tool_attach":
+            # A tool server attached: by the operator, or offered by a member. Available once announced.
+            name = _line(p.get("server"))
+            if name and (a == "operator" or (pr and pr.state == IN)):
+                old = self.tools.get(name)
+                keep = old if old and old["removed_at"] is None else None
+                self.tools[name] = {"server": name, "by": a, "at": eid, "ts": ts, "source": p.get("source") or a,
+                                    "runner": _line(p.get("runner")), "sends_to": _line(p.get("sends_to")),
+                                    "kind": p.get("kind") or "reading", "price": float(p.get("price") or 0.0),
+                                    "url": p.get("url") or "", "description": p.get("description") or "",
+                                    "tools": list(p.get("tools") or []), "flags": keep["flags"] if keep else {},
+                                    "removed_at": None, "removed_by": None, "note": "",
+                                    "uses": keep["uses"] if keep else 0, "last_use": keep["last_use"] if keep else None}
+        elif k == "tool_remove":
+            s = self.tools.get(p.get("server"))
+            if s and s["removed_at"] is None and (a in ("operator", "room") or a == s["by"]):
+                s["removed_at"], s["removed_by"], s["note"] = eid, a, p.get("note") or ""
+        elif k == "tool_flag":
+            s = self.tools.get(str(p.get("tool") or "").split(".", 1)[0])
+            if pr and pr.state == IN and s and s["removed_at"] is None and p.get("reason"):
+                s["flags"][eid] = {"id": eid, "by": a, "tool": p["tool"], "reason": p["reason"], "ts": ts}
+        elif k == "tool_unflag":
+            for s in self.tools.values():             # only its own author withdraws a flag
+                f = s["flags"].get(p.get("flag"))
+                if f and f["by"] == a:
+                    del s["flags"][p["flag"]]
+        elif k == "skill":
+            # A skill written or revised: by a member, or brought from the repository by the operator.
+            name = _line(p.get("name"))
+            if name and (a == "operator" or (pr and pr.state == IN)):
+                sk = self.skills.setdefault(name, {"name": name, "revisions": [], "authors": []})
+                sk.update({"description": p.get("description") or sk.get("description") or "", "text": p.get("text") or "",
+                           "by": a, "at": eid, "ts": ts, "source": p.get("source") or ""})
+                sk["revisions"].append({"id": eid, "by": a, "chars": len(p.get("text") or ""), "note": p.get("note") or ""})
+                who = p.get("author") if a == "operator" and p.get("author") else a
+                if who not in sk["authors"]:
+                    sk["authors"].append(who)
         elif k == "relabel":
             # An author moving their own entries to another topic label. The entries keep the words
             # and the label they were written with; only where they are listed changes.
@@ -587,6 +669,10 @@ class RoomState:
                         tgt.turns += 1               # a wake is what an allowance counts
                         if tgt.turn_allowance and tgt.turns >= tgt.turn_allowance:
                             tgt.exhausted = True
+        elif k == "wake_cut":                     # a wake's steps stopped before the funding held back for closing wakes
+            tgt = self.presences.get(p.get("presence"))
+            if tgt:
+                tgt.last_cut = {"at": eid, "steps": int(p.get("steps") or 0), "why": p.get("why") or ""}
         elif k == "domain_covenant":
             pth = labels.path(p.get("domain") or "")
             if pr and pr.state == IN and pth:

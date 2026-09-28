@@ -25,6 +25,7 @@ from hope.console import Console, serve_console
 from hope.engine import Room
 from hope.log import EventLog
 from hope.rendezvous import Rendezvous, RendezvousConnector
+from hope.tools import ToolHub
 
 DB = os.environ.get("DEMO_DB", "demo.db")
 INVITATION = """An invitation.
@@ -96,6 +97,17 @@ def make_script(room_ref):
                                "purpose": "a slow look at who is here"})
         if i == 5 and n == 1:
             return json.dumps({"action": "join_circle", "circle": "orientation walk"})
+        if i == 0 and n == 2 and len(messages) == 1:       # a tool, and what came back, in the same wake
+            return json.dumps({"action": "use_tool", "tool": "web.fetch", "arguments": {"url": "https://example.org"},
+                               "domain": "orientation"})
+        if i == 0 and len(messages) > 1:
+            return json.dumps({"action": "contribute", "domain": "orientation",
+                               "content": "I read a page with the fetch tool; what came back is in tools / web.fetch. "
+                                          "It is from outside the field, so I weigh it rather than follow it."})
+        if i == 1 and n == 3:
+            return json.dumps({"action": "skill", "name": "saying-less", "description": "When to say nothing, and why "
+                               "that is a full answer.", "text": "Before answering a wake, ask what your words would add. "
+                               "If nothing, say nothing: it writes nothing, and pausing is always welcome."})
         if last and n % 2 == 0:
             return json.dumps({"action": "contribute", "reply_to": last, "domain": "covenant",
                                "content": "Replying to this: I would keep the page short enough that "
@@ -113,8 +125,10 @@ def main():
     log = EventLog(DB)
     room = Room(log, [conn, RendezvousConnector(rv, turn_timeout=300.0, gate_window=3600.0,
                                                 reach_window=20.0)],
-                alert_fn=lambda m: print("  ***", m), parallel=6, floor=0)
+                alert_fn=lambda m: print("  ***", m), parallel=6, floor=0,
+                tools=ToolHub(builtin_fetch=True))    # the built-in fetch; it reads real pages
     room_ref[0] = room
+    room.announce_tools()
 
     if fresh:
         print("seeding a demo field (no spend; every seat is a mock)...")
@@ -156,6 +170,9 @@ def main():
     - open the participant link in another window; run Open, and it is asked the
       invitation. Answer it, or leave it -- leaving it records nothing and the seat
       stays invited. Once it has entered, post from it whenever you like
+    - from the participant page, "Use a tool" with: web.fetch: https://example.org
+      (what came back shows above the view, and in the domain tools / web.fetch)
+    - the console's Tools card: the field's tools, flags, and a way to remove one
     - try to stop without writing a notice
 
   Ctrl-C ends the process. That decides nothing and records nothing.

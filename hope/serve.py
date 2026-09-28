@@ -116,6 +116,15 @@ def record_text(log: EventLog, everything: bool = False) -> str:
             out.append(f"{head} ({p.get('narrator')}, #{p.get('since')}..#{p.get('upto')}){flag}\n{p.get('story', '')}\n")
         elif k == "propose":   # files from earlier versions only
             out.append(f"{head}: {p.get('kind')} value={p.get('value')!r}\n{p.get('reason', '')}\n")
+        elif k == "tool_call":
+            where = p.get("domain") or (f"circle #{p['circle']}" if p.get("circle") is not None else "the field")
+            out.append(f"{head} @ {where}: {p.get('tool')}, sending {json.dumps(p.get('arguments'), ensure_ascii=False)} "
+                       f"(to {p.get('sends_to')})\n")
+        elif k == "tool_result":
+            text = p.get("text") or ""
+            shown = text if everything or len(text) <= 4000 else text[:4000] + f"\n... (the first 4,000 of {len(text):,} characters)"
+            out.append(f"{head} @ {p.get('domain')}: what {p.get('tool')} sent back for #{p.get('call')}, from outside "
+                       f"the field (run by {p.get('runner')})\n{shown}\n")
         else:
             body = {kk: v for kk, v in p.items() if v not in (None, "", {}, [])}
             out.append(f"{head}: {json.dumps(body, ensure_ascii=False)}\n")
@@ -213,6 +222,16 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                      "domains": c["domains"], "dispersed": c["dispersed_at"] is not None,
                      "reason": c["reason"] if c["private"] else ""} for c in st.circles.values()],
         "private_entries": len(st.scoped),
+        # the field's tools as every member sees them: who runs each, where what is sent goes, flags, uses
+        "tools": [{"server": s["server"], "by": names.get(s["by"], s["by"]), "runner": s["runner"],
+                   "sends_to": s["sends_to"], "kind": s["kind"], "price": s["price"], "url": s["url"],
+                   "tools": [t["tool"] for t in s["tools"]], "uses": s["uses"], "removed_at": s["removed_at"],
+                   "note": s["note"], "flags": [{"id": f["id"], "by": names.get(f["by"], f["by"]), "tool": f["tool"],
+                                                 "reason": f["reason"]} for f in s["flags"].values()]}
+                  for s in st.tools.values()],
+        "skills": [{"name": k["name"], "description": k["description"], "chars": len(k.get("text") or ""),
+                    "authors": [names.get(a, a) for a in k["authors"]], "revisions": len(k["revisions"])}
+                   for k in st.skills.values() if k.get("text")],
         "briefing": {"event": st.briefing_event, "words": len((st.briefing or "").split()), "source": st.briefing_source,
                      "opening": (st.briefing or "").strip().splitlines()[0][:200] if st.briefing else ""},
         "covenant": covenant, "memories": memories, "runway": st.runway,

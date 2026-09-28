@@ -323,6 +323,13 @@ class Console:
             self.room.request_stop()
             return {"ok": True, "note": "notice recorded, wakes will cease. Nothing was decided in the field."}
 
+        if action == "remove_tool":
+            # For example, carrying out what the field declared. Written in the field, with the note.
+            out = self.room.remove_tool(str(payload.get("server") or ""), (payload.get("note") or "").strip()[:600])
+            if out.get("ok"):
+                self._say(f"you removed the tool server {payload.get('server')!r}; the field is told, with your note")
+            return out
+
         if action == "read_circle":
             # The operator holds the file and could read it with other tools; in the console, reading a
             # private circle is written into it, where its members see it, as they were told it would be.

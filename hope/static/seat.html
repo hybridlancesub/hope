@@ -297,7 +297,7 @@ async function field(){
     inField = true;
     $("main").innerHTML = `
       <div class="card"><div class="ask">${esc(f0.lead)}</div><div class="muted" style="margin-top:.5rem">${esc(f0.note)}</div></div>
-      <div class="field"><nav class="places" id="places"></nav><pre class="view" id="fview"></pre></div>`;
+      <div class="field"><nav class="places" id="places"></nav><div style="min-width:0"><pre class="view" id="came" hidden style="border-left:3px solid var(--line);padding-left:.8rem;margin-bottom:1rem"></pre><pre class="view" id="fview"></pre></div></div>`;
     $("hint").textContent = f0.hint;
     const bar = $("buttons"); bar.innerHTML = "";
     const [slabel, stip] = f0.send;
@@ -348,6 +348,12 @@ async function post(prefix){
     const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
     if (!m){ flash(W.flash.which_answer, false); return; }
     text = prefix + m[1] + (m[2] ? " " + m[2] : "");
+  } else if (prefix === "read #"){
+    const m = typed.match(/#?(\d+)\s*(?:part\s*)?(\d+)?/i);
+    if (!m){ flash(W.flash.which_entry, false); return; }
+    text = "read #" + m[1] + (m[2] ? " part " + m[2] : "");
+  } else if (prefix === "tool " && typed.indexOf(":") < 0){
+    flash(W.flash.which_tool, false); return;
   } else if (prefix === "let go "){
     const m = typed.match(/#?(\d+)/);
     if (!m){ flash(W.flash.which_memory, false); return; }
@@ -375,6 +381,11 @@ async function post(prefix){
       body: JSON.stringify({ text, channel })
     });
     const out = await r.json();
+    const came = $("came");
+    if (came){
+      came.hidden = !(out.results && out.results.length);
+      came.textContent = came.hidden ? "" : out.results.join("\n\n");
+    }
     if (out.ok){ flash(W.field.kept, true); if (prefix !== "copycov") $("say").value = ""; fieldUpto = 0; }
     else flash(out.error || W.flash.not_accepted, false);
   } catch(e){ flash(W.flash.unreachable + e.message, false); }

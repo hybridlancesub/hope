@@ -32,6 +32,19 @@ The format is plain text, translated to the same JSON actions models send:
                                     declare other ... for anything else it asks the operator to carry out),
                                     saying how, in the way its covenant describes; #ids become citations
     offer <text>                    put an offer of resources before the operator and everyone
+    tool <tool>: <words>            use one of the field's tools (the words go to its first text argument;
+                                    or give its arguments as JSON after the colon); what came back is shown
+    read #123 [part 2] | read tool <tool> | read skill <name>
+                                    read on in something long, a tool's full description, or a skill
+    offer tool <name> <https address> [reading|working|acting] [: what it does]
+                                    offer the field an MCP tool server (put no key in the address)
+    remove tool <name>              remove a tool server you offered
+    flag tool <tool>: <why>         flag a tool that could change the field in ways no one intended
+    unflag #12                      withdraw a flag you put on a tool
+    skill <name>: <what it does, and when to use it>
+    <the instructions, on the lines after>
+                                    write or revise one of the field's skills (your yes to its publication
+                                    in hope's repository, attributed to you); retire skill <name> retires it
     recall [briefing|transcript|memory|covenant|prior] <words>
                                     re-read matching passages (shown the next time you look; briefing if unnamed)
     withdraw [reason] [/ when it would be fair to ask you back]
@@ -149,6 +162,8 @@ class HumanConnector:
                 continue
             out = room.post(pid, {"text": t})
             self._say("(kept)" if out.get("ok") else f"(not kept: {out.get('error')})")
+            for r in out.get("results") or []:
+                self._say(r)
 
     def _say(self, s: str, end: str = "\n") -> None:
         self.outfile.write(s + end)
@@ -336,6 +351,39 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         decision, _, text = s[8:].strip().partition(" ")
         return {"action": "declare", "decision": decision.lower(), "text": text.strip(),
                 "refs": [int(x) for x in re.findall(r"#(\d+)", text)]}
+    m = re.match(r"tool\s+([\w.-]+)\s*:\s*(.*)$", s, re.I | re.S)
+    if m:
+        rest = m.group(2).strip()
+        try:
+            args = json.loads(rest) if rest.startswith("{") else rest
+        except ValueError:
+            args = rest
+        return {"action": "use_tool", "tool": m.group(1), "arguments": args}
+    m = re.match(r"read\s+#(\d+)(?:\s+part\s+(\d+))?\s*$", s, re.I)
+    if m:
+        return {"action": "read", "entry": int(m.group(1)), "part": int(m.group(2) or 1)}
+    m = re.match(r"read\s+(tool|skill)\s+(\S+)\s*$", s, re.I)
+    if m:
+        return {"action": "read", m.group(1).lower(): m.group(2)}
+    m = re.match(r"offer\s+tool\s+([\w-]+)\s+(\S+)(?:\s+(reading|working|acting))?\s*(?::\s*(.*))?$", s, re.I | re.S)
+    if m:
+        return {"action": "offer_tool", "name": m.group(1), "url": m.group(2), "kind": (m.group(3) or "reading").lower(),
+                "description": (m.group(4) or "").strip()}
+    m = re.match(r"remove\s+tool\s+(\S+)\s*$", s, re.I)
+    if m:
+        return {"action": "remove_tool", "server": m.group(1)}
+    m = re.match(r"flag\s+tool\s+([^:]+):\s*(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "flag_tool", "tool": m.group(1).strip(), "reason": m.group(2).strip()}
+    m = re.match(r"unflag\s+#?(\d+)\s*$", s, re.I)
+    if m:
+        return {"action": "unflag_tool", "flag": int(m.group(1))}
+    m = re.match(r"retire\s+skill\s+(\S+)\s*$", s, re.I)
+    if m:
+        return {"action": "skill", "name": m.group(1), "retire": True}
+    m = re.match(r"skill\s+([\w-]+)\s*:\s*([^\n]*)\n(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "skill", "name": m.group(1), "description": m.group(2).strip(), "text": m.group(3).strip()}
     if low.startswith("offer "):
         return {"action": "offer", "text": s[6:].strip()}
     if low.startswith("rest "):

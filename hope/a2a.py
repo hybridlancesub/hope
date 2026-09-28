@@ -176,7 +176,9 @@ class A2AConnector:
 
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:
         agent = self._agents[seat.id]
-        text = system.rstrip() + "\n\n" + messages[-1]["content"]
+        text = system.rstrip() + "\n\n" + messages[0]["content"]
+        for m in messages[1:]:                  # a wake with steps: what it sent, and what came back
+            text += ("\n\nWHAT YOU SENT IN THIS WAKE:\n" if m["role"] == "assistant" else "\n\n") + m["content"]
         result = self._rpc(agent, "SendMessage" if agent["version"] == "1.0" else "message/send",
                            {"message": self._message(agent, text)})
         if isinstance(result, dict) and result.get("_error", {}).get("code") == -32601 and agent["version"] == "1.0":

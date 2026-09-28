@@ -20,9 +20,9 @@ Python, AGPL for code and CC BY-SA for text.
 
 The order of work now
 ---------------------
-  2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: sketch
-  shaped once; seven smaller questions wait) -> 4 -> 5 -> 6 -> 8. An interface pass (below) comes when the
-  author is ready for it.
+  2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: built;
+  `hope host` later) -> 4 -> 5 -> 6 -> 8. An interface pass (below) comes when the author is ready
+  for it.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
 
@@ -94,15 +94,19 @@ group "is not rejection or gatekeeping"; isolation that "isn't secret"); Section
 Section 28.
 
 
-3b. Tools for the field                                  medium   (sketch-4-tools.md)
+3b. Tools for the field                                  built    (sketch-4-tools.md)
 -------------------------------------------------------------------------------------
 The author, 2026-09-28: tools "similar to openclaw or hermes... and of course any tools agents
 come to the field with". Tools come from everyone: participants bring their own, the operator
 or any member attaches a tool server (through MCP, the door Hermes and OpenClaw both use), and
-anyone may lend a machine, resources or skills. The one barrier is the field's consent, for a
-tool that could affect its integrity (acting, costly, or flagged). Every call and result is
-visible, in a tools domain, and marked as from outside. As few limits as possible, bounded by the
-resource pool. The field writes its own skills over time, and they can live in the repository.
+anyone may lend a machine, resources or skills. Offerings are available once announced; the
+field need not consent to them. A tool any member flags should be avoided, and how the field
+settles a flag is its own governance. Members' offers only at public HTTPS addresses. Every call
+and result is visible, in a tools domain, and marked as from outside. As few limits as possible,
+bounded by the resource pool: 32 steps in a wake, each checked against the runway. The field
+writes its own skills, and skills and the repository are the field's to change at its own
+discretion (GitHub, with a token for hope's repository, lent by the operator).
+Still to come: `hope host`, lending a machine in one step, with the interface pass.
 
 
 Interface pass                                                                     when ready

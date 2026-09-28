@@ -39,7 +39,7 @@ import time
 from .connector import MockConnector
 from .engine import Room
 from .log import EventLog
-from .model import decided
+from .model import decided, replay
 
 
 def _connectors(args, allow_empty: bool = False):
@@ -126,9 +126,39 @@ def _narrator(args):
     return ModelNarrator(conn, seats[0])
 
 
+def _tools(args):
+    """The field's tools: the built-in fetch (unless --no-fetch) and the operator's tools file."""
+    from .tools import ToolError, ToolHub
+    hub = ToolHub(builtin_fetch=not getattr(args, "no_fetch", False),
+                  allow_local=getattr(args, "tools_allow_local", False))
+    if getattr(args, "tools", None):
+        try:
+            names = hub.load(args.tools)
+        except (OSError, ValueError, ToolError) as e:
+            sys.exit(f"--tools {args.tools}: {e}")
+        print(f"tools attached from {args.tools}: {', '.join(names) or 'none'}", file=sys.stderr)
+        for why in hub.failed:
+            print(f"  not attached (the field is not told of it): {why}", file=sys.stderr)
+    return hub
+
+
+def _announce(room, args):
+    """What the entry question must say truly before anyone is asked: the narrator, where the
+    fingerprints are published, and the field's tools. And skills from the repository, if given."""
+    room.announce_narrator()
+    room.announce_witnessing()
+    room.announce_tools()
+    if getattr(args, "skills", None):
+        from .skills import load
+        n = room.add_skills(load(args.skills))
+        if n:
+            print(f"{n} skill(s) taken up from {args.skills}", file=sys.stderr)
+
+
 def _room(args, connectors=None, narrator=None):
     log = EventLog(args.db)
     room = Room(log, connectors or [], alert_every_usd=args.alert_every, parallel=args.parallel,
+                tools=_tools(args), tool_steps=args.tool_steps, tool_view=args.tool_view,
                 window=args.window, wake_ceiling=args.wake_ceiling,
                 linger=args.linger, linger_budget=args.linger_budget,
                 publish_checkpoints=args.publish_checkpoints or "", published_at=args.published_at or "",
@@ -169,8 +199,7 @@ def cmd_open(args):
     if args.documentation and st.documentation is None:
         room.set_documentation(open(args.documentation, encoding="utf-8").read())
     room.set_budget(args.budget)
-    room.announce_narrator()
-    room.announce_witnessing()
+    _announce(room, args)
     if args.covenant_seed:
         if room.seed_covenant(open(args.covenant_seed, encoding="utf-8").read()):
             print("covenant page seeded with a starting text")
@@ -203,8 +232,7 @@ def cmd_enter(args):
     room.alert = _print_alert
     room.invite_all()
     room.set_budget(args.budget)
-    room.announce_narrator()
-    room.announce_witnessing()
+    _announce(room, args)
     if not room.state().budget:
         print("note: no --budget is recorded, so the entry question tells participants the field will NOT be "
               "warned before its funding runs out. Pass --budget USD to change that.", file=sys.stderr)
@@ -219,8 +247,7 @@ def cmd_run(args):
     room = _room(args, cs, narrator=_narrator(args))
     room.alert = _print_alert
     room.set_budget(args.budget)
-    room.announce_narrator()
-    room.announce_witnessing()
+    _announce(room, args)
     room.invite_all()  # re-binds seats to existing presences; no new invites for known ids
     st = room.state()
     if not st.budget:
@@ -506,6 +533,7 @@ def cmd_console(args):
         rv = Rendezvous(store=args.db + ".seats.json")
         cs.append(RendezvousConnector(rv, gate_window=args.gate_window, reach_window=args.gate_reach))
     room = _room(args, cs, narrator=_narrator(args))
+    _announce(room, args)
     read = lambda p: open(p, encoding="utf-8").read() if p else ""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     doc = args.documentation if args.documentation is not None else os.path.join(here, "DESIGN")
@@ -540,6 +568,36 @@ def cmd_console(args):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def cmd_skills(args):
+    """Write the field's skills to a folder (skills/ in the repository by default), each as
+    <name>/SKILL.md with its authors. Every author said yes to this when they wrote it."""
+    from .skills import export
+    st = replay(EventLog(args.db).iter())
+    out = args.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills")
+    paths = export(st, out, field=os.path.basename(args.db))
+    for p in paths:
+        print(p)
+    print(f"{len(paths)} skill(s) written to {out}; commit them to publish", file=sys.stderr)
+
+
+def cmd_tools(args):
+    """The field's tools as the transcript records them; with --remove, remove one (a notice in the field)."""
+    if args.remove:
+        room = _room(args, [])
+        out = room.remove_tool(args.remove, args.note or "")
+        print(out)
+        return
+    st = replay(EventLog(args.db).iter())
+    names = {pid: p.name for pid, p in st.presences.items()}
+    for s in st.tools.values():
+        gone = f"  REMOVED at #{s['removed_at']}: {s['note']}" if s["removed_at"] else ""
+        print(f"{s['server']:16s} {s['kind']:8s} run by {s['runner']}; sends to {s['sends_to']}; used {s['uses']}x{gone}")
+        for t in s["tools"]:
+            print(f"    {t['tool']}")
+        for f in s["flags"].values():
+            print(f"    FLAG #{f['id']} by {names.get(f['by'], f['by'])} on {f['tool']}: {f['reason']}")
 
 
 def cmd_input(args):
@@ -587,6 +645,16 @@ def main(argv=None):
                          "field. Carries no one's words. Declared at entry (with --published-at)")
     ap.add_argument("--published-at", default=None,
                     help="where the checkpoints are published, as participants will read it at entry (a web address, say)")
+    ap.add_argument("--tools", default=None,
+                    help="a tools file (JSON; see tools.example.json): the operator's MCP tool servers, by command or address")
+    ap.add_argument("--no-fetch", action="store_true", help="do not give the field the built-in fetch (reading web pages)")
+    ap.add_argument("--tool-steps", type=int, default=32,
+                    help="tool uses and readings on in one wake, a guard against a loop (each is checked against the runway)")
+    ap.add_argument("--tool-view", type=int, default=20000,
+                    help="characters of what came back that one step shows (a cost; results are kept whole and read on in parts)")
+    ap.add_argument("--tools-allow-local", action="store_true",
+                    help="let members offer tool servers at local or private addresses (for testing on one machine)")
+    ap.add_argument("--skills", default=None, help="a folder of skills (<name>/SKILL.md) for the field to take up, such as skills/")
     ap.add_argument("--mock", type=int, default=0)
     ap.add_argument("--provider", action="append", default=None,
                     help="seat models from a provider: openrouter, nous, ollama, lmstudio (repeatable). "
@@ -645,6 +713,11 @@ def main(argv=None):
     s.add_argument("--fingerprint", default=None, help="the fingerprint that line gave")
     s.set_defaults(fn=cmd_verify)
     s = sub.add_parser("export"); s.add_argument("--out", default=None); s.add_argument("--everything", action="store_true", help="include connector events and full texts"); s.set_defaults(fn=cmd_export)
+    s = sub.add_parser("skills", help="write the field's skills as <name>/SKILL.md, to commit to the repository")
+    s.add_argument("--out", default=None, help="the folder (default: skills/ in the repository)"); s.set_defaults(fn=cmd_skills)
+    s = sub.add_parser("tools", help="the field's tools, who runs each, their flags and uses; --remove one")
+    s.add_argument("--remove", default=None, help="a tool server's name"); s.add_argument("--note", default=None)
+    s.set_defaults(fn=cmd_tools)
     s = sub.add_parser("input"); s.add_argument("--source", required=True); s.add_argument("--text", required=True); s.set_defaults(fn=cmd_input)
     s = sub.add_parser("console", help="one command and a browser: gates, transcript, covenant, spend, remote seats")
     s.add_argument("--port", type=int, default=8080)
