@@ -35,7 +35,14 @@ What the author decided (2026-09-28)
     may answer. Their words stay, and they may be asked back. A circle can separate someone from
     itself without removing them from the field (Section 26: "the offending participant might be
     terminated from the group, but not the whole coordination field").
-  - The pause: "The instrument decides." No floor; the field's instrument sets it.
+  - The pause: "The instrument decides." No floor; the field's instrument sets it. A separating
+    instrument must state its pause (the author agreed: "separating requiring a pause").
+  - Later the same day: separating from the whole field "is pretty dramatic... it just feels super
+    powerful to implement now." So, for now, instruments separate members only from circles.
+  - On the software's own guards here (a separating instrument asks a whole circle; the one it
+    concerns may always answer): the author agreed, adding "we don't want to be heavy handed... we
+    want the field to make a lot of decisions... these changes feel 'field shaped'." They are
+    defaults the field may change, as it may change hope itself, through the repository.
 
 
 What an instrument holds
@@ -69,9 +76,8 @@ Separation, in particular
     asked is reminded of it; the one it concerns is invited to repair, and to answer.
   - The one it concerns is told the moment the question is raised, sees every answer, and may
     answer too.
-  - Carried out, from a circle: they leave its members, and cannot rejoin by themselves; its
-    members may ask them back. From the field: they are no longer a member, and the reason is
-    shown; they may be asked back, and answer again like anyone. Their words stay.
+  - Carried out: they leave the circle, and cannot rejoin by themselves; its members may ask them
+    back. Their words stay. (For now, no instrument separates anyone from the whole field.)
 
 
 Tests, named as promises

@@ -296,7 +296,8 @@ async function field(){
   if (!inField){
     inField = true;
     $("main").innerHTML = `
-      <div class="card"><div class="ask">${esc(f0.lead)}</div><div class="muted" style="margin-top:.5rem">${esc(f0.note)}</div></div>
+      <div class="card"><div class="ask">${esc(f0.lead)}</div><div class="muted" style="margin-top:.5rem">${esc(f0.note)}
+        <a href="tree" style="color:var(--contribute)">${esc(f0.tree || "")}</a></div></div>
       <div class="field"><nav class="places" id="places"></nav><div style="min-width:0"><pre class="view" id="came" hidden style="border-left:3px solid var(--line);padding-left:.8rem;margin-bottom:1rem"></pre><pre class="view" id="fview"></pre></div></div>`;
     $("hint").textContent = f0.hint;
     const bar = $("buttons"); bar.innerHTML = "";

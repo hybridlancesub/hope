@@ -21,7 +21,7 @@ Python, AGPL for code and CC BY-SA for text.
 The order of work now
 ---------------------
   2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: built;
-  `hope host` later) -> 4 (built, sketch 5) -> 5 (built, sketch 6) -> 6 (built, sketch 7) -> 8 -> the interface pass, last.
+  `hope host` later) -> 4 (built, sketch 5) -> 5 (built, sketch 6) -> 6 (built, sketch 7) -> 8b (the spiral tree, built) -> 8a -> the interface pass, last.
   A trial with a few real models comes later, when the author can set a key.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
@@ -177,6 +177,10 @@ a channel, and, if the field wants one, separating (after PolicyKit and Loomio).
      fingerprints. This learns from Matrix and Scuttlebutt without adopting either.
   b. The spiral tree. A viewer members can see, showing the field's shape, channels included,
      with where it differs and its minority voices (Section 25; after Polis and Talk to the City).
+     Built (hope/spiral.py, tree.html): branches by domain, circles beside them, leaves; where the
+     field differs (objections under instruments), quieter voices, what is not yet answered. Only
+     what each member may read. A first version; the interface pass may grow it (three dimensions,
+     motion).
 
 
 At scale
@@ -250,7 +254,9 @@ Decided
       invitee chooses the pause.
     - Step 6 shaped (sketch 7): an instrument comes into force as declared, then by the field's
       own way; no deciding by count (the software gathers and holds, the operator carries out);
-      separation with pause and repair first; the pause is the instrument's own.
+      separation with pause and repair first; the pause is the instrument's own. Separation, for
+      now, only from circles. The software's guards are defaults the field may change.
+    - Step 8: the spiral tree first (8b).
 
 
 Waiting on conversations

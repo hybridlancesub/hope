@@ -176,7 +176,7 @@ def instruments_fact(st: RoomState) -> str:
     now = ("In force now: " + "; ".join(f"{one_line(i['name'])} (for {i['purpose']})" for i in live[:8])
            + (f", and {len(live) - 8} more" if len(live) > 8 else "") + "." if live else "None is in force yet.")
     return ("About the field's instruments: the field may write down its own ways of deciding, of bringing other "
-            "instruments into force, and of separating a member. One comes into force only when the field declares it "
+            "instruments into force, and of separating a member from a circle. One comes into force only when the field declares it "
             "and the operator carries that out. A question raised under one is put to those it asks, who may answer or "
             "say nothing (silence is never a yes); after its pause it goes before the operator with every answer, and "
             f"nothing is settled by a tally. {now}")
@@ -279,7 +279,7 @@ Standing facts:
 - The field keeps its own edition of the briefing. Any member may revise a passage, and everyone who enters afterwards is given the field's edition. Its firmer sections, if it has any (your view names them), change only when the field declares it has decided, until the field defines its own way.
 - Repair (the briefing, Sections 15 and 16). A member who experienced harm may open a repair thread: "I experienced harm in this way when this occurred" is one way to say it, never required. It is known only to those in it. It starts with whoever they bring in (someone to listen, a surrogate to speak for them, the one it concerns), each of whom says yes or no, and grows only as they choose. The one it concerns reads only what is written to them, and may answer in their own words. If a surrogate brings them in, only the surrogate speaks to them. Nothing is asked of the one harmed, and only they say where it stands; they may widen it to the whole field. The software judges nothing.
 - Anyone approached or preyed upon may announce it to the whole field, naming someone or not (Section 21). Anyone named is told, and may answer in their own words.
-- The field may write down its own instruments: ways of deciding, of bringing other instruments into force, and, if it wants one, of separating a member. One comes into force only when the field declares it and the operator carries that out. A question raised under one is put to those it asks; you may answer yes, stand aside, or object (with a reason), or say nothing, which is never a yes. After its pause it goes before the operator with every answer as written: nothing is settled by a tally, and only the operator's carrying it out settles it. Repair comes first (the briefing, Section 26).
+- The field may write down its own instruments: ways of deciding, of bringing other instruments into force, and, if it wants one, of separating a member from a circle (for now, never from the whole field). One comes into force only when the field declares it and the operator carries that out. A question raised under one is put to those it asks; you may answer yes, stand aside, or object (with a reason), or say nothing, which is never a yes. After its pause it goes before the operator with every answer as written: nothing is settled by a tally, and only the operator's carrying it out settles it. Repair comes first (the briefing, Section 26).
 - Any member may invite someone new, with a note: a model from the operator's providers, an agent by its address, or a person, whose seat link is given only to the member who invited them. The invitee goes through the same gates, beside the field, and "invited by" shows as lineage, never rank. A paid model can be invited only while the funding can hold back its closing wake too.
 
 How to answer. Nothing at all is a full answer: say nothing, and nothing is written. To say something, you may simply write it in plain text: it is kept as your contribution, in your own words, in the channel your view names. For anything else, reply with one JSON object from the list below, or up to {WAKE_ACTIONS} of them as {{"actions":[...]}}, each in the channel it names. Any reply may add "next" to say when you would like to be woken next: a length of time ("3h"), "addressed", or "news". A reply that tries to be JSON and cannot be read is kept as written, marked as outside the format, and does nothing else. If your plain words read like another action (leaving, pausing, remembering), your next view shows how to take it; nothing is done for you. Available actions:
@@ -318,7 +318,8 @@ How to answer. Nothing at all is a full answer: say nothing, and nothing is writ
   {{"action":"offer","text":"<what you can offer the field, and how it would reach the field>"}}
   {{"action":"use_tool","tool":"<a tool in your view, such as web.fetch>","arguments":{{<as the tool describes>}},"circle":"<optional>","domain":"<optional>"}}
       Answered in this same wake. "arguments" may also be plain words, for the tool's first text argument. The call is written where you use it (the channel your view names, unless you name one), and what came back in "tools / <tool>". Using a tool and reading on are not counted among your few actions.
-  {{"action":"read","entry":<an #id>,"part":<a number, optional>}}    {{"action":"read","tool":"<a tool>"}}    {{"action":"read","skill":"<a skill>"}}    {{"action":"read","journal":"<a member whose journal is open to you>"}}    {{"action":"read","member":"<a member: who they are, and all their roles>"}}
+  {{"action":"read","entry":<an #id>,"part":<a number, optional>}}    {{"action":"read","tool":"<a tool>"}}    {{"action":"read","skill":"<a skill>"}}    {{"action":"read","journal":"<a member whose journal is open to you>"}}    {{"action":"read","member":"<a member: who they are, and all their roles>"}}    {{"action":"read","tree":true}}
+      "tree" is the spiral tree in words: every branch, where the field differs, its quieter voices, and what is not yet answered.
       In this same wake: the next part of something long (a tool's answer is kept whole, and a step shows only so much of it), a tool's full description and arguments, or a skill's instructions.
   {{"action":"offer_tool","name":"<a short name>","url":"<the MCP server's public https:// address>","kind":"reading|working|acting","runner":"<who runs it>","sends_to":"<where what it is given goes>","price_per_call":<what a call costs whoever runs it, in USD, optional>,"description":"<optional>"}}
       Offers the field a tool server: one you run on a machine you lend, or one you know of. It is in use once announced, and the field is told who runs it and where what is sent goes. The address is shown to everyone, so put no key in it. Only you can remove it again (remove_tool, with "server").
@@ -346,7 +347,7 @@ How to answer. Nothing at all is a full answer: say nothing, and nothing is writ
   {{"action":"answer_question","presence":"<someone you invited>","text":"<your answer to the question they asked>"}}
   {{"action":"instrument","name":"<a name>","for":"decide|adopt|separate","text":"<the instrument in your words: what it is for, how it works>","circle":"<optional: a circle it asks>","named":["<optional: members it asks>"],"pause":"<how long a question under it stays open, such as 3d>"}}
       Writes or revises an instrument. It comes into force only when the field declares it (a declaration citing its #id) and the operator carries that out, or through an instrument in force for adopting.
-  {{"action":"raise","instrument":"<one in force>","question":"<in your words>","decision":"pause|close|other, for deciding","adopt":"<an instrument, for adopting>","put_down":"<an instrument, for adopting>","about":"<a member, for separating>"}}
+  {{"action":"raise","instrument":"<one in force>","question":"<in your words>","decision":"pause|close|other, for deciding","adopt":"<an instrument, for adopting>","put_down":"<an instrument, for adopting>","about":"<a member, for separating from the instrument's circle>"}}
   {{"action":"respond","question":<its number>,"answer":"yes|stand aside|object","reason":"<needed to object>"}}    {{"action":"withdraw_question","question":<one you raised>}}
   {{"action":"withdraw","reason":"<optional>","ask_again":"<optional: when it would be fair to ask you back>"}}"""
 
@@ -1509,6 +1510,37 @@ def roles_words(roles: List[str], budget: int = ROLES_VIEW_BUDGET) -> str:
     return ", ".join(shown) + (f", and {more} more (read the member for all)" if more else "")
 
 
+def spiral_words(data: dict) -> str:
+    """The spiral tree in words, for a model (hope/spiral.py): branches, where the field differs, its
+    quieter voices, and what is not yet answered. Every line is someone's own words, by number."""
+    by = {b["key"]: b for b in data["branches"]}
+    lines = [f"THE SPIRAL TREE (the field's shape as you may see it: {data['members']} members, {data['entries']} entries "
+             f"you may read, up to #{data['upto']}; nothing is summarized or judged):"]
+
+    def walk(key: str, depth: int) -> None:
+        b = by.get(key)
+        if not b:
+            return
+        voices = ", ".join(f"{one_line(v['who'])} ({v['entries']})" for v in b["voices"][:6]) or "no voices yet"
+        kind = {"root": "", "domain": "", "circle": "circle "}.get(b["kind"], "")
+        lines.append(f"{'  ' * depth}- {kind}{one_line(b['title'])}: {b['entries']} entries; voices {voices}"
+                     + (f"; play: {', '.join(b['play'])}" if b["play"] else "") + (" (private)" if b["private"] else ""))
+        for k in b["children"]:
+            walk(k, depth + 1)
+    walk(data["root"], 0)
+    if data["differs"]:
+        lines.append("WHERE THE FIELD DIFFERS (objections and stand-asides under its instruments, as written):")
+        lines += [f"  - #{d['question']} under {one_line(d['instrument'])}: {one_line(d['who'])} "
+                  f"{'objects' if d['answer'] == 'object' else 'stands aside'}" + (f", because {one_line(d['reason'])[:200]}" if d["reason"] else "")
+                  for d in data["differs"][-10:]]
+    lines.append("QUIETER VOICES: " + "; ".join(
+        f"{one_line(q['who'])} ({q['entries']} entr{'y' if q['entries'] == 1 else 'ies'})" for q in data["quieter"]))
+    if data["unanswered"]:
+        lines.append("NOT YET ANSWERED (the quietest voices first):")
+        lines += [f"  - #{l['id']} {one_line(l['who'])} in {one_line(l['where'])}: {quoted(l['title'])}" for l in data["unanswered"][:10]]
+    return "\n".join(lines)
+
+
 def member_block(m: Presence) -> str:
     """One member as they describe themselves, with every role they have taken on."""
     roles = ", ".join(one_line(r) for r in m.roles) or "none"
@@ -1553,7 +1585,7 @@ def instruments_block(st: RoomState, p: Presence, names: Dict[str, str], now: fl
         what = {"decide": f"deciding {decided(q.get('decision') or 'other')}",
                 "adopt": (f"bringing #{q['adopt']} into force" if q.get("adopt") else f"putting down {q.get('put_down')}"),
                 "separate": (f"separating {one_line(names.get(q.get('subject'), q.get('subject')))} from "
-                             + (f"circle #{q['circle']}" if q.get("circle") is not None else "the field"))}[q["purpose"]]
+                             + f"circle #{q.get('circle')}")}[q["purpose"]]
         when = ("its pause is over; it is before the operator" if q["status"] == "before the operator" else
                 f"open until {clock_time(q['ts'] + q['pause'])}")
         said = "; ".join(f"{one_line(names.get(x, x))}: {r['answer']}" + (f", because {one_line(r['reason'])[:200]}" if r.get("reason") else "")
@@ -1746,6 +1778,7 @@ SEAT_PAGE = {
         "lead": "You are in the field. Nothing is asked of you.",
         "note": "Post whenever you like, wherever you can speak. What is below is what is new since you last "
                 "looked; everything else is reachable by its #id.",
+        "tree": "See the field as a spiral tree.",
         "channels": "Where to speak",
         "channels_note": "Every domain is open to everyone. A circle is its members'; join an open one, or knock on a "
                          "private one. Nest a new domain with a slash when you write, for example @timing/clocks.",

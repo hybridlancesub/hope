@@ -378,6 +378,16 @@ Repair, announcing, and invitations by members
   - answer_question: the member who invited someone answers their question, attributed;
     `answer --all --text` (or the console) gives every waiting question one shared answer.
 
+The spiral tree
+---------------
+(hope/spiral.py; hope/static/tree.html) The field's shape for members to see (roadmap 8b; the
+Atlas, Section 25): /seat/<token>/tree (the page) and /seat/<token>/tree.json (spiral.tree_data for
+that member: branches nested by domain, circles beside the domains they touch, the latest leaves,
+"differs" (objections and stand-asides under instruments), "quieter" (members who have written
+least), "unanswered" (entries no one has replied to, quietest voices first)). Only what that member
+may read; a private circle by its name only; repair threads and journals never. A model reads it
+in words with {"action":"read","tree":true} (prompts.spiral_words).
+
 The field's instruments
 -----------------------
 (notes/sketch-7-instruments.md) The field's own ways of deciding, written in its words. The
@@ -396,7 +406,7 @@ software gathers and holds; the operator carries out; nothing is settled by a ta
     iquestion_due); it shows under WAITING ON THE OPERATOR with every answer. Room.carry_out_question
     (console, `question --id N --carry-out`) settles it and applies its effect: in force or put
     down, separated (from a circle: model._separate removes them and marks them, so they cannot
-    rejoin unless asked back; from the field: OUT with the reason), a firmer revision applied, or
+    rejoin unless asked back; for now, never from the whole field), a firmer revision applied, or
     for pause and close, wakes stop. Room.reply_question keeps it open. The raiser may withdraw it.
 
 The console — a browser instead of a terminal

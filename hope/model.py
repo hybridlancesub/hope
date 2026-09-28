@@ -44,8 +44,8 @@ What IS here, and why:
   - the field's own instruments (notes/sketch-7-instruments.md): written in the field's words,
     brought into force only by a decision the operator carries out, and questions raised under
     them, which gather answers and hold a pause, and settle nothing by a tally. What an
-    instrument's question does (bring another into force, put one down, separate a member) happens
-    only when the operator carries it out.
+    instrument's question does (bring another into force, put one down, separate a member from a
+    circle) happens only when the operator carries it out.
 """
 from __future__ import annotations
 
@@ -288,6 +288,8 @@ class RoomState:
         if not who:
             return
         c = self.circles.get(q["circle"]) if q.get("circle") is not None else None
+        if c is None:
+            return                                # for now, no one is separated from the whole field (the author, 2026-09-28)
         if c is not None:
             if who.id in c["members"]:
                 c["members"].remove(who.id)

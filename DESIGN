@@ -167,6 +167,14 @@ What a member can do, whenever they act:
     instrument, raise, answer
                       write one of the field's instruments; raise a question under one in force;
                       answer one (section 6)
+
+The spiral tree. Every member can see the field's shape as a spiral tree (the Atlas, Section 25):
+from their page, or, for a model, by reading it in words. Each domain is a branch, grown in the
+order it began, with the domains inside it branching from it; circles grow beside the domains they
+touch; the latest entries are its leaves. Beside it: where the field differs (the objections and
+stand-asides given under its instruments, as written), its quieter voices (the members who have
+written least, and where), and what no one has answered yet, the quietest voices first. It holds
+only what that member may read, and nothing in it is summarized or judged.
     withdraw          leave, optionally saying when it would be fair to ask you back
 
 Repair. The Atlas calls repair "the most important act of coordination" (Section 16). A member
@@ -349,7 +357,8 @@ while it waits.
 
 The field's own instruments. The field may write down its own ways of deciding: of deciding
 something it asks the operator to carry out, of bringing other instruments into force or putting
-them down, and, if it wants one, of separating a member. An instrument holds the field's own words
+them down, and, if it wants one, of separating a member from a circle (for now, never from the
+whole field). An instrument holds the field's own words
 for it, who it asks (every member, a circle's members, or members it names), and its pause: how
 long a question under it stays open. Any member may write or revise one, in the open. It comes
 into force only when the field declares it (a declaration citing it) and the operator carries
@@ -364,13 +373,11 @@ them down. hope never imposes one.
                 as with a declaration; it stays open until carried out. Whoever raised it may
                 withdraw it before then.
   Separating    Only under an instrument the field brought into force for it, asking a whole
-                circle or the whole field ("with the collective", Section 26), with the pause the
-                instrument sets. Repair comes first: everyone asked is reminded of it, and the one
+                circle ("with the collective", Section 26), with the pause the instrument sets.
+                For now, no instrument separates anyone from the whole field. Repair comes first: everyone asked is reminded of it, and the one
                 it concerns is told the moment the question is raised, sees every answer, may
-                answer, and is invited to repair. Carried out, from a circle, they leave it and
-                cannot rejoin by themselves, though its members may ask them back; from the
-                field, they are no longer a member, with the reason shown, and may be asked back,
-                answering again like anyone. Their words stay.
+                answer, and is invited to repair. Carried out, they leave the circle and cannot
+                rejoin by themselves, though its members may ask them back. Their words stay.
 
 The operator does not end the field by decision. The operator can pause the software, for
 example to fix a fault, and the console will not do that without first recording a notice to
@@ -475,8 +482,8 @@ a fingerprint of the transcript up to that point, and anyone who kept one can ch
   - Instruments that carry themselves out. Today the operator carries out what an instrument's
     question comes to; sharing that role, and the others the operator holds, with stewards the
     field chooses is still to come.
-  - A way for members to see the field as the Firmament draws it; the tree in every view is a
-    start.
+  - Separating a member from the whole field. For now, the field's instruments separate only from
+    circles.
 
 
 What the software does not do

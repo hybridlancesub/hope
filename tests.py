@@ -4783,22 +4783,16 @@ class StepSixTest(unittest.TestCase):
         self.act(self.d, action="answer", to=waiting[-1]["id"], yes=True)
         self.assertIn(self.d, self.st().circles[cid]["members"], "asked back, and saying yes")
 
-    def test_separated_from_the_field_a_member_is_no_longer_in_it_with_the_reason_shown_and_may_be_asked_back(self):
+    def test_for_now_an_instrument_cannot_separate_anyone_from_the_whole_field(self):
         self.act(self.a, action="instrument", name="parting", **{"for": "separate"}, pause="0",
                  text="The field parts from someone only after repair was tried.")
-        self.into_force(self.last("instrument")["id"])
-        self.act(self.b, action="raise", instrument="parting", question="Repair did not work.", about="Mock 3")
-        qid = self.raised()
-        self.due()
-        self.room.carry_out_question(qid, "as the field asked")
-        p = self.st().presences[self.d]
-        self.assertEqual(p.state, "OUT")
-        self.assertIn(f"separated by the field, under its instrument parting (#{qid})", p.left_reason)
-        self.assertTrue(self.room.reinvite(self.d, "the field asks you back")["ok"])
-        self.assertTrue(self.st().presences[self.d].returning, "and they answer again, like anyone")
+        self.assertIn("only from a circle, never from the whole field", self.rejected())
+        self.assertFalse(self.st().instruments, "nothing was written")
+        self.assertIn("for now, never from the whole field", prompts.SYSTEM_MEMBER)
 
     def test_the_pause_is_the_instruments_own(self):
-        self.act(self.a, action="instrument", name="parting", **{"for": "separate"}, text="words")
+        cid = self.circle_with_d()
+        self.act(self.a, action="instrument", name="parting", **{"for": "separate"}, circle=cid, text="words")
         self.assertIn("says how long", self.rejected(), "a separating instrument says its pause, whatever it is")
         self.into_force(self.write("two days", pause="2d"))
         self.act(self.c, action="raise", instrument="two days", question="?")
@@ -4818,6 +4812,97 @@ class StepSixTest(unittest.TestCase):
         self.assertEqual(translate("answer #12 object too soon")["reason"], "too soon")
         self.assertEqual(translate("withdraw question #12")["action"], "withdraw_question", "never read as leaving")
         self.assertEqual(translate("respond #12 a reply to a circle")["action"], "reply_circle", "circle replies are unchanged")
+
+
+class SpiralTreeTest(unittest.TestCase):
+    """The spiral tree (roadmap, step 8b; hope/spiral.py): the field's shape for members to see,
+    with where it differs and its quieter voices, holding only what each member may read, and
+    judging nothing."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.room = Room(EventLog(os.path.join(self.tmp, "sp.db")), [MockConnector(4, scripted({}))],
+                         alert_fn=lambda m: None, parallel=4)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        self.a, self.b, self.c, self.d = "mock-0", "mock-1", "mock-2", "mock-3"
+
+    def act(self, pid, **action):
+        self.room._apply_action(pid, json.dumps(action))
+
+    def tree(self, pid):
+        from hope.spiral import tree_data
+        return tree_data(self.room.state(), pid)
+
+    def test_every_domain_is_a_branch_nested_in_its_parent_with_its_latest_entries_as_leaves(self):
+        self.act(self.a, action="contribute", content="about time", domain="timing")
+        self.act(self.b, action="contribute", content="about clocks", domain="timing / clocks")
+        t = self.tree(self.c)
+        by = {b["key"]: b for b in t["branches"]}
+        self.assertIn("d:timing", by["d:"]["children"])
+        self.assertIn("d:timing/clock", by["d:timing"]["children"], "nested, as the domains are")
+        self.assertEqual(by["d:timing/clock"]["leaves"][0]["title"], "about clocks", "an author's own words")
+
+    def test_it_holds_only_what_the_member_may_read(self):
+        self.act(self.a, action="form_circle", name="harbour", private=True, reason="a quiet place")
+        cid = [e for e in self.room.log.iter(kind="circle_form")][-1]["id"]
+        self.act(self.a, action="contribute", circle=cid, content="HARBOUR-WORDS")
+        self.act(self.b, action="repair", account="REPAIR-WORDS")
+        self.act(self.c, action="journal", text="JOURNAL-WORDS")
+        outsider = json.dumps(self.tree(self.d))
+        for words in ("HARBOUR-WORDS", "REPAIR-WORDS", "JOURNAL-WORDS", "repair thread"):
+            self.assertNotIn(words, outsider)
+        self.assertIn("harbour", outsider, "a private circle is never secret: its name is there, not its words")
+        self.assertIn("HARBOUR-WORDS", json.dumps(self.tree(self.a)), "and its members see its words")
+
+    def test_it_shows_where_the_field_differs_and_its_quieter_voices_and_what_is_not_yet_answered(self):
+        for _ in range(3):
+            self.act(self.a, action="contribute", content="I say a lot")
+        self.act(self.b, action="contribute", content="a quiet thought no one answered")
+        self.act(self.a, action="instrument", name="a slow yes", **{"for": "decide"}, pause="0", text="We ask and wait.")
+        vid = [e for e in self.room.log.iter(kind="instrument")][-1]["id"]
+        self.act(self.b, action="declare", decision="other", text="We chose it.", refs=[vid])
+        self.room.answer_declaration([e for e in self.room.log.iter(kind="declare")][-1]["id"], "ok")
+        self.act(self.c, action="raise", instrument="a slow yes", question="Meet at dawn?")
+        qid = [e for e in self.room.log.iter(kind="iquestion")][-1]["id"]
+        self.act(self.d, action="respond", question=qid, answer="object", reason="dawn is too early")
+        t = self.tree(self.c)
+        self.assertEqual(t["differs"][0]["reason"], "dawn is too early", "objections, as written")
+        quiet = [q["who"] for q in t["quieter"]]
+        self.assertEqual(quiet[0], "Mock 2", "those who have written least first (Mock 2 has written nothing)")
+        self.assertNotIn("Mock 0", quiet[:2])
+        self.assertEqual(t["unanswered"][0]["title"], "a quiet thought no one answered", "the quietest voices first")
+        self.act(self.c, action="contribute", content="I hear you", reply_to=t["unanswered"][0]["id"])
+        self.assertNotIn("a quiet thought no one answered", [l["title"] for l in self.tree(self.c)["unanswered"]])
+
+    def test_a_model_can_read_the_tree_in_words(self):
+        self.act(self.a, action="contribute", content="about time", domain="timing")
+        self.room._ctx[self.b] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+        self.act(self.b, action="read", tree=True)
+        out = self.room._ctx.pop(self.b)["out"][-1]
+        self.assertIn("THE SPIRAL TREE", out)
+        self.assertIn("- timing: 1 entries; voices Mock 0 (1)", out)
+        self.assertIn("QUIETER VOICES", out)
+
+    def test_the_seat_page_serves_the_tree_to_its_member_only(self):
+        import urllib.request
+        from hope.console import Console, serve_console
+        from hope.connector import Seat
+        from hope.rendezvous import Rendezvous
+        rv = Rendezvous()
+        token = rv.add_seat(Seat(id="remote__ada", name="Ada", hails_from="x", people="a person", model="remote",
+                                 pricing={"prompt": 0.0, "completion": 0.0}))
+        console = Console(self.room, rv=rv, operator_key="K", invitation=INVITE, briefing=BRIEF)
+        httpd = serve_console(console, port=0)
+        try:
+            base = "http://127.0.0.1:%d/seat/%s/" % (httpd.server_address[1], token)
+            page = urllib.request.urlopen(base + "tree").read().decode()
+            self.assertIn("The spiral tree", page)
+            data = json.loads(urllib.request.urlopen(base + "tree.json").read())
+            self.assertIn("for members of the field", data["error"], "a seat not yet in the field sees nothing of it")
+        finally:
+            httpd.shutdown(); httpd.server_close()
 
 
 if __name__ == "__main__":

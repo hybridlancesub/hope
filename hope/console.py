@@ -394,6 +394,16 @@ class Console:
                     out["state"] = "in_field"
         return out
 
+    def seat_tree(self, token: str) -> Dict[str, Any]:
+        """The spiral tree as this seat's member may see it (hope/spiral.py): only what they may read."""
+        from .spiral import tree_data
+        seat = self.rv.seat_for_token(token)
+        st = self.room.state()
+        p = st.presences.get(seat.id) if seat else None
+        if p is None or p.state != "IN":
+            return {"error": "the spiral tree is for members of the field"}
+        return tree_data(st, p.id)
+
     def seat_field(self, token: str, since: int = 0, wait: float = 0.0) -> Dict[str, Any]:
         """A member's page: what is new for them, the channels they may speak in, and whether
         anything changed since `since`. With `wait` (up to 60 seconds), it waits for something new
@@ -580,6 +590,10 @@ def make_console_handler(console: Console):
                 if tail == "/words.json":
                     from .prompts import SEAT_PAGE
                     return self._json(SEAT_PAGE)
+                if tail in ("/tree", "/tree/"):
+                    return self._static("tree.html")
+                if tail == "/tree.json":
+                    return self._json(console.seat_tree(token))
                 if tail == "/witness.json":
                     # the transcript's fingerprint: a short code and a number, no one's words
                     w = console.room.log.witness()

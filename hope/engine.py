@@ -1785,10 +1785,13 @@ class Room:
                 if unknown or not who:
                     return f"no member named {', '.join(unknown) or 'anyone'}"
                 if purpose == "separate":
-                    return "an instrument for separating asks a whole circle, or the whole field: the Atlas asks that it happen 'with the collective'"
+                    return "an instrument for separating asks a whole circle: the Atlas asks that it happen 'with the collective'"
                 scope = {"kind": "named", "named": who}
             else:
                 scope = {"kind": "field"}
+            if purpose == "separate" and scope["kind"] != "circle":
+                return ("for now, an instrument separates a member only from a circle, never from the whole field; name the "
+                        "circle it asks, as \"circle\"")
             pause = act.get("pause")
             secs = _seconds(pause) if pause not in (None, "") else None
             if pause not in (None, "") and secs is None:
@@ -2142,6 +2145,11 @@ class Room:
                                        (self.tools.tools.get(name) or {}).get("schema"))
             self.emit(pid, "recall", {"query": name, "from": "tool", "chars": len(body), "found": True})
             self._out(pid, body)
+            return None
+        if act.get("tree") is True:
+            from .spiral import tree_data
+            self.emit(pid, "recall", {"query": "the spiral tree", "from": "tree", "chars": 0, "found": True})
+            self._out(pid, prompts.spiral_words(tree_data(st, pid)))
             return None
         if act.get("member") not in (None, ""):
             who, unknown = _presences_ref(st, act["member"])
