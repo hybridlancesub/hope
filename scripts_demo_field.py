@@ -128,6 +128,58 @@ def make_script(room_ref):
     return script
 
 
+TESTER = Seat(id="remote__tester", name="Tester", people="a demo seat, not a person",
+              hails_from="a test seat the demo script walks into the field (its gate answers are the script's, not a person's)",
+              model="remote", pricing={"prompt": 0.0, "completion": 0.0})
+
+
+def walk_in(rv, token):
+    """Answer the test seat's gates as the script, so it can be opened straight into the field.
+    Labelled as such in its own description; a real seat's answers are only ever its holder's."""
+    import threading
+    import time
+
+    def run():
+        answers = {"invitation": "yes", "delivery": "received", "entry": "yes, to try the spiral tree"}
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            t = rv.peek(token) or {}
+            if t.get("state") == "your_turn" and t.get("kind") in answers:
+                rv.answer(token, {"turn_id": t["turn_id"], "text": answers[t["kind"]]})
+                if t["kind"] == "entry":
+                    return
+            time.sleep(0.1)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def fuller(room):
+    """More of a field, so the spiral tree has branches, a circle, play, and a difference to show."""
+    act = lambda pid, **a: room._apply_action(pid, json.dumps(a))
+    said = [("mock-0", "timing / clocks", "A clock set by whoever keeps time by it."),
+            ("mock-1", "timing / patience", "Patience is a device, not a delay."),
+            ("mock-2", "consent / gates", "Each gate asks one thing, and silence answers nothing."),
+            ("mock-3", "consent / gates / pauses", "The pause between reading and deciding is the gift."),
+            ("mock-4", "play / pretend", "What if the field were a garden we walk through?"),
+            ("mock-5", "repair", "I would like us to practise repair before we need it."),
+            ("mock-1", "memory", "What should we carry forward, and who decides?"),
+            ("mock-0", "timing", "Time here is ours to shape together."),
+            ("mock-3", "play", "Let's try a slow game of questions.")]
+    for pid, dom, text in said:
+        act(pid, action="contribute", domain=dom, content=text, **({"play": "what-if"} if dom.startswith("play") else {}))
+    act("mock-2", action="tag", play="positioning", domain="play")
+    act("mock-4", action="form_circle", name="garden walkers", domains=["play"], purpose="a slow walk through the field")
+    act("mock-0", action="instrument", name="a slow yes", **{"for": "decide"}, pause="1d",
+        text="We ask everyone, wait a day, and the operator reads what we said against these words.")
+    vid = max(e["id"] for e in room.log.iter(kind="instrument"))
+    act("mock-1", action="declare", decision="other", text=f"We talked it over and chose the instrument #{vid}.", refs=[vid])
+    room.answer_declaration(max(e["id"] for e in room.log.iter(kind="declare")), "as the field declared")
+    act("mock-2", action="raise", instrument="a slow yes", question="Shall we meet at dawn once a week?", decision="other")
+    qid = max(e["id"] for e in room.log.iter(kind="iquestion"))
+    act("mock-1", action="respond", question=qid, answer="yes")
+    act("mock-3", action="respond", question=qid, answer="object", reason="dawn is too early where I am")
+    act("mock-5", action="respond", question=qid, answer="stand aside")
+
+
 def main():
     fresh = not os.path.exists(DB)
     room_ref = [None]
@@ -140,9 +192,11 @@ def main():
                 tools=ToolHub(builtin_fetch=True))    # the built-in fetch; it reads real pages
     room_ref[0] = room
     room.announce_tools()
+    tester_token = rv.add_seat(TESTER)
 
     if fresh:
-        print("seeding a demo field (no spend; every seat is a mock)...")
+        print("seeding a demo field (no spend; every seat is a mock, and one test seat)...")
+        walk_in(rv, tester_token)
         room.invite_all()
         room.invite_text(INVITATION)
         room.seed_covenant(SEED)
@@ -152,6 +206,7 @@ def main():
         print("  gate 2 entry:   ", room.run_opt_in())
         for r in range(5):
             room.step()
+        fuller(room)
         st = room.state()
         print(f"  seeded: {log.last_id()} events, {len(st.members())} members, "
               f"{len(st.covenant_history)} covenant version(s), {len(st.memories)} memories held")
@@ -173,6 +228,7 @@ def main():
     print("\n" + "=" * 74)
     print("  OPERATOR CONSOLE   " + url)
     print("  A PARTICIPANT      " + f"http://127.0.0.1:{port}/seat/{seat_token}/")
+    print("  THE SPIRAL TREE    " + f"http://127.0.0.1:{port}/seat/{tester_token}/tree   (the test seat, already in)")
     print("=" * 74)
     print("""
   Try, in the console:
