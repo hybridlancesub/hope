@@ -201,7 +201,8 @@ Decided (2026-09-28)
   - Offerings are available once announced; the field need not consent to them.
   - Member-offered tool servers only at public HTTPS addresses.
   - A flagged tool should be avoided; the software defines no way to overrule a flag, which is the
-    field's own governance.
+    field's own governance. The author confirmed: "should be avoided" means possible, but only on
+    purpose (despite_flag, written in the call).
   - The runaway guard: 32 steps in one wake, which the operator can raise; each step checked
     against the runway.
   - Every call and result is visible, in a tools domain; a private circle's stay in the circle.

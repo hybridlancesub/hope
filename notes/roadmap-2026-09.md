@@ -223,12 +223,18 @@ Decided
     - Channels are domains and circles. Domain channels are never private; circle channels may
       be. No limits on channels. No one is conscripted, models included. Channels replace
       rounds outright, tried by us before going live (3).
+  2026-09-28
+    - Tools from everyone, live once announced, with no consent step (3b). Members' offers only at
+      public HTTPS addresses. A flagged tool should be avoided: possible, but only on purpose.
+    - Skills, and the repository itself, are the field's to write and change at its own discretion.
 
 
 Waiting on conversations
 ------------------------
   - How an instrument comes into force (the sketch for step 6).
-  - How the field changes hope's own code: its proposals to the repository, and who reviews and
-    merges them (with 8a). Inside a running field, nothing a participant writes runs as code.
+  - How the field's changes to hope's own code reach a running field. The field may change the
+    repository at its own discretion (2026-09-28, through GitHub lent by the operator); who
+    deploys, and when, is still the operator's alone (with 8a). Inside a running field, nothing a
+    participant writes runs as code.
 
 SPDX-License-Identifier: CC-BY-SA-4.0
