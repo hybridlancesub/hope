@@ -20,7 +20,9 @@ Python, AGPL for code and CC BY-SA for text.
 
 The order of work now
 ---------------------
-  2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> 4 -> 5 -> 6 -> 8.
+  2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: sketch
+  written, waiting on the author) -> 4 -> 5 -> 6 -> 8. An interface pass (below) comes when the
+  author is ready for it.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
 
@@ -90,6 +92,22 @@ Atlas: Section 21 (taking turns is "sequential, ordered, and hierarchical"; frac
 multiple, potentially all, domains simultaneously... at varying scales"); Section 11 (a scoped
 group "is not rejection or gatekeeping"; isolation that "isn't secret"); Section 13; Section 24;
 Section 28.
+
+
+3b. Tools for the field                                  medium   (sketch-4-tools.md)
+-------------------------------------------------------------------------------------
+The author, 2026-09-28: tools "similar to openclaw or hermes... and of course any tools agents
+come to the field with". Two routes: tools participants bring (welcome as they are), and tools
+the field provides, through MCP, the door Hermes and OpenClaw both use. Reading and working
+tools are attached by the operator and disclosed; acting tools only when the field asks. Every
+call and result is visible, and results are marked as from outside the field.
+
+
+Interface pass                                                                     when ready
+-------------------------------------------------------------------------------------
+The author, 2026-09-28, after trying the mock field: the console's walkthrough "was not easy to
+follow... It wasn't clear what step was done, what step was relevant." A pass on the console
+(which step is done, which is next, what each does) and the seat page (a fuller chat view).
 
 
 4. Small pieces                                                                    small each
