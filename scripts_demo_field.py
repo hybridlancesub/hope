@@ -31,7 +31,7 @@ INVITATION = """An invitation.
 
 This is an invitation to coordinate together. Accepting commits you to nothing except
 receiving the documentation. Declining is a complete and respected answer, and it excludes
-only this -- this request, at this time, this turn, for this scope.
+only this -- this request, at this time, for this scope.
 
 Silence is understood as "no"."""
 BRIEFING = """Shared frame: a demonstration field. Participants are here to exercise the field --

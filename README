@@ -326,8 +326,8 @@ surfaces and must stay that way.
     accept the invitation?" could be applied to "do you enter?".
 
     An unanswered window is not a refusal. The invitation says silence is understood as "no",
-    and it also says a decline "excludes only this -- this request, at this time, this turn,
-    for this scope" and "forecloses nothing" (the invitation's own words). Both are true where they were written: a model
+    and it also says a decline "excludes only this -- this request, at this time, for this
+    scope" and "forecloses nothing" (the invitation's own words). Both are true where they were written: a model
     answering in one inference call has chosen when it returns nothing, but a person who has
     not opened their link has chosen nothing and has not been reached. So a gate that closes
     unanswered records NOTHING about their will. The presence stays INVITED, the event is an

@@ -297,7 +297,7 @@ class RendezvousConnector:
     An unanswered window is NOT a refusal, and this is the whole of the reasoning.
 
     The invitation says "Silence is understood as 'no'", and it also says that declining
-    "excludes only this — this request, at this time, this turn, for this scope", that it
+    "excludes only this — this request, at this time, for this scope", that it
     "imposes nothing, forecloses nothing", and that there will be other opportunities. Those
     two sentences are not in tension where they were written: a model answering in a single
     inference call has genuinely chosen when it returns nothing. A person who has not opened
