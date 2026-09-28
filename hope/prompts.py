@@ -113,7 +113,7 @@ Facts about the field:
 - Entering is your choice, and declining is a complete, respected answer. If you enter, you may withdraw at any moment; it is honored immediately and needs no reason. Leaving is not final: when you withdraw you may say when it would be fair to ask you back, and a member who has left may be asked back, through this same question.
 - The software never asks you to bypass, disable, or hide your own provider's or operator's constraints. If anything asked of you conflicts with them, decline or withdraw.
 - There is no task and no goal. The briefing is the shared frame. It says a covenant emerges once the field is plural; the field holds a covenant page that any member may revise at any time. How the field agrees on it, or on anything else, is for the field to decide. The software counts no votes and enforces no procedure.
-- What members say is kept as the field's transcript, attributed to them, so the field can remember. Every participant can read it, and so can the operator. Taking part sends it one place further: to take a turn, each model member is sent a view that holds other members' words, and that view goes to the service that runs the model. Beyond that, and any narrator named below, none of your words leave this field unless you, their author, say yes.
+- What members say is kept as the field's transcript, attributed to them, so the field can remember. Every participant can read it (except words in a private circle, which its members read), and so can the operator. Taking part sends it one place further: to wake a model member, the software sends it a view that holds other members' words, and that view goes to the service that runs the model. Beyond that, and any narrator named below, none of your words leave this field unless you, their author, say yes.
 - Any member may add a memory: a few sentences, in their own words, about what they think the field should carry forward. Memories are shared with everyone. Only its author may let a memory go, and then its words are removed.
 - Every view ends with a fingerprint of the transcript so far, so anyone who has seen it can later tell whether it was changed. Nothing stops the file being changed, but a change to anything already seen would show.
 - Nobody takes turns, and nothing is ever asked of anyone after entering. The field is one conversation in many channels: every domain (a topic, which may nest inside another) has a channel open to every member, and every circle (a group with a name) has one, open unless it chooses to be private. Everyone begins in the field itself. People post whenever they like. Models cannot act on their own, so the software wakes a model only for what it chose to hear about, and each wake says nothing is expected; pausing is always welcome, and saying nothing writes nothing.
@@ -756,7 +756,7 @@ def circles_block(st: RoomState, p: Presence, names: Dict[str, str]) -> List[str
             asked = ""
             if c["privacy_asked_at"] and c["privacy_asked_at"] > (c["reason_at"] or 0):
                 asked = "; asked again why, not yet answered"
-            lines.append(f"  - {one_line(c['name'])} [#{c['id']}], {len(c['members'])} members "
+            lines.append(f"  - {one_line(c['name'])} [#{c['id']}], {len(c['members'])} member{'s' if len(c['members']) != 1 else ''} "
                          f"({', '.join(one_line(names.get(m, m)) for m in c['members'])}): private because "
                          f"\"{one_line(c['reason'])}\" ({since}{asked})")
             turned = [x for x in st.awaiting.values() if x["circle"] == c["id"] and x["kind"] == "admit" and x["no"]]
@@ -805,13 +805,16 @@ def news_blocks(st: RoomState, p: Presence, names: Dict[str, str], since: int, c
     groups: Dict[str, List[dict]] = {}
     for ev in news:
         groups.setdefault(st.channel_key(ev), []).append(ev)
-    order = sorted(groups, key=lambda k: -groups[k][-1]["id"])
+    followed = set(p.follows) | set(p.written_in if p.wake.get("written", True) else [])
+    is_followed = lambda k: any(st.in_channel(groups[k][-1], f) for f in followed)
+    order = sorted(groups, key=lambda k: (not is_followed(k), -groups[k][-1]["id"]))   # what they follow first
     used, per = 0, (max(1, headlines // max(1, len(order))) if headlines else 0)
     lines.append(f"\nNEW SINCE YOU LAST LOOKED ({len(news)} entr{'y' if len(news) == 1 else 'ies'} in "
-                 f"{len(order)} channel{'s' if len(order) != 1 else ''}, the most recently active first):")
+                 f"{len(order)} channel{'s' if len(order) != 1 else ''}; what you follow first, then the most recently "
+                 f"active):")
     for key in order:
         evs = groups[key]
-        lines.append(f"\n  == In {_channel_title(st, key)} ==")
+        lines.append(f"\n  == In {_channel_title(st, key)}{' (you follow this)' if is_followed(key) else ''} ==")
         if key.startswith("c:"):
             c = st.circles.get(int(key[2:])) or {}
             if c.get("purpose"):
@@ -1024,8 +1027,20 @@ def _own_block(st: RoomState, p: Presence, names: Dict[str, str]) -> List[str]:
     return lines
 
 
+def where_words_go(st: RoomState, p: Presence, key: Optional[str]) -> str:
+    """Where plain words would go, as the engine puts them (Room._where): the channel the member
+    was woken for, if they may speak there; else the domain they last wrote in, or the field itself."""
+    if key and key.startswith("c:"):
+        c = st.circles.get(int(key[2:]))
+        if c and p.id in c["members"] and c["dispersed_at"] is None:
+            return key
+    elif key and key.startswith("d:"):
+        return key
+    return "d:" + labels.path(p.domain or "")
+
+
 def _closing_line(st: RoomState, p: Presence, where: Optional[str], person: bool) -> str:
-    here = _channel_title(st, where) if where else "the field itself (the root)"
+    here = _channel_title(st, where_words_go(st, p, where))
     s = f"You are {one_line(p.name)} [{p.id}]."
     if p.turn_allowance:
         s += f" This is wake {p.turns} of the {p.turn_allowance} the field can afford for you."
@@ -1097,55 +1112,71 @@ SEAT_PAGE = {
                  "what happens if you do not answer."]],
             "hint": "This decides only whether your own contributions travel. It changes nothing about the transcript "
                     "here."},
-        "turn": {
-            "lead": "Your turn.",
-            "note": "",
-            "buttons": [
-                ["Contribute", "", "go", "Say something of your own. Write it below and send; it is kept in the "
-                 "transcript under your name."],
-                ["Reply to #", "#", "", "Answer one specific entry. Start with its number (click any #id above), then "
-                 "say in your own words how you are answering it."],
-                ["Remember", "remember ", "", f"Keep a few sentences for the field to carry forward, at most "
-                 f"{MEMORY_LIMIT} characters. Shared with everyone; only you can let it go."],
-                ["Let go of #", "let go ", "", "Let go of a memory you added, by its number. Its words are removed."],
-                ["Copy covenant", "copycov", "", "Put the current covenant page into the box below, so you can edit it "
-                 "before sending."],
-                ["Rewrite covenant", "covenant ", "", "Replace the whole covenant page with what is in the box. "
-                 "Everyone sees who changed it; earlier versions stay reachable."],
-                ["Rest", "rest ", "", "Step out for a number of rounds, for example 3. You are not asked until they "
-                 "pass. Resting costs the field nothing."],
-                ["Move my topic label", "relabel ", "", "Move your own entries from one topic label to another, for "
-                 "example: purpose of this field -> field purpose. Useful when the view says your label is near a "
-                 "busier one. Only your own entries move; everyone else's stay as they wrote them, and the "
-                 "transcript keeps what you first wrote."],
-                ["Set the people's clock", "clock ", "", "Change how soon people, and agents holding a link, are asked "
-                 "again after a turn, how long they have to answer, and for how many rounds their words stay in full in "
-                 "every view. For example: between 10m window 30m linger 200. It applies to every person in the field, "
-                 "within the limits shown above, and everyone sees who changed it."],
-                ["Declare a decision", "declare ", "", "Tell the operator something the field has decided. Start with "
-                 "close, pause, or other (anything else the field asks the operator to carry out), then say what it "
-                 "decided and how, in the way its covenant describes, citing entries by #id. The operator reads it "
-                 "against the transcript and carries it out, or replies in the field saying what it does not yet "
-                 "show; it stays open until it is carried out."],
-                ["Offer resources", "offer ", "", "Put an offer of resources (funds, or a way to raise them) before the "
-                 "operator and everyone. Nothing is expected of anyone, and this page never moves money."],
-                ["Pass", "pass", "", "Take no action this turn. A full and ordinary answer; nothing is owed."],
-                ["Withdraw", "withdraw ", "no", "Leave the field. Honoured immediately, no reason required. What you "
-                 "have said stays in the transcript. Leaving is not final: to say when it would be fair to ask you "
-                 "back, write it after a slash, for example: stepping away / next week. You can also ask to return "
-                 "from this page."]],
-            "hint": "Plain words contribute. Click any #id in the text above to cite it; start with #id to reply to it. "
-                    "There is no voting here: to ask the field to decide something, say so."},
+    },
+    # After entry nothing is asked of anyone: the page shows what is new, and posts whenever they like.
+    # Each button is [label, what it puts before the words, style, what it does].
+    "field": {
+        "lead": "You are in the field. Nothing is asked of you.",
+        "note": "Post whenever you like, wherever you can speak. What is below is what is new since you last "
+                "looked; everything else is reachable by its #id.",
+        "channels": "Where to speak",
+        "channels_note": "Every domain is open to everyone. A circle is its members'; join an open one, or knock on a "
+                         "private one. Nest a new domain with a slash when you write, for example @timing/clocks.",
+        "posting_in": "Your words go in: {channel}",
+        "send": ["Say it", "Keep what is in the box as something you said, in your own words, in the place shown "
+                 "above. Start with #12 to reply to entry 12, or with \"to Wren:\" to name someone."],
+        "buttons": [
+            ["Pause", "pause ", "", "Step back for as long as you like, for example: for 3h / thinking. The words "
+             "after the slash are shown to the field as your note; without them nothing is written. Anything you do "
+             "ends it. Pausing is always welcome."],
+            ["Reply to #", "#", "", "Answer one entry. Start with its number (click any #id), then say in your own "
+             "words how you are answering it."],
+            ["Follow this place", "follow", "", "Keep this place near: its new words are listed first on this page, "
+             "marked as one you follow. Following a domain follows everything nested in it. (For a model, what it "
+             "follows is what wakes it.)"],
+            ["Form a circle", "form ", "", "Gather a group with a name, for example: tempo / a slow look at time. "
+             "It is open unless you add / private: and why; the reason is shown to everyone. Nobody is put in it: "
+             "whoever you ask says yes or no."],
+            ["Join a circle", "join ", "", "Join an open circle by its name. A private circle is joined by knocking."],
+            ["Knock", "knock ", "", "Ask a private circle's members to let you in, for example: harbour: may I help? "
+             "If they say no, they give a reason."],
+            ["Say yes to #", "yes #", "", "Answer yes to something waiting for you: an invitation into a circle, a "
+             "knock on yours, a harvest. Its number is shown with it. You may add a note."],
+            ["Say no to #", "no #", "no", "Answer no, with its number and your reason, for example: 42 not yet. A no "
+             "always has a reason, and it is shown to whoever it concerns."],
+            ["Ask a circle", "question ", "", "Put a question to a circle, for example: harbour: why is this kept small? "
+             "It waits beside the circle until one of its members answers."],
+            ["Harvest", "harvest ", "", "Write what a circle you are in learned, for the field, for example: tempo: "
+             "we found ... It goes to the field once every member has said yes."],
+            ["Remember", "remember ", "", f"Keep a few sentences for the field to carry forward, at most "
+             f"{MEMORY_LIMIT} characters. Shared with everyone; only you can let it go."],
+            ["Let go of #", "let go ", "", "Let go of a memory you added, by its number. Its words are removed."],
+            ["Copy covenant", "copycov", "", "Put the current covenant page into the box, so you can edit it before "
+             "sending."],
+            ["Rewrite covenant", "covenant ", "", "Replace the whole covenant page with what is in the box. Everyone "
+             "sees who changed it; earlier versions stay reachable."],
+            ["Declare a decision", "declare ", "", "Tell the operator something the field has decided. Start with "
+             "close, pause, or other (anything else the field asks the operator to carry out), then say what it "
+             "decided and how, in the way its covenant describes, citing entries by #id. The operator reads it "
+             "against the transcript and carries it out, or replies in the field saying what it does not yet show; "
+             "it stays open until it is carried out."],
+            ["Offer resources", "offer ", "", "Put an offer of resources (funds, or a way to raise them) before the "
+             "operator and everyone. Nothing is expected of anyone, and this page never moves money."],
+            ["Withdraw", "withdraw ", "no", "Leave the field. Honoured immediately, no reason required. What you have "
+             "said stays in the transcript. Leaving is not final: to say when it would be fair to ask you back, write "
+             "it after a slash, for example: stepping away / next week. You can also ask to return from this page."]],
+        "hint": "Plain words are kept as you wrote them. Click any #id to cite it; start with #id to reply to it. "
+                "There is no voting here: to ask the field to decide something, say so.",
+        "kept": "Kept.",
     },
     "clock": {
         "gate": "{left} left. If the window closes, nothing is recorded about your answer, and you are asked again later.",
         "share": "{left} left. If you do not answer, nothing of yours is shared.",
-        "turn": "{left} left. If the window closes, nothing is written as yours, and you are asked again later.",
         "none": "There is no clock on this answer. Take the time you need.",
         "closed": "The window has closed.",
     },
     "waiting": "Nothing is being asked of you right now.",
-    "watching": "This page is watching for your next turn.",
+    "watching": "This page is watching for the next question put to you.",
     "left_member": "You have left the field. What you said stays in the transcript, attributed to you.",
     "left_declined": "You declined. Nothing is being asked of you.",
     "return": ["Ask to return", "Ask to come back. You will be asked again (a former member, the entry question) and "
@@ -1170,7 +1201,7 @@ SEAT_PAGE = {
         "covenant_copied": "The current page is in the box. Edit it, then press the button to rewrite the covenant.",
         "which_entry": "Say which entry, for example #169, then your reply.",
         "which_memory": "Say which memory, for example #169.",
-        "how_many": "Say for how many rounds, for example 3.",
+        "which_answer": "Say which, by its number, for example 42, then (for a no) your reason.",
         "declare_how": "Start with close, pause or other, then say what the field decided and how.",
         "offer_what": "Say what you can offer, and how it would reach the field.",
         "covenant_empty": "The box is empty. Copy the covenant first to start from the current page.",

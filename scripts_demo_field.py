@@ -3,13 +3,13 @@
 
     python3 scripts_demo_field.py
 
-Costs nothing: every seat is a mock. It walks the gates, then plays a few rounds in which the
-mock members do the things the field now offers -- write on the covenant page and rewrite each
-other's words there, reply to one another, keep and let go of memories, rest -- so there is
-something real on the console's Covenant page when you open it.
+Costs nothing: every seat is a mock. It walks the gates, then wakes the mock members a few
+times, and they do the things the field offers -- write on the covenant page and rewrite each
+other's words there, reply to one another, keep and let go of memories, pause, form a circle --
+so there is something real on the console's pages when you open it.
 
 It also mints one remote seat and prints its link, so you can open that in a second window
-and take a turn as a participant while the field is running.
+and post as a participant while the field is running.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ only this -- this request, at this time, this turn, for this scope.
 
 Silence is understood as "no"."""
 BRIEFING = """Shared frame: a demonstration field. Participants are here to exercise the field --
-contributing, replying to one another, writing a covenant together, keeping memories, resting --
+contributing, replying to one another, writing a covenant together, keeping memories, pausing --
 so that a person can see what the field looks like while it runs.
 
 A covenant is a voluntary promise between participants, created and re-created together.
@@ -43,7 +43,7 @@ SEED = "Consent is the one piece the Atlas says every covenant shares (Section 3
 
 
 def make_script(room_ref):
-    """What each mock seat does on its turn. Seats read the field's own state, so the covenant
+    """What each mock seat does when it is woken. Seats read the field's own state, so the covenant
     text they edit and the memories they let go of are whatever is actually there."""
     turns = {}
 
@@ -66,12 +66,13 @@ def make_script(room_ref):
 
         if i == 0 and n == 1:
             return json.dumps({"action": "covenant", "note": "a first draft, to be rewritten",
-                               "text": st.covenant + "\n\nWe take turns, and a pass is a full turn.\n"
+                               "text": st.covenant + "\n\nWe answer when we have something to add.\n"
                                        "Anyone may leave at any time, and may come back."})
         if i == 1 and n == 2:
-            return json.dumps({"action": "covenant", "note": "turns are not the only way to be present",
-                               "text": st.covenant.replace("We take turns, and a pass is a full turn.",
-                                                           "We take turns; a pass, or a rest, is a full answer.")})
+            return json.dumps({"action": "covenant", "note": "silence is a way to be present too",
+                               "text": st.covenant.replace("We answer when we have something to add.",
+                                                           "We answer when we have something to add; saying "
+                                                           "nothing, or pausing, is a full answer.")})
         if i == 2 and n == 1:
             return json.dumps({"action": "remember", "refs": [last] if last else [],
                                "text": "The first thing written on the covenant page was consent. "
@@ -79,11 +80,16 @@ def make_script(room_ref):
         if i == 2 and n == 3 and mine:
             return json.dumps({"action": "let_go", "memory": mine[0]["id"]})
         if i == 3 and n == 1:
-            return json.dumps({"action": "rest", "rounds": 2, "reason": "listening for a while"})
+            return json.dumps({"action": "pause", "until": "addressed", "note": "listening for a while"})
+        if i == 4 and n == 1:
+            return json.dumps({"action": "form_circle", "name": "orientation walk", "domains": ["orientation"],
+                               "purpose": "a slow look at who is here"})
+        if i == 5 and n == 1:
+            return json.dumps({"action": "join_circle", "circle": "orientation walk"})
         if last and n % 2 == 0:
             return json.dumps({"action": "contribute", "reply_to": last, "domain": "covenant",
                                "content": "Replying to this: I would keep the page short enough that "
-                                          "everyone reads it every turn."})
+                                          "everyone reads it every time they look."})
         return json.dumps({"action": "contribute", "domain": "orientation", "title": "who is here",
                            "content": f"{seat.name} notes who is present and what is on the covenant page."})
     return script
@@ -97,7 +103,7 @@ def main():
     log = EventLog(DB)
     room = Room(log, [conn, RendezvousConnector(rv, turn_timeout=300.0, gate_window=3600.0,
                                                 reach_window=20.0)],
-                alert_fn=lambda m: print("  ***", m), parallel=6)
+                alert_fn=lambda m: print("  ***", m), parallel=6, floor=0)
     room_ref[0] = room
 
     if fresh:
@@ -110,17 +116,19 @@ def main():
         print("  gate 2 delivery:", room.run_delivery())
         print("  gate 2 entry:   ", room.run_opt_in())
         for r in range(5):
-            room.round()
+            room.step()
         st = room.state()
         print(f"  seeded: {log.last_id()} events, {len(st.members())} members, "
               f"{len(st.covenant_history)} covenant version(s), {len(st.memories)} memories held")
     else:
         print(f"using the existing {DB} (delete it to start over)")
         room.invite_all()
+    from hope.model import FLOOR
+    room.floor = FLOOR               # seeded quickly; run with the floor every field holds
 
     key = os.environ.get("ROOM_OPERATOR_KEY") or secrets.token_urlsafe(24)
     console = Console(room, rv=rv, operator_key=key, invitation=INVITATION, briefing=BRIEFING,
-                      budget=5.0, seats_per_round=6)
+                      budget=5.0)
     httpd = serve_console(console, port=int(os.environ.get("DEMO_PORT", "8088")))
     port = httpd.server_address[1]
     seat_token = rv.add_seat(Seat(id="remote__you", name="You", hails_from="this machine",
@@ -134,10 +142,10 @@ def main():
     print("""
   Try, in the console:
     - the Covenant page: every version of the page, who wrote it, and the memories
-    - "Run rounds" with 3, and watch the record pane fill while it goes
+    - "Run the field", and watch the record pane fill as models are woken
     - open the participant link in another window; run Open, and it is asked the
       invitation. Answer it, or leave it -- leaving it records nothing and the seat
-      stays invited
+      stays invited. Once it has entered, post from it whenever you like
     - try to stop without writing a notice
 
   Ctrl-C ends the process. That decides nothing and records nothing.

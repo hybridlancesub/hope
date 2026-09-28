@@ -364,10 +364,15 @@ class Console:
         if p is None or p.state != "IN":
             return {"state": "not_in_field"}
         newest = max((e["id"] for e in st.recent if st.readable(e, p.id)), default=0)
-        channels = [{"key": "d:", "title": "the field itself"}]
-        channels += [{"key": f"d:{pth}", "title": st.domain_display(pth)} for pth in sorted(st.tree()) if pth]
-        channels += [{"key": f"c:{c['id']}", "title": f"circle: {c['name']}" + (" (private)" if c["private"] else "")}
-                     for c in st.live_circles() if p.id in c["members"]]
+        tree = st.tree()
+        channels = [{"key": "d:", "title": "the field itself", "kind": "root", "name": "", "depth": 0}]
+        channels += [{"key": f"d:{pth}", "title": st.domain_display(pth), "kind": "domain", "depth": pth.count("/") + 1,
+                      "name": st.domain_display(pth), "entries": tree[pth]["branch"], "follow": f"d:{pth}" in p.follows}
+                     for pth in sorted(tree, key=lambda q: st.domain_display(q).lower()) if pth]
+        channels += [{"key": f"c:{c['id']}", "title": f"circle: {c['name']}" + (" (private)" if c["private"] else ""),
+                      "kind": "circle", "name": c["name"], "depth": 0, "private": c["private"],
+                      "member": p.id in c["members"], "follow": f"c:{c['id']}" in p.follows}
+                     for c in st.live_circles() if p.id in c["members"] or not c["private"]]
         out = {"state": "in_field", "upto": newest, "channels": channels,
                "me": {"id": p.id, "name": p.name, "pausing": bool(p.pause)}}
         if newest > since or not since:
@@ -539,12 +544,6 @@ def make_console_handler(console: Console):
                 return self._json(admission_json(console.room.state()))
             if route == "/record.txt":
                 everything = "everything" in (urlparse(self.path).query or "")
-                if everything:
-                    # everything includes private circles' words: written in each, where its members see it
-                    st = console.room.state()
-                    for c in st.circles.values():
-                        if any(s.get("circle") == c["id"] for s in st.scoped.values()):
-                            console.room.emit("operator", "operator_read", {"circle": c["id"], "note": "the whole record"})
                 return self._send(200, record_text(console.room.log, everything).encode("utf-8"),
                                   "text/plain; charset=utf-8")
             return self._json({"error": "no such page"}, 404)

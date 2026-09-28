@@ -75,15 +75,16 @@ def spend_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
 
 def record_text(log: EventLog, everything: bool = False) -> str:
     """The transcript as plain text, in order, nothing summarized. The raw stream, for reading.
-    Words written in a private circle are left out unless `everything` is asked for: the console
-    records that reading in each private circle, where its members see it."""
+    Words written in a private circle are never here: the console opens a private circle only on
+    purpose (read_circle), and records that in the circle, where its members see it."""
     st = replay(log.iter())
     names = {pid: p.name for pid, p in st.presences.items()}
     out: List[str] = []
     for ev in log.iter():
         k, p, who = ev["kind"], ev["payload"], names.get(ev["actor"], ev["actor"])
-        if ev["id"] in st.scoped and not everything:
-            out.append(f"#{ev['id']} (written in a private circle; not shown here)\n")
+        if ev["id"] in st.scoped:
+            out.append(f"#{ev['id']} (written in a private circle; not shown here. Opening it from the console is "
+                       f"recorded in the circle)\n")
             continue
         if k in ("connector_ok", "connector_error", "briefed") and not everything:
             continue

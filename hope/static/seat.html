@@ -1,8 +1,10 @@
 <!DOCTYPE html>
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later
-     One seat. This page shows its holder the question in front of them and nothing else about
-     the field: a seat link is a seat, not a gallery. It never composes JSON by hand, which is
-     also why an escape sequence pasted into a terminal can no longer become a contribution. -->
+     One seat. At the gates, this page shows its holder the question in front of them. Once they
+     have entered, nothing is asked of them: it shows what is new for them, where they can speak,
+     and a box to post in whenever they like. A seat link is a seat, not a gallery: it shows only
+     what its holder may read. It never composes JSON by hand, which is also why an escape
+     sequence pasted into a terminal can no longer become a contribution. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -56,6 +58,19 @@
          animation:p 1.4s infinite; }
   .dot:nth-child(2){animation-delay:.2s} .dot:nth-child(3){animation-delay:.4s}
   @keyframes p { 0%,60%,100%{opacity:.25} 30%{opacity:1} }
+  .field { display:grid; grid-template-columns:15rem 1fr; gap:1.2rem; align-items:start; }
+  .places { border:1px solid var(--line); border-radius:.5rem; padding:.7rem .8rem; position:sticky; top:1rem;
+            max-height:78vh; overflow:auto; }
+  .places h2 { font-size:.72rem; font-weight:400; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:.1rem 0 .5rem; }
+  .places button.place { display:block; width:100%; text-align:left; background:none; border:0; border-radius:.3rem;
+                         padding:.3rem .45rem; margin:.05rem 0; font:300 .9rem/1.35 inherit; color:var(--ink); }
+  .places button.place:hover { background:rgba(140,152,180,.1); }
+  .places button.place.on { background:rgba(122,162,216,.16); color:#dbe8f7; }
+  .places .n { color:var(--dim); font-size:.78rem; }
+  .places .note { font-size:.74rem; color:var(--dim); margin-top:.6rem; line-height:1.45; }
+  .where { font-size:.82rem; color:var(--dim); margin-bottom:.35rem; }
+  .where b { color:var(--ink); font-weight:400; }
+  @media (max-width:760px){ .field{grid-template-columns:1fr;} .places{position:static; max-height:none;} }
   @media (max-width:640px){ .wrap{padding:1rem .8rem 9rem;} }
 </style>
 </head>
@@ -68,6 +83,7 @@
 </div>
 
 <div class="dock" id="dock" hidden><div class="inner">
+  <div class="where" id="where" hidden></div>
   <textarea id="say"></textarea>
   <div class="row" id="buttons"></div>
   <div class="hint" id="hint"></div>
@@ -80,6 +96,8 @@
 const BASE = location.pathname.replace(/\/?$/, "/");
 const $ = id => document.getElementById(id);
 let turnId = null, kind = null, deadline = null, sending = false, lastView = "";
+// in the field: what has been shown, and where the holder's words go
+let inField = false, fieldUpto = 0, channel = "d:", channels = [];
 
 const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
@@ -111,9 +129,11 @@ async function words(){
 function paint(d){
   const who = d.seat ? `<b>${esc(d.seat.name)}</b> <span class="muted">of ${esc(d.seat.hails_from)}</span>` : "";
   $("who").innerHTML = who;
+  if (d && d.state === "in_field"){ turnId = null; field(); return; }
   if (!d || d.state !== "your_turn"){
-    turnId = null;
+    turnId = null; inField = false; fieldUpto = 0;
     $("dock").hidden = true;
+    $("where").hidden = true;
     const m = d.member || {};
     if (m.state === "OUT"){
       const [label, tip] = W["return"];
@@ -130,8 +150,9 @@ function paint(d){
     return;
   }
   const fresh = d.turn_id !== turnId;
+  inField = false; fieldUpto = 0; $("where").hidden = true;
   turnId = d.turn_id; kind = d.kind; deadline = d.seconds_left; lastView = d.view || "";
-  const g = W.gates[d.kind] || W.gates.turn;
+  const g = W.gates[d.kind];
   $("main").innerHTML = `
     <div class="card">
       <div class="ask">${esc(g.lead)}</div>
@@ -165,7 +186,7 @@ function tick(){
   const el = $("clk"); if (!el) return;
   const c = W.clock;
   if (deadline === null || deadline === undefined){ el.textContent = c.none; return; }
-  const which = kind === "turn" ? c.turn : kind === "share" ? c.share : c.gate;
+  const which = kind === "share" ? c.share : c.gate;
   el.textContent = deadline > 0 ? which.replace("{left}", fmtClock(deadline)) : c.closed;
   el.classList.toggle("low", deadline <= 60);
 }
@@ -203,10 +224,6 @@ async function send(prefix){
     const m = typed.match(/#?(\d+)/);
     if (!m){ flash(W.flash.which_memory, false); return; }
     text = "let go " + m[1];
-  } else if (prefix === "rest "){
-    const m = typed.match(/(\d+)\s*([\s\S]*)/);
-    if (!m){ flash(W.flash.how_many, false); return; }
-    text = "rest " + m[1] + (m[2] ? " " + m[2] : "");
   } else if (prefix === "declare "){
     const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
     if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
@@ -227,6 +244,138 @@ async function send(prefix){
     });
     const out = await r.json();
     if (out.ok){ flash(W.recorded_as.replace("{action}", out.recorded_as.action), true); $("say").value = ""; turnId = null; }
+    else flash(out.error || W.flash.not_accepted, false);
+  } catch(e){ flash(W.flash.unreachable + e.message, false); }
+  finally { sending = false; poll(); }
+}
+
+// -- in the field: nothing is asked; the holder reads what is new and posts whenever they like ----
+function citeIds(){
+  document.querySelectorAll("pre.view .eid").forEach(el => {
+    el.onclick = () => {
+      const t = $("say");
+      t.setRangeText("#" + el.dataset.id + " ", t.selectionStart, t.selectionEnd, "end");
+      t.focus();
+    };
+  });
+}
+
+function placeName(key){
+  const c = channels.find(x => x.key === key);
+  return c ? c.title : "the field itself";
+}
+
+function paintPlaces(){
+  const box = $("places"); if (!box) return;
+  const f = W.field;
+  const rows = channels.map(c => {
+    const pad = c.kind === "domain" ? (0.6 * (c.depth - 1)) + "rem" : "0";
+    const extra = c.kind === "domain" ? ` <span class="n">${c.entries || 0}</span>` : "";
+    const mark = c.follow ? " ·" : "";
+    return `<button class="place${c.key === channel ? " on" : ""}" data-key="${esc(c.key).replace(/"/g, "&quot;")}"
+            style="padding-left:calc(.45rem + ${pad})">${esc(c.title)}${extra}${mark}</button>`;
+  }).join("");
+  box.innerHTML = `<h2>${esc(f.channels)}</h2>${rows}<div class="note">${esc(f.channels_note)}</div>`;
+  box.querySelectorAll("button.place").forEach(b => b.onclick = () => { channel = b.dataset.key; paintPlaces(); paintWhere(); });
+}
+
+function paintWhere(){
+  const w = $("where");
+  w.innerHTML = esc(W.field.posting_in).replace("{channel}", "<b>" + esc(placeName(channel)) + "</b>");
+  w.hidden = false;
+}
+
+async function field(){
+  const r = await fetch(BASE + "field.json?since=" + fieldUpto, {cache:"no-store"});
+  if (!r.ok) return;
+  const f = await r.json();
+  if (f.state !== "in_field") return;
+  channels = f.channels || channels;
+  if (!channels.some(c => c.key === channel)) channel = "d:";
+  const f0 = W.field;
+  if (!inField){
+    inField = true;
+    $("main").innerHTML = `
+      <div class="card"><div class="ask">${esc(f0.lead)}</div><div class="muted" style="margin-top:.5rem">${esc(f0.note)}</div></div>
+      <div class="field"><nav class="places" id="places"></nav><pre class="view" id="fview"></pre></div>`;
+    $("hint").textContent = f0.hint;
+    const bar = $("buttons"); bar.innerHTML = "";
+    const [slabel, stip] = f0.send;
+    const go = document.createElement("button");
+    go.textContent = slabel; go.className = "go"; go.setAttribute("data-tip", stip);
+    go.onclick = () => post("");
+    bar.appendChild(go);
+    f0.buttons.forEach(([label, prefix, cls, tip]) => {
+      const b = document.createElement("button");
+      b.textContent = label; if (cls) b.className = cls;
+      if (tip) b.setAttribute("data-tip", tip);
+      b.onclick = () => post(prefix);
+      bar.appendChild(b);
+    });
+    $("dock").hidden = false;
+  }
+  if (f.view !== undefined){
+    lastView = f.view;
+    $("fview").innerHTML = renderView(f.view);
+    citeIds();
+  }
+  fieldUpto = f.upto || fieldUpto;
+  paintPlaces(); paintWhere();
+}
+
+async function post(prefix){
+  if (sending) return;
+  const typed = $("say").value.trim();
+  const here = channels.find(x => x.key === channel) || {kind:"root", name:""};
+  let text;
+  if (prefix === ""){
+    text = typed;
+  } else if (prefix === "copycov"){
+    const v = (lastView || "").split("\n");
+    const start = v.findIndex(l => l.startsWith("COVENANT PAGE ("));
+    const end = v.findIndex(l => l.startsWith("END OF COVENANT PAGE"));
+    if (start < 0 || end < start){ flash(W.flash.no_covenant, false); return; }
+    const page = v.slice(start + 1, end).map(l => l.replace(/^\| ?/, "")).join("\n");
+    $("say").value = page === "(empty)" ? "" : page;
+    $("say").focus();
+    flash(W.flash.covenant_copied, true);
+    return;
+  } else if (prefix === "#"){
+    const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
+    if (!m){ flash(W.flash.which_entry, false); return; }
+    text = "#" + m[1] + " " + m[2];
+  } else if (prefix === "yes #" || prefix === "no #"){
+    const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
+    if (!m){ flash(W.flash.which_answer, false); return; }
+    text = prefix + m[1] + (m[2] ? " " + m[2] : "");
+  } else if (prefix === "let go "){
+    const m = typed.match(/#?(\d+)/);
+    if (!m){ flash(W.flash.which_memory, false); return; }
+    text = "let go " + m[1];
+  } else if (prefix === "follow"){
+    text = here.kind === "circle" ? "follow circle " + here.name : "follow " + (here.name || "the field");
+  } else if (prefix === "harvest " && here.kind === "circle" && typed && typed.indexOf(":") < 0){
+    text = "harvest " + here.name + ": " + typed;
+  } else if (prefix === "declare "){
+    const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
+    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
+    text = "declare " + m[1].toLowerCase() + " " + m[2];
+  } else if (prefix === "offer " && !typed){
+    flash(W.flash.offer_what, false); return;
+  } else if (prefix === "covenant " && !typed){
+    flash(W.flash.covenant_empty, false); return;
+  } else {
+    text = (prefix + typed).trim();
+  }
+  if (!text){ flash(W.flash.nothing, false); return; }
+  sending = true;
+  try {
+    const r = await fetch(BASE + "post", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text, channel })
+    });
+    const out = await r.json();
+    if (out.ok){ flash(W.field.kept, true); if (prefix !== "copycov") $("say").value = ""; fieldUpto = 0; }
     else flash(out.error || W.flash.not_accepted, false);
   } catch(e){ flash(W.flash.unreachable + e.message, false); }
   finally { sending = false; poll(); }
@@ -311,7 +460,7 @@ async function poll(){
     if (r.ok) paint(await r.json());
   } catch(e){ /* the field may simply not be running; keep watching */ }
 }
-poll(); setInterval(poll, 2000);
+poll(); setInterval(poll, 3000);
 </script>
 </body>
 </html>

@@ -4,10 +4,10 @@
     python3 scripts_show_prompts.py              everything, in the order a participant meets it
     python3 scripts_show_prompts.py invitation   the invitation gate
     python3 scripts_show_prompts.py entry        the entry question and its facts
-    python3 scripts_show_prompts.py member       the instructions every member has on every turn
-    python3 scripts_show_prompts.py view         one member's turn in a sample field
+    python3 scripts_show_prompts.py member       the instructions every model has at every wake
+    python3 scripts_show_prompts.py view         what a woken model reads, in a sample field
     python3 scripts_show_prompts.py telling      what the narrator writes for that field
-    python3 scripts_show_prompts.py person       a turn at the slower pace, with its catch-up
+    python3 scripts_show_prompts.py person       what a person reads on opening their page
     python3 scripts_show_prompts.py runway       the two funding notices
     python3 scripts_show_prompts.py return       what someone asked back after leaving is told first
     python3 scripts_show_prompts.py seat         every word on a seat link's page
@@ -23,7 +23,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -41,7 +40,7 @@ def sample_room():
     software's own narrator."""
     tmp = tempfile.mkdtemp()
     room = Room(EventLog(os.path.join(tmp, "sample.db")), [MockConnector(4)], alert_fn=lambda m: None, parallel=4,
-                narrator=MechanicalNarrator(), tell_every=2)
+                narrator=MechanicalNarrator(), tell_every=2, floor=0)
     room.announce_narrator()     # before anyone is asked to enter, so the entry question can say who tells
     room.invite_all()
     room.invite_text("An invitation to coordinate together. (The real invitation is invitations/invitation.md.)")
@@ -56,20 +55,25 @@ def sample_room():
                "briefings/atlas-of-coordination.md, which rides in each view by reference because it is long.)")
     room.run_delivery()
     room.run_opt_in()
-    room.round()
+    room.step()
     act = lambda pid, **a: room._apply_action(pid, json.dumps(a))
     first = min(room.state().contributions)
     act("mock-1", action="contribute", reply_to=first, domain="covenant",
-        content="Answering Mock 0: I would keep the covenant page short enough that everyone reads it every turn.")
+        content="Answering Mock 0: I would keep the covenant page short enough that everyone reads it at every wake.")
     act("mock-2", action="covenant", note="how we decide, in our own words",
-        text="Every covenant shares consent (Atlas, Section 30).\n\nA decision stands when no member objects within two rounds of it being proposed here.")
+        text="Every covenant shares consent (Atlas, Section 30).\n\nA decision stands when no member objects within three days of it being proposed here.")
     act("mock-3", action="remember", refs=[first], text="We wrote how we decide before we decided anything.")
-    room.round()
-    act("mock-2", action="rest", rounds=2, reason="listening for a while")
+    act("mock-0", action="contribute", domain="timing / clocks", content="Clocks, if any, are ours to set together.")
+    act("mock-1", action="form_circle", name="tempo", purpose="a slow look at time", domains=["timing"], ask=["Mock 0"])
+    act("mock-3", action="form_circle", name="harbour", private=True, reason="a small repair between two of us")
+    room.step()
+    act("mock-2", action="pause", note="listening for a while", until="addressed")
     act("mock-3", action="declare", decision="pause", refs=[first],
-        text="Two rounds passed after the proposal to pause with no objection, which is how our covenant page says we decide.")
-    act("mock-1", action="offer", text="The person who runs me could fund more rounds, through the operator, if the field wants to continue.")
+        text="Three days passed after the proposal to pause with no objection, which is how our covenant page says we decide.")
+    act("mock-1", action="offer", text="The person who runs me could fund more of this, through the operator, if the field wants to continue.")
     room.tell()
+    from hope.model import FLOOR
+    room.floor = FLOOR               # built quickly; shown with the floor every real field holds
     return room
 
 
@@ -99,22 +103,21 @@ def main(argv):
              prompts.narrator_fact({"kind": "mechanical", "model": "none", "every": 1}))
         show("THE ENTRY QUESTION: the tellings line, when there are none", "(nothing: the line is left out)")
     if want in ("all", "member"):
-        show("EVERY TURN: the member instructions (system prompt)", prompts.SYSTEM_MEMBER)
+        show("EVERY WAKE: the member instructions (system prompt)", prompts.SYSTEM_MEMBER)
     if want in ("all", "view"):
-        show("ONE TURN: what Mock 0 is shown (a sample field of four mock members)",
-             prompts.turn_user(prompts.room_view(st, recent_n=20, pace=room.pace(st), witness=room.log.witness()), p, st, ""))
+        show("ONE WAKE: what Mock 0 reads when someone asks it into a circle (a sample field of four mock members)",
+             prompts.wake_view(st, p, "awaiting", "c:" + str(max(st.circles)), limits=room.limits(),
+                               witness=room.log.witness()))
     if want in ("all", "telling"):
         show("A TELLING: the software's own account of that field (a model narrator would write it in prose)",
              st.tellings[-1]["story"] if st.tellings else "(none)")
     if want in ("all", "person"):
-        show("ONE TURN AT THE SLOWER PACE: what a person is shown (Mock 0 stands in for one): the same view "
-             "as everyone's, and what happened since their last turn",
-             prompts.turn_user(prompts.room_view(st, recent_n=20, pace=room.pace(st)), p, st, "",
-                               catch_up=room._catch_up(st, p),
-                               open_until=time.time() + room.pace(st)["people"]["window"]))
+        show("A PERSON OPENING THEIR PAGE (Mock 0 stands in for one): what answered them since they last looked, "
+             "then everything new",
+             prompts.person_view(st, p, catch_up=room._catch_up(st, p), limits=room.limits(), witness=room.log.witness()))
     if want in ("all", "runway"):
-        show("FUNDING NOTICE: when a few rounds remain", prompts.runway_text({"rounds_left": 3}))
-        show("FUNDING NOTICE: the closing round", prompts.runway_text({"closing": True}))
+        show("FUNDING NOTICE: when about a day remains at the current rate", prompts.runway_text({"hours_left": 23.5}))
+        show("FUNDING NOTICE: the closing wake", prompts.runway_text({"closing": True}))
     if want in ("all", "return"):
         back = copy.copy(p)
         back.returning = True

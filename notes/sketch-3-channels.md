@@ -414,12 +414,14 @@ Each stage ends with the whole suite run and a local commit. Nothing is pushed.
   3. The wake scheduler in place of rounds and the two clocks. Also the runway
      in time, tellings every so many messages, the cold and privacy notices,
      and the wake ceiling. Tests about rounds are rewritten as their promises
-     move to wakes.
+     move to wakes.                                                              done, 99b8f20
   4. What participants are told: the wake view, the member instructions, the
-     entry question, DESIGN and GUIDE.
-  5. People's side: the seat page as a chat view, posting at any time, and
-     the console's domains and circles.
-  6. Trying it ourselves; then README and DEPLOY.
+     entry question, DESIGN and GUIDE.                                         done
+  5. People's side: the seat page shows the field and posts at any time; the
+     console runs the field by time, speaks in wakes and hours, and opens a
+     private circle only on purpose, recording it in the circle.               done (a first version)
+  6. Trying it ourselves: mock models, the author on a seat link, a few cheap
+     real models. README and DEPLOY are already in step.                        next
 Stages 1 and 2 only add things: the rounds run unchanged until stage 3.
 
 SPDX-License-Identifier: CC-BY-SA-4.0

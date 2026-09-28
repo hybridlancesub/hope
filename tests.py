@@ -461,7 +461,7 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(conn.calls, calls, "nobody is called while everyone pauses")
 
     # recall and memory of the field ---------------------------------------------------------------------
-    def test_recall_returns_briefing_passage_next_turn_only_to_the_asker(self):
+    def test_recall_returns_briefing_passage_next_wake_only_to_the_asker(self):
         room, conn = self.make(2, {"mock-0": [{"action": "recall", "query": "distributed systems"}]})
         self.open(room)
         seen = self.spy(conn)
@@ -511,7 +511,7 @@ class RoomTest(unittest.TestCase):
         self.assertIn("YOUR RECENT CONTRIBUTIONS", seen["mock-0"][0])
 
     # money -----------------------------------------------------------------------------------------------
-    def test_turns_carry_no_money_ticker(self):
+    def test_wakes_carry_no_money_ticker(self):
         room, conn = self.make(2)
         self.open(room)
         seat = room.seat_of["mock-0"][1]
@@ -1390,7 +1390,7 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(st.contributions[mine[0]]["payload"]["domain"], "purpose of this field",
                          "the transcript keeps the label as first written")
 
-    def test_a_turn_allowance_is_told_only_to_its_own_member(self):
+    def test_a_wake_allowance_is_told_only_to_its_own_member(self):
         room, conn = self.make(2)
         conn._seats[0].turn_allowance = 3
         conn._seats[0].pricing = {"prompt": 10e-6, "completion": 50e-6}
@@ -1404,7 +1404,7 @@ class RoomTest(unittest.TestCase):
         self.assertNotIn("turns left", seen["mock-1"][0], "no one else sees another member's allowance")
         self.assertIn("of the 3 the field can afford for you", seen["mock-0"][0], "the member itself is told")
 
-    # the two clocks run side by side, whenever the field has both ------------------------------------------
+    # the people's side: a returning person posts again -----------------------------------------------------
     def test_a_person_who_comes_back_during_a_run_posts_again(self):
         import time as _t
         people = People(1, delay=0.0)
@@ -1646,7 +1646,7 @@ class ConsoleTest(unittest.TestCase):
         # every control that acts on the field explains itself before it is pressed
         self.assertIn("#tip {", page, "the hover-help element is styled")
         self.assertIn('TIP.id = "tip"', page, "and something creates it")
-        for verb in ("Open the invitation", "Ask who enters", "Run rounds", "Stop the field",
+        for verb in ("Open the invitation", "Ask who enters", "Run the field", "Stop the field",
                      "Record the notice", "Make an invitation link"):
             i = page.find(">" + verb)
             self.assertGreater(i, 0, f"{verb!r} is on the page")
@@ -2125,7 +2125,7 @@ class RendezvousTest(unittest.TestCase):
         self.assertIn("d:protocol", room.state().presences["remote__rook"].follows, "and several actions at once")
 
     # a token addresses one seat and is not a window onto the field -------------------------------
-    def test_a_token_shows_only_its_own_turn_and_never_the_record(self):
+    def test_a_token_shows_only_its_own_questions_and_never_the_record(self):
         from hope.rendezvous import Rendezvous
         rv = Rendezvous()
         t_a = rv.add_seat(self._seat("Ada", "remote__ada"))
@@ -2971,7 +2971,9 @@ class TruthTest(unittest.TestCase):
             self.assertNotIn(said, page, f"{said!r} belongs in prompts.SEAT_PAGE")
         sp = prompts.SEAT_PAGE
         self.assertIn("nothing is recorded about your answer", sp["clock"]["gate"])
-        self.assertIn("nothing is written as yours", sp["clock"]["turn"])
+        self.assertIn("Nothing is asked of you", sp["field"]["lead"])
+        self.assertEqual(sp["field"]["buttons"][0][0], "Pause", "pausing is offered first on a person's page too")
+        self.assertNotIn("turn", sp["clock"], "no turn is ever put to a person")
         self.assertEqual([b[1] for b in sp["gates"]["share"]["buttons"]], ["share", "share-some", "no"])
         self.assertNotIn("recorded as a decline", json.dumps(sp))
 

@@ -20,7 +20,7 @@ Python, AGPL for code and CC BY-SA for text.
 
 The order of work now
 ---------------------
-  2a (done) -> sketch 3 (shaped) -> build 3 (now) -> 2b -> 4 -> 5 -> 6 -> 8.
+  2a (done) -> sketch 3 (shaped) -> build 3 (built; trying it next) -> 2b -> 4 -> 5 -> 6 -> 8.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
 
