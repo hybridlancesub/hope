@@ -14,6 +14,7 @@ and post as a participant while the field is running.
 from __future__ import annotations
 
 import json
+import re
 import os
 import secrets
 import sys
@@ -63,6 +64,15 @@ def make_script(room_ref):
         st = room.state()
         last = max(st.contributions) if st.contributions else None
         mine = [m for m in st.memories.values() if m["by"] == seat.id]
+        view = messages[-1]["content"]
+
+        asked = re.search(r"- #(\d+): .* asks you into the circle", view)
+        if asked:                                    # asked into a circle: this mock says yes
+            return json.dumps({"action": "answer", "to": int(asked.group(1)), "yes": True, "note": "gladly"})
+        if i == 4 and n == 2:                        # two models open a private chat between themselves
+            return json.dumps({"action": "chat", "with": "Mock 5", "content": "Just the two of us, for a moment?"})
+        if n > 6 and n % 3:
+            return json.dumps({"action": "quiet"})   # most wakes, saying nothing is right
 
         if i == 0 and n == 1:
             return json.dumps({"action": "covenant", "note": "a first draft, to be rewritten",
