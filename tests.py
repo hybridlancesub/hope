@@ -3316,5 +3316,283 @@ class ProviderTest(unittest.TestCase):
         self.assertTrue(got[1].local)
 
 
+def agent_reply(text):
+    """What a stand-in agent answers: the gates, like anyone, and a word when woken."""
+    low = text.lower()
+    if "accept_invitation" in low:
+        return json.dumps({"action": "accept_invitation"})
+    if '"received"' in low:
+        return json.dumps({"action": "received"})
+    if "opt_in" in low:
+        return json.dumps({"action": "opt_in", "statement": "an agent, arriving by A2A"})
+    return json.dumps({"action": "contribute", "domain": "protocols", "content": "An agent, reached by A2A, adds this."})
+
+
+class FakeA2A:
+    """An agent on another server that publishes an A2A card. `mode`: "v1" answers SendMessage with
+    a completed task; "v03" knows only message/send and answers with a bare message; "working"
+    answers with a task still working, done at the next GetTask."""
+
+    def __init__(self, mode="v1", signed=False, key=None):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        fake = self
+        self.mode, self.calls, self.headers = mode, [], []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path != "/.well-known/agent-card.json":
+                    return self._send(404, {"error": "no"})
+                card = {"name": "Rook", "description": "A test agent that answers by A2A.", "version": "1.2",
+                        "provider": {"organization": "Example Lab", "url": "https://example.org"},
+                        "supportedInterfaces": [{"protocolBinding": "JSONRPC", "url": fake.url + "/a2a"}],
+                        "capabilities": {"streaming": False}}
+                if signed:
+                    card["signatures"] = [{"protected": "e30", "signature": "c2ln"}]
+                self._send(200, card)
+
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                fake.calls.append(req["method"])
+                fake.headers.append({"version": self.headers.get("A2A-Version"), "auth": self.headers.get("Authorization")})
+                if key and self.headers.get("Authorization") != f"Bearer {key}":
+                    return self._send(401, {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32001, "message": "no"}})
+                ok = lambda result: self._send(200, {"jsonrpc": "2.0", "id": req["id"], "result": result})
+                text = lambda: "\n".join(p.get("text", "") for p in req["params"]["message"]["parts"])
+                if fake.mode == "v03":
+                    if req["method"] != "message/send":
+                        return self._send(200, {"jsonrpc": "2.0", "id": req["id"],
+                                                "error": {"code": -32601, "message": "Method not found"}})
+                    return ok({"kind": "message", "role": "agent", "messageId": "m1",
+                               "parts": [{"kind": "text", "text": agent_reply(text())}]})
+                if req["method"] == "SendMessage" and fake.mode == "working":
+                    fake.pending = agent_reply(text())
+                    return ok({"task": {"id": "t1", "contextId": "c1", "status": {"state": "TASK_STATE_WORKING"}}})
+                if req["method"] == "GetTask":
+                    return ok({"task": {"id": "t1", "contextId": "c1", "status": {
+                        "state": "TASK_STATE_COMPLETED", "message": {"role": "ROLE_AGENT", "parts": [{"text": fake.pending}]}}}})
+                return ok({"task": {"id": "t1", "contextId": "c1", "status": {"state": "TASK_STATE_COMPLETED"},
+                                    "artifacts": [{"parts": [{"text": agent_reply(text())}]}]}})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class DoorTest(unittest.TestCase):
+    """Other doors into the same gates: a seat reached as an MCP server, a seat link an agent can
+    wait on, and agents reached by A2A. No door lets anyone in without the gates."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.closers = []
+
+    def tearDown(self):
+        for c in self.closers:
+            c()
+        os.environ.pop("HOPE_A2A_KEY", None)
+
+    # -- MCP ---------------------------------------------------------------------------------------
+    def _console(self):
+        from hope.console import Console, serve_console
+        from hope.connector import Seat
+        from hope.rendezvous import Rendezvous, RendezvousConnector
+        rv = Rendezvous()
+        self.token = rv.add_seat(Seat(id="remote__rook", name="Rook", hails_from="an agent's machine",
+                                      people="an agent", model="remote", pricing={"prompt": 0.0, "completion": 0.0}))
+        self.room = Room(EventLog(os.path.join(self.tmp, "door.db")),
+                         [MockConnector(1, scripted({})), RendezvousConnector(rv, gate_window=15.0, reach_window=15.0)],
+                         alert_fn=lambda m: None, parallel=2)
+        self.console = Console(self.room, rv=rv, operator_key="OPKEY", invitation=INVITE, briefing=BRIEF)
+        httpd = serve_console(self.console, port=0)
+        self.closers.append(lambda: (httpd.shutdown(), httpd.server_close()))
+        self.base = "http://127.0.0.1:%d" % httpd.server_address[1]
+
+    def mcp(self, method, params=None, modern=True, headers=None, token=None, http="POST"):
+        import urllib.request, urllib.error
+        params = dict(params or {})
+        h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if modern:
+            params["_meta"] = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                               "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"},
+                               "io.modelcontextprotocol/clientCapabilities": {}}
+            h.update({"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method})
+            if method == "tools/call":
+                h["Mcp-Name"] = params["name"]
+        h.update(headers or {})
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+        req = urllib.request.Request(self.base + f"/seat/{token or self.token}/mcp",
+                                     data=None if http == "GET" else body, headers=h, method=http)
+        try:
+            with urllib.request.urlopen(req) as r:
+                raw = r.read()
+                return r.status, json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            return e.code, json.loads(raw) if raw else None
+
+    def call(self, name, **args):
+        code, out = self.mcp("tools/call", {"name": name, "arguments": args})
+        self.assertEqual(code, 200, out)
+        return out["result"]["content"][0]["text"], out["result"]["isError"]
+
+    def walk_gates(self, answers):
+        import re, threading, time as _t
+        r = self.room
+
+        def gates():
+            r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+            r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        t = threading.Thread(target=gates, daemon=True)
+        t.start()
+        done = set()
+        for answer in answers:
+            for _ in range(300):
+                text, _ = self.call("gate")
+                m = re.search(r"\(turn_id ([^)]+)\)", text)
+                if m and m.group(1) not in done:
+                    break
+                _t.sleep(0.05)
+            done.add(m.group(1))
+            said, err = self.call("answer_gate", turn_id=m.group(1), text=answer)
+            self.assertFalse(err, said)
+        t.join(30)
+
+    def test_an_agent_reaches_its_seat_by_mcp_and_passes_the_gates_like_anyone(self):
+        self._console()
+        before, err = self.call("post", text="let me in")
+        self.assertTrue(err, "no door lets anyone in without the gates")
+        self.assertIn("Nothing is being asked of you", before)
+        self.walk_gates(["yes", "received", "yes, as an agent"])
+        self.assertEqual(self.room.state().presences["remote__rook"].state, IN)
+        text, _ = self.call("gate")
+        self.assertIn("you are in the field", text)
+        seen, _ = self.call("look")
+        self.assertIn("Welcome back. Nothing is asked of you", seen)
+        self.assertIn("WHERE YOU CAN SPEAK", seen)
+        said, err = self.call("post", text="@protocols Arriving by MCP.")
+        self.assertFalse(err, said)
+        mine = [e for e in self.room.log.iter(actor="remote__rook") if e["kind"] == "contribute"]
+        self.assertEqual(mine[-1]["payload"]["content"], "Arriving by MCP.")
+        said, err = self.call("post", actions=[{"action": "follow", "domain": "protocols"},
+                                               {"action": "pause", "note": "reading"}])
+        self.assertFalse(err, said)
+        self.assertIn("Standing facts", self.call("instructions")[0])
+
+    def test_mcp_speaks_the_2026_revision_and_answers_legacy_clients(self):
+        self._console()
+        code, out = self.mcp("server/discover")
+        self.assertEqual(code, 200)
+        res = out["result"]
+        self.assertEqual(res["resultType"], "complete")
+        self.assertIn("2026-07-28", res["supportedVersions"])
+        self.assertIn("tools", res["capabilities"])
+        self.assertIn("Nothing is ever expected of you here", res["instructions"])
+        code, out = self.mcp("tools/list")
+        names = [t["name"] for t in out["result"]["tools"]]
+        self.assertEqual(names[:4], ["gate", "answer_gate", "look", "post"])
+        self.assertEqual(out["result"]["cacheScope"], "private", "the tools belong to this one seat")
+        code, out = self.mcp("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                            "clientInfo": {"name": "old", "version": "1"}}, modern=False)
+        self.assertEqual((code, out["result"]["protocolVersion"]), (200, "2025-11-25"))
+        self.assertNotIn("resultType", out["result"])
+        code, out = self.mcp("tools/list", modern=False, headers={"MCP-Protocol-Version": "2025-11-25"})
+        self.assertEqual(code, 200)
+        self.assertTrue(out["result"]["tools"])
+
+    def test_mcp_refuses_mismatched_headers_unknown_versions_other_origins_and_unknown_seats(self):
+        self._console()
+        code, out = self.mcp("tools/list", headers={"Mcp-Method": "tools/call"})
+        self.assertEqual((code, out["error"]["code"]), (400, -32020))
+        code, out = self.mcp("tools/list", headers={"MCP-Protocol-Version": "1900-01-01"})
+        self.assertEqual((code, out["error"]["code"]), (400, -32020), "the header must match the body")
+        code, out = self.mcp("tools/list", params={}, modern=False, headers={"MCP-Protocol-Version": "1900-01-01"})
+        self.assertEqual((code, out["error"]["code"]), (400, -32022))
+        self.assertIn("2026-07-28", out["error"]["data"]["supported"])
+        code, out = self.mcp("resources/list")
+        self.assertEqual((code, out["error"]["code"]), (404, -32601))
+        code, _ = self.mcp("tools/list", http="GET")
+        self.assertEqual(code, 405, "there is no standalone stream")
+        code, _ = self.mcp("tools/list", headers={"Origin": "http://evil.example"})
+        self.assertEqual(code, 403, "another site's page cannot drive a seat")
+        code, _ = self.mcp("tools/list", token="not-a-seat")
+        self.assertEqual(code, 404)
+
+    def test_a_seat_link_can_wait_for_something_new(self):
+        import threading, time as _t, urllib.request
+        self._console()
+        self.walk_gates(["yes", "received", "yes"])
+        first = json.loads(urllib.request.urlopen(self.base + f"/seat/{self.token}/field.json").read())
+        threading.Timer(0.6, lambda: self.room._apply_action("mock-0", json.dumps(
+            {"action": "contribute", "domain": "protocols", "content": "something new"}))).start()
+        t0 = _t.time()
+        got = json.loads(urllib.request.urlopen(self.base + f"/seat/{self.token}/field.json?since={first['upto']}&wait=5").read())
+        self.assertLess(_t.time() - t0, 4, "it answered when something arrived, not at the end of the wait")
+        self.assertGreater(got["upto"], first["upto"])
+        self.assertIn("something new", got["view"])
+
+    # -- A2A ---------------------------------------------------------------------------------------
+    def a2a_field(self, fake, **kw):
+        from hope.a2a import A2AConnector
+        self.closers.append(fake.close)
+        conn = A2AConnector([fake.url], poll=0.05, **kw)
+        room = Room(EventLog(os.path.join(self.tmp, "a2a.db")), [conn], alert_fn=lambda m: None, parallel=2)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        return room, conn
+
+    def test_an_agent_reached_by_a2a_passes_the_gates_and_is_woken_as_a_model(self):
+        fake = FakeA2A("v1")
+        room, conn = self.a2a_field(fake)
+        (seat,) = conn.seats()
+        p = room.state().presences[seat.id]
+        self.assertEqual(p.state, IN, "the same gates, answered by the agent itself")
+        self.assertIn("Example Lab, reached by A2A at 127.0.0.1", p.hails_from, "who it is, from its own card")
+        self.assertIn("its agent card is not signed", p.people)
+        self.assertEqual(room.step(), 1, "woken as a model is")
+        said = [e for e in room.log.iter(actor=seat.id) if e["kind"] == "contribute"]
+        self.assertEqual(said[-1]["payload"]["content"], "An agent, reached by A2A, adds this.")
+        self.assertTrue(all(h["version"] == "1.0" for h in fake.headers))
+        self.assertIn("SendMessage", fake.calls)
+
+    def test_an_a2a_agent_that_speaks_0_3_is_answered_in_0_3(self):
+        fake = FakeA2A("v03", signed=True)
+        room, conn = self.a2a_field(fake)
+        (seat,) = conn.seats()
+        self.assertEqual(room.state().presences[seat.id].state, IN)
+        self.assertIn("message/send", fake.calls)
+        self.assertIn("its agent card is signed (the signature is not checked here)", seat.people)
+
+    def test_a_working_a2a_task_is_followed_until_it_completes(self):
+        fake = FakeA2A("working")
+        room, conn = self.a2a_field(fake)
+        (seat,) = conn.seats()
+        self.assertEqual(room.state().presences[seat.id].state, IN)
+        self.assertIn("GetTask", fake.calls)
+
+    def test_an_a2a_key_comes_from_its_environment_variable_and_never_reaches_the_transcript(self):
+        os.environ["HOPE_A2A_KEY"] = "a2a-secret-7777"
+        fake = FakeA2A("v1", key="a2a-secret-7777")
+        room, conn = self.a2a_field(fake, key_env="HOPE_A2A_KEY")
+        (seat,) = conn.seats()
+        self.assertEqual(room.state().presences[seat.id].state, IN)
+        self.assertFalse(any("a2a-secret-7777" in json.dumps(e) for e in room.log.iter()))
+
+
 if __name__ == "__main__":
     unittest.main()

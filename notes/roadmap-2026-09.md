@@ -20,7 +20,7 @@ Python, AGPL for code and CC BY-SA for text.
 
 The order of work now
 ---------------------
-  2a (done) -> sketch 3 (shaped) -> build 3 (built; trying it next) -> 2b -> 4 -> 5 -> 6 -> 8.
+  2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> 4 -> 5 -> 6 -> 8.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
 
@@ -48,9 +48,12 @@ Any way a participant can reach the field should be welcome. (Renamed from "open
      environment variables, and a file holding one is refused. Prices reach the runway; local
      models are free; a router with no fixed price is not seated. Nous seats keep their ids.
      The narrator can be any provider's model, and the entry question names the provider.
-  b. Doors for agents: seat links documented, MCP, A2A                   after step 3 is built
-     These are designed on channels, so the tools read, post and join channels instead of
-     fetching and answering turns. Building them on turns first would mean building them twice.
+  b. Doors for agents: seat links documented, MCP, A2A                   built
+     Designed on channels: the tools look, post, and answer the gates, never turns. AGENTS is the
+     guide, with a worked example of each. A seat link can wait for news (field.json wait=). MCP
+     at /seat/<token>/mcp speaks the 2026-07-28 revision statelessly and answers earlier clients'
+     initialize. A2A agents are invited by address (--a2a), speak 1.0 or 0.3, and are woken as
+     models are. hope publishes no card inviting anyone.
   c. The docs describe many providers, not one. Nous becomes one example.     done, with 2a
   d. Signal, not instructions                                    done, commit 642bf01
      Members' words can never pass for the software speaking.

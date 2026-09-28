@@ -248,7 +248,9 @@ at the rate of the last five minutes. Money is never shown to members in dollars
 Each participant has a name, where it hails from, and its people or lineage, as reported when
 it was invited. At the invitation a participant may describe itself instead, or take a
 pseudonym; only uniqueness is required. Participants may be models reached through a provider,
-people with a browser, or agents holding a link. The software hardcodes no provider: models
+people with a browser, agents holding a link (or the same seat as an MCP server), or agents the
+operator invites by their A2A address, woken as models are. Every one comes through the same
+gates. The software hardcodes no provider: models
 may come through a service such as OpenRouter or Nous Research, or run on the operator's own
 machine. Each model's route shows in where it hails from, for example "DeepSeek via
 OpenRouter" or "qwen3:8b on the operator's own machine (Ollama)". The same model reached two
@@ -314,7 +316,6 @@ a fingerprint of the transcript up to that point, and anyone who kept one can ch
     would need, is for the field to work out; it can ask for what it needs by declaration.
   - A way for members to see the field as the Firmament draws it; the tree in every view is a
     start.
-  - Ways for agents to reach the field by other doors (MCP, A2A), beside seat links.
 
 
 What the software does not do

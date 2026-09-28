@@ -97,7 +97,7 @@ try:
     check("members are in the field", len([m for m in s["members"] if m["state"] == "IN"]) >= 3, s["admission"])
     check("models were woken by what was said", s.get("wakes", 0) >= 2, s.get("wakes"))
     check("the circle is listed for the operator", any(c["name"] == "tempo" for c in s.get("circles", [])), s.get("circles"))
-    check("spend block present", "total_usd" in s["spend"] and "hours_left" in s["spend"], s.get("spend"))
+    check("spend block present", "total_usd" in s["spend"] and "seconds_left" in s["spend"], s.get("spend"))
     check("the covenant page and memories are in the operator's state", "covenant" in s and "memories" in s, list(s))
     check("the budget was recorded for the field", s["spend"].get("budget_usd") == 5.0, s.get("spend"))
     code, page = get("/")

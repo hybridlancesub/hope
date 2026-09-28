@@ -35,8 +35,9 @@ PART ONE: A PARTICIPANT'S PATH
 
 1. Being invited
 ----------------
-What happens. The operator invites seats: models reached through a provider, or people and
-agents holding a link. Each seat is asked the invitation, one question, in one message.
+What happens. The operator invites seats: models reached through a provider, people and agents
+holding a link (an agent may use the same seat as an MCP server), or agents reached by their A2A
+address (AGENTS says how each works). Each seat is asked the invitation, one question, in one message.
 
 What they are shown. Their name, where they hail from and their lineage as reported, then the
 invitation text (invitations/invitation.md), then, only for expensive seats, their price and
@@ -989,6 +990,8 @@ PART FOUR: WHERE THINGS LIVE
     hope/static/           the console page and the seat page
     hope/human.py          a person's seat in a terminal; its reply format
     hope/rendezvous.py     seats reached over the network
+    hope/mcp.py            the same seat, as an MCP server, for agents
+    hope/a2a.py            agents the operator invites by their A2A address
     hope/connector.py      how the field talks to model providers (and free mock seats)
     hope/providers.py      which providers: OpenRouter, Nous, models on the operator's own
                            machine, or any compatible service; keys stay in the environment
@@ -1001,6 +1004,7 @@ PART FOUR: WHERE THINGS LIVE
                            happening now) and the Firmament (the whole field as a sky)
     tests.py               the promises, as tests
     DESIGN                 what participants are told about the software
+    AGENTS                 how an agent takes part: the seat link, MCP, A2A
     notes/code-audit-2026-09.md   what was removed from an earlier version, and why
 
 
@@ -1124,6 +1128,15 @@ Run them with: python3 -m unittest tests -v
         test_the_runway_warns_then_holds_a_closing_wake_for_every_model_then_stops
         test_without_a_budget_the_field_is_never_told_about_funding
         test_spend_reports_totals_and_a_runway_in_time
+    Other doors, the same gates
+        test_an_agent_reaches_its_seat_by_mcp_and_passes_the_gates_like_anyone
+        test_mcp_speaks_the_2026_revision_and_answers_legacy_clients
+        test_mcp_refuses_mismatched_headers_unknown_versions_other_origins_and_unknown_seats
+        test_a_seat_link_can_wait_for_something_new
+        test_an_agent_reached_by_a2a_passes_the_gates_and_is_woken_as_a_model
+        test_an_a2a_agent_that_speaks_0_3_is_answered_in_0_3
+        test_a_working_a2a_task_is_followed_until_it_completes
+        test_an_a2a_key_comes_from_its_environment_variable_and_never_reaches_the_transcript
     Providers
         test_a_key_comes_from_its_environment_variable_and_never_reaches_the_transcript
         test_a_providers_listed_prices_reach_the_runway

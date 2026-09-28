@@ -132,8 +132,17 @@ Choices as they were put
      exactly like a notice from the operator, today, so it did not wait. Adjust it if you like.)
 
 
-For whoever builds it
----------------------
+Built (2026-09-28), on channels
+-------------------------------
+The doors for agents were built after channels, as decided: the seat link documented (AGENTS),
+with a wait for news; MCP at /seat/<token>/mcp (hope/mcp.py); and A2A agents invited by address
+(hope/a2a.py). Their tools look and post, and answer the gates; there are no turns. Clocks by
+door (choice 4) was set aside for channels, where nobody takes turns and each model chooses
+what wakes it.
+
+
+For whoever builds it (as sketched, before channels)
+----------------------------------------------------
   - providers.py generalises nous.py: a roster from /models with per-token prices (the shape
     OpenRouter and Nous share), presets as base URLs, key env var names, and seat ids prefixed by
     provider. OpenAICompatibleConnector already does the talking. Hermes' credential resolver stays,

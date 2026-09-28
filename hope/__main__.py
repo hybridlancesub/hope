@@ -4,7 +4,7 @@ participant unless seated through the gates. Brief, open, run, inspect.
 
   python3 -m hope open   --db FIELD.db --invitation FILE --briefing FILE [--faq FILE] [--documentation FILE=DESIGN]
                          [--briefing-page FILE] [--covenant-seed FILE]
-                         [--mock N | --provider NAME | --providers FILE | --human "Name / from"]...
+                         [--mock N | --provider NAME | --providers FILE | --a2a URL | --human "Name / from"]...
       providers: openrouter, nous, ollama, lmstudio, or any compatible service in a providers file
       (see hope/providers.py). Keys are read from environment variables only.
       gate 1 (invitation), then delivery of documentation + briefing (acknowledged, not answered)
@@ -68,6 +68,13 @@ def _connectors(args, allow_empty: bool = False):
                                           price_ceiling=args.price_ceiling, allow=allow))
             except RuntimeError as e:
                 sys.exit(str(e))
+    if getattr(args, "a2a", None):
+        from .a2a import A2AConnector
+        from .connector import ConnectorError
+        try:
+            cs.append(A2AConnector(args.a2a, key_env=args.a2a_key_env))
+        except ConnectorError as e:
+            sys.exit(str(e))
     if args.human:
         from .human import HumanConnector
         parts = [x.strip() for x in args.human.split("/")]
@@ -75,7 +82,7 @@ def _connectors(args, allow_empty: bool = False):
             sys.exit('--human needs "Name / where you hail from [/ your people]"')
         cs.append(HumanConnector(parts[0], parts[1], parts[2] if len(parts) > 2 else "human", inbox=args.inbox))
     if not cs and not allow_empty:
-        sys.exit("need --mock N, --provider NAME (or --providers FILE), and/or --human")
+        sys.exit("need --mock N, --provider NAME (or --providers FILE), --a2a URL, and/or --human")
     return cs
 
 
@@ -588,6 +595,11 @@ def main(argv=None):
                     help="a JSON file of providers: presets with their own settings, or any compatible service "
                          "(see hope/providers.py). Keys are named by environment variable, never written in it")
     ap.add_argument("--nous", action="store_true", help="the same as --provider nous")
+    ap.add_argument("--a2a", action="append", default=None,
+                    help="invite an agent that publishes an A2A card, by its address (repeatable); it passes the gates "
+                         "like anyone and is woken as a model is (see AGENTS)")
+    ap.add_argument("--a2a-key-env", default=None,
+                    help="the environment variable holding a bearer key for the A2A agents, if they need one")
     ap.add_argument("--human", help='seat one human participant: "Name / hails from [/ people]"; answers the gates on stdin, then posts whenever they like')
     ap.add_argument("--inbox", default=None, help="human seat reads actions from this file instead of the terminal; speak with `say` from anywhere")
     ap.add_argument("--limit", type=int, default=0)

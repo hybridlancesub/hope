@@ -10,7 +10,9 @@ It runs the engine in this process and serves two different surfaces from it:
                                                 the covenant page, what waits on you), the Loom
                                                 (what is happening now, with the tellings) and
                                                 the Firmament (the whole field as a sky)
-  a SEAT                 /seat/<seat token>/    one participant's own gate questions and turns
+  a SEAT                 /seat/<seat token>/    one participant's own gate questions, then the field as
+                                                 they may read it, and posting; /mcp is the same seat
+                                                 as an MCP server (hope/mcp.py; AGENTS says how)
 
 The Loom and the Firmament are the files in firmament/, served here under /firmament/. Their
 code is public and needs no key; their data (/firmament/state.json and story.json) does. The key
@@ -354,11 +356,21 @@ class Console:
                     out["state"] = "in_field"
         return out
 
-    def seat_field(self, token: str, since: int = 0) -> Dict[str, Any]:
+    def seat_field(self, token: str, since: int = 0, wait: float = 0.0) -> Dict[str, Any]:
         """A member's page: what is new for them, the channels they may speak in, and whether
-        anything changed since `since`. Looking is recorded for the software, so "since you were
-        last here" stays true; no participant reads that."""
+        anything changed since `since`. With `wait` (up to 60 seconds), it waits for something new
+        first, so an agent need not ask again and again. Looking is recorded for the software, so
+        "since you were last here" stays true; no participant reads that."""
+        import time as _time
         seat = self.rv.seat_for_token(token)
+        deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
+        while _time.time() < deadline:
+            st = self.room.state()
+            p = st.presences.get(seat.id) if seat else None
+            if p is None or p.state != "IN" or \
+                    max((e["id"] for e in st.recent if st.readable(e, p.id)), default=0) > since:
+                break
+            _time.sleep(0.5)
         st = self.room.state()
         p = st.presences.get(seat.id) if seat else None
         if p is None or p.state != "IN":
@@ -482,6 +494,24 @@ def make_console_handler(console: Console):
         def log_message(self, *a):
             pass
 
+        def _mcp(self, token: str):
+            from urllib.parse import urlparse
+            from . import mcp
+            if rv is None or rv.seat_for_token(token) is None:
+                return self._json({"jsonrpc": "2.0", "error": {"code": -32001, "message": "this address is not a seat"}}, 404)
+            origin = self.headers.get("Origin")
+            if origin and urlparse(origin).netloc != (self.headers.get("Host") or ""):
+                return self._json({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Origin not allowed"}}, 403)
+            n = int(self.headers.get("Content-Length") or 0)
+            if n <= 0 or n > MAX_BODY:
+                return self._json({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}}, 400)
+            raw = self.rfile.read(n)
+            headers = {k.lower(): v for k, v in self.headers.items()}
+            status, body = mcp.handle(console, token, headers, raw)
+            if body is None:
+                return self._send(status, b"", "text/plain")
+            return self._send(status, json.dumps(body, ensure_ascii=False).encode(), "application/json")
+
         # -- GET ---------------------------------------------------------------
         def do_GET(self):
             from urllib.parse import urlparse
@@ -499,8 +529,16 @@ def make_console_handler(console: Console):
                     return self._json(console.seat_turn(token))
                 if tail == "/field.json":
                     from urllib.parse import parse_qs
-                    since = _int((parse_qs(urlparse(self.path).query).get("since") or ["0"])[0]) or 0
-                    return self._json(console.seat_field(token, since))
+                    q = parse_qs(urlparse(self.path).query)
+                    since = _int((q.get("since") or ["0"])[0]) or 0
+                    try:
+                        wait = float((q.get("wait") or ["0"])[0])
+                    except ValueError:
+                        wait = 0.0
+                    return self._json(console.seat_field(token, since, wait))
+                if tail == "/mcp":
+                    # MCP has no standalone stream in this revision: POST only
+                    return self._send(405, b"", "text/plain", {"Allow": "POST"})
                 if tail == "/words.json":
                     from .prompts import SEAT_PAGE
                     return self._json(SEAT_PAGE)
@@ -552,9 +590,12 @@ def make_console_handler(console: Console):
         def do_POST(self):
             from urllib.parse import urlparse
             route = urlparse(self.path).path
+            token = self._seat_token(route)
+            if token is not None and route.split(token, 1)[1] == "/mcp":
+                # the seat as an MCP server (hope/mcp.py); the token in the address is the seat
+                return self._mcp(token)
             payload = self._body()
 
-            token = self._seat_token(route)
             if token is not None:
                 if rv is None or rv.seat_for_token(token) is None:
                     return self._json({"error": "this link is not a seat"}, 404)
