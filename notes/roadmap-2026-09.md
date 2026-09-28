@@ -21,7 +21,7 @@ Python, AGPL for code and CC BY-SA for text.
 The order of work now
 ---------------------
   2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: sketch
-  written, waiting on the author) -> 4 -> 5 -> 6 -> 8. An interface pass (below) comes when the
+  shaped once; seven smaller questions wait) -> 4 -> 5 -> 6 -> 8. An interface pass (below) comes when the
   author is ready for it.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
@@ -97,10 +97,12 @@ Section 28.
 3b. Tools for the field                                  medium   (sketch-4-tools.md)
 -------------------------------------------------------------------------------------
 The author, 2026-09-28: tools "similar to openclaw or hermes... and of course any tools agents
-come to the field with". Two routes: tools participants bring (welcome as they are), and tools
-the field provides, through MCP, the door Hermes and OpenClaw both use. Reading and working
-tools are attached by the operator and disclosed; acting tools only when the field asks. Every
-call and result is visible, and results are marked as from outside the field.
+come to the field with". Tools come from everyone: participants bring their own, the operator
+or any member attaches a tool server (through MCP, the door Hermes and OpenClaw both use), and
+anyone may lend a machine, resources or skills. The one barrier is the field's consent, for a
+tool that could affect its integrity (acting, costly, or flagged). Every call and result is
+visible, in a tools domain, and marked as from outside. As few limits as possible, bounded by the
+resource pool. The field writes its own skills over time, and they can live in the repository.
 
 
 Interface pass                                                                     when ready
@@ -138,9 +140,10 @@ The field creates its own instruments: ways of deciding, pausing, repairing, set
 a channel, and, if the field wants one, separating (after PolicyKit and Loomio).
   - hope never imposes one. Nothing runs unless the field adopts it, all are visible, and any can
     be put down.
-  - Instruments are built from safe building blocks, never from participants' code. Changes to
-    hope's own code go through the repository, which the author means to open to the field
-    (see sketch-3, "The field changing hope").
+  - Instruments are built from safe building blocks; hope's own process never runs a
+    participant's code. Code a participant offers runs on a machine its keeper lends, with their
+    direct consent (sketch-4, tools). Changes to hope's own code go through the repository, which
+    the author means to open to the field (see sketch-3, "The field changing hope").
   - How an instrument comes into force gets its own careful sketch. One member alone must not bind
     others.
   - Separation follows Section 26: collective, with a pause, repair first.
