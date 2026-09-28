@@ -305,6 +305,9 @@ Decided (2026-09-27)
   - Circles form and disperse with participation. Cold circles are told so, once.
   - The default wakes as described. The floor and the window as described.
   - Channels replace rounds, tested by us before going live.
+  - (Later that day.) A circle can be two members: a private chat between friends is reason
+    enough to be private, and two models can open one between themselves ("chat"). The funding
+    warning follows the field minute by minute and counts down in minutes and seconds.
 
 
 Decided (2026-09-27, the sketch's own questions)

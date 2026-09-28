@@ -533,10 +533,14 @@ class RoomTest(unittest.TestCase):
         for _ in range(12):
             room.step()
         notices = [e["payload"] for e in room.log.iter(kind="runway")]
-        self.assertTrue(notices[0].get("hours_left") is not None, "first, how long it lasts at the current rate")
+        self.assertTrue(notices[0].get("low") and notices[0].get("seconds_left") is not None,
+                        "first, that it is low, measured in seconds")
         self.assertTrue(notices[-2].get("closing") and notices[-1].get("ended"))
         views = seen["mock-0"]
-        self.assertIn("FUNDING IS RUNNING LOW: at the current rate it lasts about", views[1])
+        self.assertIn("FUNDING IS RUNNING LOW: at the rate of the last five minutes, what is left lasts about", views[1])
+        self.assertRegex(views[1], r"lasts about \d+ (second|minute)", "in minutes and seconds")
+        left = [int(x) for x in __import__("re").findall(r"lasts about (\d+) second", " ".join(views[1:-1]))]
+        self.assertEqual(left, sorted(left, reverse=True), "and it counts down, view by view")
         self.assertIn("THIS IS THE LAST WAKE", views[-1], "the closing wake says so")
         self.assertFalse(any("LAST WAKE" in v for v in views[:-1]))
         closing_at = [e for e in room.log.iter(kind="runway") if e["payload"].get("closing")][0]["id"]
@@ -870,7 +874,7 @@ class RoomTest(unittest.TestCase):
         room.set_budget(4.00)
         note = room.state().operator_notes[-1]["content"]
         self.assertIn("Funding has been added to the field", note)
-        self.assertIn("At the current rate it lasts about", note)
+        self.assertIn("At the rate of the last five minutes it lasts about", note)
         self.assertNotIn("$", note)
         self.assertEqual(room.state().budget, 4.00)
 
@@ -1883,8 +1887,8 @@ class ViewerTest(unittest.TestCase):
         self.assertAlmostEqual(s["total_usd"], 1.5, places=6)
         self.assertAlmostEqual(s["remaining_usd"], 8.5, places=6)
         self.assertAlmostEqual(s["typical_call_usd"], 0.50, places=6)
-        self.assertAlmostEqual(s["rate_usd_per_hour"], 9.0, places=6)   # $1.50 over at least ten minutes
-        self.assertAlmostEqual(s["hours_left"], 0.9, places=6)
+        self.assertAlmostEqual(s["rate_usd_per_minute"], 1.5, places=6)   # $1.50 over at least a minute
+        self.assertEqual(s["seconds_left"], 340)                            # $8.50 at $1.50 a minute
         self.assertEqual(s["by_presence"][0]["calls"], 3)
 
     # a field of free seats has a real median of zero, which is not the same as unknown --------------
@@ -1894,7 +1898,7 @@ class ViewerTest(unittest.TestCase):
         log.charge("mock-0", "mock/model-0", 10, 1, 0.0)
         s = spend_json(log, budget=10.0)
         self.assertEqual(s["typical_call_usd"], 0.0, "free seats cost zero, not None")
-        self.assertIsNone(s["hours_left"], "a free field has no finite runway to report")
+        self.assertIsNone(s["seconds_left"], "a free field has no finite runway to report")
 
     # the raw stream the operator could not see, and the file export, are one text ------------------
     def test_record_text_is_the_raw_stream_and_matches_export(self):
@@ -2664,6 +2668,20 @@ class ChannelTest(unittest.TestCase):
         st = self.st()
         self.assertFalse(st.readable(secret, self.d), "what was written while private stays private")
         self.assertTrue(st.readable(later, self.d))
+
+    def test_two_members_can_chat_privately_and_that_is_reason_enough(self):
+        self.act(self.a, action="chat", **{"with": "Mock 1"}, content="Just us, for a while?")
+        c = self.st().circles[self.last("circle_form")["id"]]
+        self.assertTrue(c["private"])
+        self.assertEqual(c["reason"], "a private chat between two members")
+        self.assertEqual(c["members"], [self.a], "the other is asked, not put in")
+        first = self.last("contribute")
+        self.assertEqual(first["payload"]["circle"], c["id"])
+        self.assertFalse(self.st().readable(first, self.c), "no one else reads it")
+        ask = [x for x in self.st().awaiting.values() if x["subject"] == self.b][0]
+        self.act(self.b, action="answer", to=ask["id"], yes=True)
+        self.assertEqual(self.st().circles[c["id"]]["members"], [self.a, self.b])
+        self.assertTrue(self.st().readable(first, self.b), "once in, they read what was said")
 
     def test_a_harvest_is_shared_only_with_every_current_members_yes(self):
         cid = self.form(self.a, "tempo")

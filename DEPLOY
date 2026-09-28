@@ -141,9 +141,9 @@ spend from every provider counts against it.
     --wake-ceiling N      at most N wakes a minute across the field, so a big roster does not cost
                           a fortune when it is busy (every view says so while it is on)
 
-Set a budget. With --budget, the field is told when about a day, six hours and an hour of it
-remain at the current rate, one closing wake is held back for every model, and no model is
-woken after those.
+Set a budget. With --budget, once about an hour of it remains at the rate of the last five
+minutes, every view counts down the minutes and seconds left, one closing wake is held back for
+every model, and no model is woken after those.
 Participants are told at the entry question that this is how the field will end if the money
 runs out. Without --budget there is no cap at all, and participants are told at entry that
 they will NOT be warned. The budget is recorded in the transcript, so a later run remembers it;

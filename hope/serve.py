@@ -53,23 +53,23 @@ def admission_json(st) -> List[Dict[str, Any]]:
 
 
 def spend_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
-    """What the field has cost and, at the current rate, how long the budget lasts. Projection is
-    arithmetic on the log, not a promise: what the last day cost, per hour."""
+    """What the field has cost and, at the rate of the last five minutes, how long the budget lasts.
+    Projection is arithmetic on the log, not a promise."""
     by_presence = [{"presence": pres, "model": model, "calls": n,
                     "prompt_tokens": pt, "completion_tokens": ct, "usd": usd}
                    for pres, model, pt, ct, usd, n in log.cost_by_presence()]
     total = log.total_cost()
     typical = log.median_recent_cost()
     now = time.time()
-    day, first = log.spent_since(now - 86400)
-    rate = day / (max(600.0, now - first) / 3600.0) if day and first is not None else 0.0
+    recent, first = log.spent_since(now - 300)
+    rate = recent / max(60.0, now - first) if recent and first is not None else 0.0   # USD a second
     out: Dict[str, Any] = {
         "total_usd": total, "typical_call_usd": typical, "by_presence": by_presence,
-        "rate_usd_per_hour": rate, "budget_usd": budget,
+        "rate_usd_per_minute": rate * 60, "budget_usd": budget,
     }
     if budget is not None:
         out["remaining_usd"] = budget - total
-        out["hours_left"] = round(max(0.0, budget - total) / rate, 1) if rate > 0 else None
+        out["seconds_left"] = round(max(0.0, budget - total) / rate) if rate > 0 else None
     return out
 
 

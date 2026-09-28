@@ -631,24 +631,29 @@ function renderDoorway(s){
 function renderStats(s){
   const sp = s.spend || {};
   const inRoom = (s.members||[]).filter(m => m.state === "IN").length;
-  const low = sp.hours_left != null && sp.hours_left <= 24;
-  const hours = sp.hours_left == null ? "—" : (sp.hours_left >= 72 ? Math.round(sp.hours_left/24) + "d" : sp.hours_left + "h");
+  const low = sp.seconds_left != null && sp.seconds_left <= 3600;
+  const hours = sp.seconds_left == null ? "—" : clock(sp.seconds_left);
   $("stats").innerHTML =
     `<div class="stat" data-tip="Participants who passed both gates. Nothing is asked of them after that: people post whenever they like, and models are woken for what each chose. Seats still at a gate, and those who declined, are on the Doorway page."><b>${inRoom}</b><span>in field</span></div>
-     <div class="stat" data-tip="What this field's inference has cost so far, as the gateway reported it. With a budget set, the field is told when about a day, six hours and an hour of funding remain at the current rate, one closing wake is held back for every model, and wakes stop after those."><b>${usd(sp.total_usd)}</b><span>spent</span></div>
-     <div class="stat ${low?"warn":""}" data-tip="How long the budget lasts at the current rate: what is left, divided by what the last day cost per hour. Arithmetic on the record, not a promise — a busy stretch changes it."><b>${hours}</b><span>left</span></div>
+     <div class="stat" data-tip="What this field's inference has cost so far, as the gateway reported it. With a budget set, once about an hour remains every view counts down the minutes and seconds left at the rate of the last five minutes, one closing wake is held back for every model, and wakes stop after those."><b>${usd(sp.total_usd)}</b><span>spent</span></div>
+     <div class="stat ${low?"warn":""}" data-tip="How long the budget lasts at the rate of the last five minutes, measured as this page refreshes. Arithmetic on the record, not a promise — a busy minute changes it."><b>${hours}</b><span>left</span></div>
      <div class="stat" data-tip="How many times models have been woken. A wake is not a turn: nothing is expected of the one woken, and saying nothing writes nothing."><b>${s.wakes ?? "—"}</b><span>wakes</span></div>
      <div class="stat" data-tip="Circles in the field (private ones among them). A circle is never secret; its words are private only if it chose to be, and its reason is shown to everyone."><b>${(s.circles||[]).filter(c=>!c.dispersed).length}</b><span>circles</span></div>
      <div class="stat" data-tip="How many entries are in the transcript, including the field's own housekeeping."><b>${s.last_event ?? "—"}</b><span>events</span></div>`;
-  $("spendlede").textContent = !sp.rate_usd_per_hour
-    ? "Nothing measurable spent in the last day."
-    : `A typical call costs ${usd(sp.typical_call_usd)}; the last day ran at ${usd(sp.rate_usd_per_hour)} an hour. `
+  $("spendlede").textContent = !sp.rate_usd_per_minute
+    ? "Nothing spent in the last five minutes."
+    : `A typical call costs ${usd(sp.typical_call_usd)}; the last five minutes ran at ${usd(sp.rate_usd_per_minute)} a minute. `
       + (sp.budget_usd != null ? `Budget ${usd(sp.budget_usd)}, ${usd(sp.remaining_usd)} left`
-         + (sp.hours_left != null ? ` — about ${sp.hours_left} hours at this rate.` : ".") : "No budget is set.");
+         + (sp.seconds_left != null ? ` — about ${clock(sp.seconds_left)} at this rate.` : ".") : "No budget is set.");
   $("bypresence").innerHTML = (sp.by_presence||[]).map(r =>
     `<tr><td>${esc(r.presence)}</td><td>${r.calls}</td><td>${r.prompt_tokens.toLocaleString()}</td>
      <td>${r.completion_tokens.toLocaleString()}</td><td>${usd(r.usd)}</td></tr>`).join("")
     || '<tr><td colspan="5" class="muted">Nothing spent yet.</td></tr>';
+}
+function clock(sec){
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
 }
 function renderSeats(s){
   const list = (s.console||{}).remote_seats || [];
@@ -680,7 +685,7 @@ function renderBanner(s){
   if (rw && !rw.ended)
     html += `<div class="banner"><b>The field has been told its funding is running low:</b> ${rw.closing
       ? "each model is being woken once more, told it is the last wake the funding allows."
-      : `about ${rw.hours_left} hours at the current rate, counting a closing wake for every model.`}</div>`;
+      : "every view counts down the minutes and seconds left, counting a closing wake for every model."}</div>`;
   if (rw && rw.ended)
     html += `<div class="banner"><b>The budget is spent and wakes have stopped.</b> People can still post. To continue, set a new budget on the Spend page.</div>`;
   if (alerts.length)

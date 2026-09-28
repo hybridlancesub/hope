@@ -16,6 +16,7 @@ The format is plain text, translated to the same JSON actions models send:
     pause [for 3h | until addressed | until news] [/ words for the field]
                                     step back; anything you do ends it
     follow <domain> | follow circle <name> | unfollow ...
+    chat with <name> [: first words]              a private circle of two; they are asked in
     form <name> [/ purpose] [/ private: why]      form a circle (open unless you say private)
     join <circle> | leave <circle> | knock <circle> [: note]
     ask <name> into <circle> [: note]
@@ -32,7 +33,7 @@ The format is plain text, translated to the same JSON actions models send:
                                     saying how, in the way its covenant describes; #ids become citations
     offer <text>                    put an offer of resources before the operator and everyone
     recall [briefing|transcript|memory|covenant|prior] <words>
-                                    re-read matching passages (shown next turn; briefing if unnamed)
+                                    re-read matching passages (shown the next time you look; briefing if unnamed)
     withdraw [reason] [/ when it would be fair to ask you back]
     question <text>                 (invitation gate only)
     yes [statement] | no [reason]   (at either gate; "no ... / ask again when ..." records terms)
@@ -273,6 +274,9 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     if low.startswith("knock "):
         circle, _, note = s[6:].partition(":")
         return {"action": "knock", "circle": circle.strip(), "note": note.strip()}
+    m = re.match(r"chat\s+with\s+([^:]+)(?::(.*))?$", s, re.I | re.S)
+    if m:
+        return {"action": "chat", "with": m.group(1).strip(), "content": (m.group(2) or "").strip()}
     m = re.match(r"ask\s+(.+?)\s+into\s+([^:]+)(?::(.*))?$", s, re.I | re.S)
     if m:
         return {"action": "ask", "who": m.group(1).strip(), "circle": m.group(2).strip(), "note": (m.group(3) or "").strip()}

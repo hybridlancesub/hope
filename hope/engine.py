@@ -45,7 +45,7 @@ HUMAN_TEMPO = ("human", "remote")   # seats that post for themselves: a person a
 PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall", "rest", "declare", "offer",
                        "clock", "relabel", "pass", "quiet", "withdraw",
                        # channels: domains and circles (notes/sketch-3-channels.md)
-                       "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
+                       "chat", "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
                        "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for",
                        # earlier versions' words, still understood so an old client does not break:
                        "affirm", "challenge", "note", "move"}
@@ -58,6 +58,7 @@ REASON_LIMIT = 600          # characters for a reason: why a circle is private, 
 BREATH_LIMITS = (3600, 30 * 86400)   # a breath, if a member wants one: from an hour to thirty days
 QUIET_LIMITS = (1, 30 * 24)          # hours a circle may be quiet before it is told so
 WAKE_COST_MARGIN = 1.15     # a wake is estimated this much dearer than recent ones, so the closing wakes are really paid for
+RATE_WINDOW = 300.0         # seconds: the runway is measured, continuously, over the last five minutes
 INVITATION_ACTIONS = {"accept_invitation", "decline", "question"}
 DELIVERY_ACTIONS = {"received", "decline"}
 ENTRY_ACTIONS = {"opt_in", "decline"}
@@ -68,7 +69,7 @@ class Room:
                  alert_every_usd: float = 50.0, alert_fn: Callable[[str], None] = print,
                  parallel: int = 8, on_event: Optional[Callable[[dict], None]] = None,
                  window: float = 120.0, floor: float = FLOOR, wake_ceiling: int = 0,
-                 recent_n: int = 20, runway_notice: float = 24.0, narrator=None, tell_every: int = 20,
+                 recent_n: int = 20, runway_notice: float = 60.0, narrator=None, tell_every: int = 20,
                  headlines: int = prompts.HEADLINES_DEFAULT, linger: int = prompts.LINGER_MESSAGES,
                  linger_budget: int = prompts.LINGER_BUDGET, news_budget: int = prompts.NEWS_BUDGET,
                  tick: float = 1.0, publish_checkpoints: str = "", published_at: str = ""):
@@ -90,7 +91,7 @@ class Room:
         self.news_budget = max(2000, int(news_budget))
         self.recent_n = recent_n                # entries of context shown before the news in each channel
         self.headlines = max(0, int(headlines))  # earlier entries shown as one line each; 0 = none
-        self.runway_notice = float(runway_notice)   # hours: the field is told when about this much funding time remains
+        self.runway_notice = float(runway_notice)   # minutes: the field is told when about this much funding time remains
         self.tick = float(tick)                 # how often the scheduler looks, at most, when nothing nudges it
         self.log = log
         self.connectors = connectors
@@ -243,7 +244,7 @@ class Room:
         if st.members() and before is not None:
             rate = self._spend_rate()
             left = float(usd) - self.log.total_cost()
-            rounds = (f" At the current rate it lasts about {prompts.duration(max(0.0, left) / rate * 3600)}."
+            rounds = (f" At the rate of the last five minutes it lasts about {prompts.countdown(max(0.0, left) / rate)}."
                       if rate > 0 else "")
             word = "added to" if float(usd) > before else "reduced for"
             note = (note or "").strip()[:1000]
@@ -601,7 +602,7 @@ class Room:
         st = self.state()
         p = st.presences[pid]
         c, seat = self.seat_of[pid]
-        view = prompts.wake_view(st, p, w["why"], w.get("where"), limits=self.limits(),
+        view = prompts.wake_view(st, p, w["why"], w.get("where"), limits=self.limits(), funding=self.runway_now(st),
                                  recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
                                  people_ids=set(self._people_ids()), context=self.recent_n,
                                  headlines=self.headlines, news_budget=self.news_budget,
@@ -710,6 +711,7 @@ class Room:
         st = self.state()
         p = st.presences[pid]
         text = prompts.person_view(st, p, catch_up=self._catch_up(st, p), limits=self.limits(),
+                                   funding=self.runway_now(st),
                                    recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
                                    people_ids=set(self._people_ids()), context=self.recent_n,
                                    headlines=self.headlines, news_budget=self.news_budget,
@@ -1057,6 +1059,26 @@ class Room:
             if not payload:
                 return "wake takes \"addressed\", \"replies\" or \"written\" (true or false), or \"breath\" (a length of time, or \"never\")"
             self.emit(pid, "wake_pref", payload)
+        elif a == "chat":
+            # A private circle of two, in one step: a private chat is reason enough to be private.
+            # The other is asked, like anyone asked into a circle, and says yes or no.
+            to, unknown = _presences_ref(st, act.get("with", act.get("who")))
+            to = [x for x in to if x != pid]
+            if len(to) != 1:
+                return "chat is with one other member, by name or id, as \"with\"" + (
+                    f" (no member named {', '.join(unknown)})" if unknown else "")
+            other = st.presences[to[0]]
+            me = st.presences[pid]
+            name = _label(act.get("name"), 80) or f"{me.name} and {other.name}"
+            if any(labels.normalize(c["name"]) == labels.normalize(name) for c in st.live_circles()):
+                return f"a circle named {name!r} already exists; to talk there, write in it, or choose another name"
+            reason = _clean(act.get("reason"), REASON_LIMIT) or "a private chat between two members"
+            ev = self.emit(pid, "circle_form", {"name": name, "purpose": _clean(act.get("purpose"), 600) or "a private chat",
+                                                "domains": [], "private": True, "reason": reason})
+            self.emit(pid, "circle_ask", {"circle": ev["id"], "presence": other.id, "note": _clean(act.get("note"), 600)})
+            first = _clean(act.get("content"), CONTRIBUTION_LIMIT)
+            if first:
+                self.emit(pid, "contribute", {"circle": ev["id"], "domain": "", "content": first})
         elif a == "form_circle":
             name = _label(act.get("name"), 80)
             if not name:
@@ -1325,20 +1347,45 @@ class Room:
         return max(recent) * WAKE_COST_MARGIN if recent else 0.0
 
     def _spend_rate(self) -> float:
-        """USD an hour over the last day, or since spending began if that is shorter (at least ten
-        minutes are counted, so a burst at the start does not read as a flood)."""
+        """USD a second over the last five minutes, or since spending began if that is shorter (at
+        least a minute is counted, so one call does not read as a flood). Measured each time it is
+        asked, so the runway follows the field minute by minute."""
         now = time.time()
-        total, first = self.log.spent_since(now - 86400)
+        total, first = self.log.spent_since(now - RATE_WINDOW)
         if not total or first is None:
             return 0.0
-        return total / (max(600.0, now - first) / 3600.0)
+        return total / max(60.0, now - first)
+
+    def _models(self, st: RoomState) -> List:
+        return [p for p in st.reachable_members() if p.id in self.seat_of and not self._human_tempo(p.id)]
+
+    def runway_now(self, st: Optional[RoomState] = None) -> Optional[Dict[str, Any]]:
+        """What every view says about funding, measured as it is shown: once funding is low, how
+        long what is left lasts at the rate of the last five minutes, counting the closing wakes
+        held back; if nothing was spent in the last five minutes, how many wakes it still pays
+        for. None when there is no budget, or nothing to say yet."""
+        st = st or self.state()
+        rw = st.runway or {}
+        if not st.budget or not rw or rw.get("ended"):
+            return None
+        if rw.get("closing"):
+            return {"closing": True}
+        per = self._wake_estimate()
+        left = st.budget - self.log.total_cost() - per * max(1, len(self._models(st)))
+        rate = self._spend_rate()
+        if rate > 0:
+            return {"low": True, "seconds_left": max(0.0, left / rate)}
+        if per > 0:
+            return {"low": True, "wakes_left": int(max(0.0, left) // per)}
+        return {"low": True}
 
     def _runway(self) -> bool:
         """Tell the field when its funding is running low, hold back a closing wake for every model
         not pausing, and end the wakes once those have been given. Returns True when wakes must stop.
 
-        Nothing here says anything in dollars to the field. It speaks in time at the current rate,
-        and only when the end is near, so money is not a standing topic. A free field, or one with
+        Nothing here says anything in dollars to the field. It speaks in minutes and seconds at the
+        rate of the last five minutes, and only when the end is near, so money is not a standing
+        topic. Once it has spoken, every view counts down (runway_now). A free field, or one with
         no budget, is never told anything by this."""
         st = self.state()
         if not st.budget:
@@ -1347,7 +1394,7 @@ class Room:
         if rw.get("ended"):
             return True
         now = time.time()
-        models = [p for p in st.reachable_members() if p.id in self.seat_of and not self._human_tempo(p.id)]
+        models = self._models(st)
         if rw.get("closing"):
             waiting = [p for p in models if p.last_wake_ts < float(rw.get("at") or 0) and not self._paused(p, now)]
             if not waiting and not self._busy and not self._late:
@@ -1368,13 +1415,11 @@ class Room:
             self.alert("the funding left pays for one more wake for each model: each is woken once more, told it is the last.")
             return False
         rate = self._spend_rate()
-        if rate <= 0:
+        if rate <= 0 or rw.get("low"):
             return False
-        hours = (left - per * len(models)) / rate
-        marks = sorted({m for m in (self.runway_notice, 6.0, 1.0) if m <= self.runway_notice}, reverse=True)
-        reached = [m for m in marks if hours <= m]
-        if reached and (rw.get("mark") is None or min(reached) < rw["mark"]):
-            self.emit(ROOM, "runway", {"hours_left": round(hours, 1), "mark": min(reached), "at": now})
+        seconds = (left - per * len(models)) / rate
+        if seconds <= self.runway_notice * 60:
+            self.emit(ROOM, "runway", {"low": True, "seconds_left": round(seconds), "at": now})
         return False
 
     # -- spend / alerts ----------------------------------------------------------
@@ -1496,7 +1541,7 @@ def _versions(versions: List[dict], names: Dict[str, str], query: str, limit: in
     return "\n\n".join(out)
 
 
-CHANNEL_ACTIONS = {"follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
+CHANNEL_ACTIONS = {"chat", "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
                    "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
 
 

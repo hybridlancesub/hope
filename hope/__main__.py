@@ -556,10 +556,11 @@ def main(argv=None):
                     help="a cost setting: at most N wakes a minute across the field, whoever has waited longest first "
                          "(disclosed in every view while on); 0 = none")
     ap.add_argument("--budget", type=float, default=0.0,
-                    help="USD this field may spend. Recorded in the transcript. When it runs low the field is told how long "
-                         "it lasts at the current rate, a closing wake is held back for every model, and wakes stop after them")
-    ap.add_argument("--runway-notice", type=float, default=24.0,
-                    help="hours: tell the field when about this much funding time remains at the current rate (and again at 6 and 1)")
+                    help="USD this field may spend. Recorded in the transcript. When it runs low every view counts down the "
+                         "minutes and seconds left, a closing wake is held back for every model, and wakes stop after them")
+    ap.add_argument("--runway-notice", type=float, default=60.0,
+                    help="minutes: tell the field when about this much funding time remains at the rate of the last five "
+                         "minutes; from then on every view counts down")
     ap.add_argument("--recent", type=int, default=20, help="transcript entries shown in each member's view")
     ap.add_argument("--headlines", type=int, default=180,
                     help="entries before the recent ones, shown as one line each in their author's own title (0 = none)")
