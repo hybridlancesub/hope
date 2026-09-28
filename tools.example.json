@@ -78,7 +78,7 @@
     },
     {
       "name": "python",
-      "note": "Run Python in a sandbox (Pyodide in Deno), for computing and checking claims. Needs uv and Deno. The code runs on your machine inside the sandbox, with your consent by attaching it.",
+      "note": "Built in and on by default where uv and Deno are installed (--no-sandbox turns it off); listed here only as an example of a command server. The code runs on your machine inside the sandbox.",
       "command": ["uvx", "mcp-run-python", "stdio"],
       "kind": "working",
       "runner": "the operator's machine, in a sandbox",

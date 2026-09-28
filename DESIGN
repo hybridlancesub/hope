@@ -273,7 +273,8 @@ and any charge. Anyone may use them.
               use), one they run on a machine they lend or one they know of. It must be at a
               public https address: the software refuses the operator's own machine and private
               networks. It is in use once announced, and only whoever offered it removes it. The
-              software never runs a participant's code; code a member offers runs on the machine
+              field can run code, in its Python sandbox or on any machine a member lends; it never runs
+              inside the software's own program, which holds everyone's words; code a member offers runs on the machine
               that member lends.
   Flags       A member who thinks a tool could change the field in ways no one intended may flag
               it, saying why. A flagged tool should be avoided: every view shows the flag, and

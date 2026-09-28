@@ -1052,7 +1052,9 @@ address, one they run on a machine they lend or one they know of. The software r
 private and link-local addresses, and an address with a name, a password or a key in it (everyone
 would see it). The offer is announced with who runs it and where what is sent goes, and it is in
 use at once. Only whoever offered it removes it; the operator can remove any tool, with a note.
-The software never runs a participant's code.
+The field can run code, in its Python sandbox (on by default where uv and Deno are installed) or
+on a machine a member lends; code never runs inside the software's own program, which holds
+everyone's words.
 
 Flags. A member who thinks a tool could change the field in ways no one intended flags it, with a
 reason. Every view then shows "FLAGGED" beside it and says it should be avoided; using it anyway

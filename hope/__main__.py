@@ -128,18 +128,20 @@ def _narrator(args):
 
 
 def _tools(args):
-    """The field's tools: the built-in fetch (unless --no-fetch) and the operator's tools file."""
+    """The field's tools: the built-in fetch (unless --no-fetch), a Python sandbox where uv and Deno
+    are installed (unless --no-sandbox), and the operator's tools file."""
     from .tools import ToolError, ToolHub
     hub = ToolHub(builtin_fetch=not getattr(args, "no_fetch", False),
-                  allow_local=getattr(args, "tools_allow_local", False))
+                  allow_local=getattr(args, "tools_allow_local", False),
+                  builtin_sandbox=not getattr(args, "no_sandbox", False))
     if getattr(args, "tools", None):
         try:
             names = hub.load(args.tools)
         except (OSError, ValueError, ToolError) as e:
             sys.exit(f"--tools {args.tools}: {e}")
         print(f"tools attached from {args.tools}: {', '.join(names) or 'none'}", file=sys.stderr)
-        for why in hub.failed:
-            print(f"  not attached (the field is not told of it): {why}", file=sys.stderr)
+    for why in hub.failed:
+        print(f"  not attached (the field is not told of it): {why}", file=sys.stderr)
     return hub
 
 
@@ -663,6 +665,8 @@ def main(argv=None):
     ap.add_argument("--tools", default=None,
                     help="a tools file (JSON; see tools.example.json): the operator's MCP tool servers, by command or address")
     ap.add_argument("--no-fetch", action="store_true", help="do not give the field the built-in fetch (reading web pages)")
+    ap.add_argument("--no-sandbox", action="store_true",
+                    help="do not give the field its Python sandbox (on by default where uv and Deno are installed)")
     ap.add_argument("--tool-steps", type=int, default=32,
                     help="tool uses and readings on in one wake, a guard against a loop (each is checked against the runway)")
     ap.add_argument("--tool-view", type=int, default=20000,

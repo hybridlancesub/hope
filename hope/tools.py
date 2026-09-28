@@ -376,11 +376,13 @@ class Server:
 class ToolHub:
     """Every tool the field has: the built-in fetch, the operator's servers, and members' offers."""
 
-    def __init__(self, builtin_fetch: bool = True, allow_local: bool = False):
+    def __init__(self, builtin_fetch: bool = True, allow_local: bool = False, builtin_sandbox: bool = False):
         self.allow_local = allow_local
         self.servers: Dict[str, Server] = {}
         self.failed: List[str] = []                   # servers in the tools file that could not be started
         self.tools: Dict[str, Dict[str, Any]] = {}   # "server.tool" -> {server, name, description, schema, hints}
+        if builtin_sandbox:
+            self.add_sandbox()
         if builtin_fetch:
             self.servers["web"] = Server("web", "the operator's machine (hope's own fetch)",
                                          "the site at the address given", "reading")
@@ -391,6 +393,26 @@ class ToolHub:
                 "hints": {"readOnlyHint": True, "openWorldHint": True}}
 
     # attaching ------------------------------------------------------------------------------------------
+    SANDBOX = {"name": "python", "command": ["uvx", "mcp-run-python", "stdio"], "kind": "working",
+               "runner": "the operator's machine, in a sandbox (mcp-run-python: Python in Pyodide, inside Deno)",
+               "sends_to": "that sandbox, on the operator's machine",
+               "description": "Run Python code in a sandbox, to compute, check a claim, or read data."}
+
+    def add_sandbox(self) -> Optional[str]:
+        """Give the field a place to run code, on by default: a Python sandbox on the operator's
+        machine. It needs uv (uvx) and Deno; if they are missing, the field has none, and the
+        operator is told why (`failed`)."""
+        missing = [t for t in ("uvx", "deno") if not shutil.which(t)]
+        if missing:
+            self.failed.append(f"python sandbox: needs {' and '.join(missing)} installed (uv and Deno); until then "
+                               f"the field has no sandbox of its own")
+            return None
+        try:
+            return self.attach(dict(self.SANDBOX), source="operator")
+        except ToolError as e:
+            self.failed.append(f"python sandbox: {e}")
+            return None
+
     def load(self, path: str) -> List[str]:
         """The operator's tools file: {"servers": [{"name", "command": [...] | "url", "kind", "runner",
         "sends_to", "key_env", "env": {...}, "env_pass": [...], "env_from": {...}, "price_per_call",

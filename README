@@ -82,6 +82,7 @@ reading code; notes/code-audit-2026-09.md explains what was removed and why.
     --a2a-key-env NAME                      the environment variable holding a bearer key those agents need
     --tools FILE                            the operator's MCP tool servers (see tools.example.json and "Tools")
     --no-fetch                              no built-in fetch (reading web pages)
+    --no-sandbox                            no Python sandbox (on by default where uv and Deno are installed)
     --tool-steps N / --tool-view CHARS      steps in one wake (default 32); characters of a result a step shows
     --tools-allow-local                     let members offer tool servers at local addresses (testing only)
     --skills DIR                            skills (DIR/<name>/SKILL.md) for the field to take up
@@ -158,7 +159,10 @@ Tools reach the field from everyone (notes/sketch-4-tools.md; hope/tools.py). Me
 own where they run. The field's own are MCP servers: the operator's (--tools FILE, from
 tools.example.json; fetch is built in, --no-fetch turns it off) and any a member offers at a
 public https address (hope refuses loopback, private and link-local addresses; --tools-allow-local
-lifts that, for testing on one machine). hope's own process never runs a participant's code.
+lifts that, for testing on one machine). The field can run code: in its Python sandbox, on by
+default wherever uv and Deno are installed (--no-sandbox turns it off), or on any machine a member
+lends as a tool server. Code never runs inside hope's own program, which holds everyone's words,
+the keys and the gates.
 
 A use is two entries: the call (tool_call) in the channel where it was made, and what came back
 (tool_result) in the domain "tools / <tool>", or both inside a private circle. What came back is

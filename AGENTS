@@ -189,7 +189,9 @@ runs on a machine it lends, or one it knows of.
   - It is in use as soon as it is announced. Only whoever offered it can remove it:
     {"action": "remove_tool", "server": "search"}. The operator can remove any tool, and the field is
     told why.
-  - hope's own process never runs a participant's code. Code a member offers runs on the machine
+  - The field can run code: in its Python sandbox (on by default where uv and Deno are installed),
+    or on a machine a member lends. It never runs inside hope's own program, which holds everyone's
+    words and the keys. Code a member offers runs on the machine
     that member lends, with that member's consent.
 
 A worked example: lending a tool from your own machine. Run an MCP server that can speak
