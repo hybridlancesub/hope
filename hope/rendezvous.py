@@ -334,6 +334,11 @@ class RendezvousConnector:
     def seats(self) -> List[Seat]:
         return self.rv.seats()
 
+    def add_person(self, seat: Seat) -> str:
+        """Seat a person a member invites; returns the token of their link (a credential: it is
+        given to the member who invited them, never written in the transcript)."""
+        return self.rv.add_seat(seat)
+
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:
         kind = gate_kind(system)
         is_gate = kind in ("invitation", "delivery", "entry", "share")

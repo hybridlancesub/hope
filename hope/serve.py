@@ -210,6 +210,7 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                 "turns": p.turns, "turn_allowance": p.turn_allowance, "exhausted": p.exhausted,
                 "unreachable": p.unreachable, "self_described": p.self_described,
                 "pausing": bool(p.pause), "pause_note": (p.pause or {}).get("note") or None, "roles": list(p.roles),
+                "invited_by": names.get(p.invited_by, p.invited_by) if p.invited_by else None,
                 "resting_until": None}
                for p in st.presences.values() if p.joined_at is not None]
     covenant = {"text": st.covenant, "by": names.get(st.covenant_by, st.covenant_by) if st.covenant_by else None,
@@ -224,7 +225,10 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
         "wakes": sum(p.turns for p in st.presences.values() if p.last_wake_ts),
         "circles": [{"id": c["id"], "name": c["name"], "private": c["private"], "members": len(c["members"]),
                      "domains": c["domains"], "dispersed": c["dispersed_at"] is not None,
-                     "reason": c["reason"] if c["private"] else ""} for c in st.circles.values()],
+                     "reason": c["reason"] if c["private"] else ""} for c in st.circles.values() if not st.secret(c)],
+        # repair threads, for the operator only: how many people, and where each stands; never who, never words
+        "repair_threads": [{"id": c["id"], "people": len(c["members"]), "status": c["repair"]["status"]}
+                           for c in st.circles.values() if st.secret(c) and c["dispersed_at"] is None],
         "private_entries": len(st.scoped),
         # the field's tools as every member sees them: who runs each, where what is sent goes, flags, uses
         "tools": [{"server": s["server"], "by": names.get(s["by"], s["by"]), "runner": s["runner"],

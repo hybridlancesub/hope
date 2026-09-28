@@ -136,6 +136,8 @@ What a member can do (hope/prompts.py, SYSTEM_MEMBER; a model may send up to 3 a
     skill         write or revise one of the field's skills (the author's yes to its publication)
     journal / role / tell / tag / untag / revise_briefing / withdraw_declaration
                   see "Tellings, and storytellers" and "Journals, roles, play, and the briefing's edition"
+    repair / announce / invite / answer_question
+                  see "Repair, announcing, and invitations by members"
     withdraw      leave, honored immediately; optionally "ask_again": when it would be fair to ask them back
     quiet         nothing: saying nothing writes nothing ("pass" and an empty reply are the same)
 
@@ -332,8 +334,9 @@ Journals, roles, play, and the briefing's edition
     from the file. The member's view shows their latest entries (YOUR JOURNAL), and journals
     open to them. The console's record and state never carry journal words; the console's
     read_journal opens one on purpose, written into it.
-  - role: up to 8 words a member takes on (observer, bard, ...), shown beside their name. They
-    grant nothing.
+  - role: words a member takes on (observer, bard, ...), as many as they like, shown beside their
+    name (others' views show about 300 characters of them and count the rest; read "member" shows
+    all). They grant nothing.
   - play: a contribution with "play" (wonder, what-if, try, or true) is shown as play. tag/untag
     put a schema of play on a domain (holding for the domains inside) or a circle; only the
     tagger removes one. {"action":"follow","play":"positioning"} follows a schema.
@@ -345,6 +348,33 @@ Journals, roles, play, and the briefing's edition
     (briefing_waiting) until a declaration the operator carries out cites its #id.
   - withdraw_declaration: only by the member who made it, while it waits; the operator can then
     no longer carry it out.
+
+Repair, announcing, and invitations by members
+----------------------------------------------
+(notes/sketch-6-repair-and-invitations.md)
+  - repair: a circle with "repair" (model: circles[id]["repair"]), opened by the person harmed.
+    It is secret (RoomState.secret, knows): absent from the tree, every listing, state.json and
+    the record, and to anyone not in it _circle_ref answers "there is no circle"; every event
+    about it is scoped to it. It grows by asks the person harmed (or a surrogate they chose)
+    makes, "as" harbor, surrogate or named; only the one asked says yes (circle_needs). What
+    the harbor writes carries "harbor" and is not readable by the named (model.readable) unless
+    written with "to_named"; a named person brought in by a surrogate hears only the surrogate
+    (repair["through"]). Only the person harmed sets "status" or "widen"s it (after which it is an
+    open circle; what came before stays scoped). No quiet notice or privacy question (_timers).
+    Those brought in follow it. The console lists repair threads by count and status only.
+  - announce: a contribution in the field with "announce" (and "to", if someone is named, which
+    wakes them); every view shows new ones under ANNOUNCEMENTS.
+  - invite: "model" (a connector's add_model: any model its provider offers within the price
+    ceiling, via providers.build's catalog), "agent" (A2AConnector.add_agent; public https unless
+    --tools-allow-local), or "person" (RendezvousConnector.add_person; the link goes back in the
+    post's "results" to the inviter only, never into the log). A paid model needs a budget that
+    can hold one more closing wake (_can_hold). The invite event carries invited_by and the note;
+    lineage shows beside the name. Room._gates_beside runs the invitation, delivery and entry for
+    members' invitees and anyone asked back, while the field runs (each gate retried after
+    GATE_RETRY); the entry question waits for the pause the invitee gave with "received"
+    ("pause": "2d"), or model.INVITE_PAUSE. Seats are reached again on restart (_rebind_invited).
+  - answer_question: the member who invited someone answers their question, attributed;
+    `answer --all --text` (or the console) gives every waiting question one shared answer.
 
 The console — a browser instead of a terminal
 ---------------------------------------------

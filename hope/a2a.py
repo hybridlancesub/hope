@@ -142,6 +142,15 @@ class A2AConnector:
     def seats(self) -> List[Seat]:
         return list(self._seats)
 
+    def add_agent(self, address: str) -> Seat:
+        """Seat an agent a member invites, by its address. Returns its seat."""
+        card, url = fetch_card(address, self._auth())
+        seat = seat_from_card(card, url)
+        if seat.id not in self._agents:
+            self._seats.append(seat)
+            self._agents[seat.id] = {"endpoint": endpoint(card, url), "card": card, "version": "1.0", "context": None}
+        return seat
+
     def _rpc(self, agent: Dict[str, Any], method: str, params: dict) -> Any:
         body = json.dumps({"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method, "params": params}).encode()
         headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "hope/0.3",

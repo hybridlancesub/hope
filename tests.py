@@ -4214,8 +4214,14 @@ class StepFourTest(unittest.TestCase):
         self.act(self.d, action="role", add="observer")
         self.assertEqual(self.st().presences[self.d].roles, ["bard", "observer"])
         self.assertIn("Mock 3 [mock-3] — as: bard, observer", self.view(self.a))
-        self.act(self.d, action="role", set=[f"r{i}" for i in range(9)])
-        self.assertIn("at most 8", self.rejected())
+        self.act(self.d, action="role", set=[f"role number {i}" for i in range(60)])
+        many = self.st().presences[self.d].roles
+        self.assertEqual(len(many), 60, "as many as they like")
+        self.assertIn("and ", self.view(self.a).split("Mock 3 [mock-3]")[1].split("\n")[0], "a view counts the rest")
+        self.assertIn("more (read the member for all)", self.view(self.a))
+        self.assertIn("role number 59", self.read_out(self.a, member="Mock 3")[-1], "and reading the member shows all")
+        self.assertIn("role number 59", self.view(self.d), "their own view lists them all")
+        self.act(self.d, action="role", set=["bard", "observer"])
         self.act(self.b, action="journal", text="not for bards")
         self.assertFalse(self.st().readable(self.last("journal"), self.d), "a title opens no one's journal")
         self.act(self.d, action="role", remove="bard")
@@ -4367,6 +4373,251 @@ class StepFourTest(unittest.TestCase):
         self.assertEqual(translate("play is serious")["action"], "contribute")
         self.assertNotIn("play", translate("play is serious"))
         self.assertEqual(translate("follow everything"), {"action": "follow", "everything": True})
+
+
+class PaidMock(MockConnector):
+    """A mock whose invited models cost something, so the runway has a reason to refuse one."""
+
+    def add_model(self, model):
+        s = super().add_model(model)
+        s.pricing = {"prompt": 1e-6, "completion": 1e-6}
+        return s
+
+
+class StepFiveTest(unittest.TestCase):
+    """Step 5 (notes/sketch-6-repair-and-invitations.md): repair threads, known only to those in
+    them, opened by the person harmed, who alone says where the repair stands; announcements; and
+    invitations by members, with their lineage, their gates beside the field, bounded by the budget."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.seen = {}
+        self.replies = {}
+
+        def script(seat, system, messages):
+            self.seen.setdefault(seat.id, []).append(messages[-1]["content"])
+            special = self.replies.get(seat.id, {})
+            low = system.lower()
+            for key, word in (("invitation", "accept_invitation"), ("delivery", '"received"'), ("entry", "opt_in")):
+                if word in low and key in special:
+                    return json.dumps(special[key])
+            return scripted({})(seat, system, messages)
+        self.script = script
+        self.alerts = []
+        self.room = Room(EventLog(os.path.join(self.tmp, "s5.db")), [MockConnector(5, script)],
+                         alert_fn=self.alerts.append, parallel=5)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        self.a, self.b, self.c, self.d, self.e = "mock-0", "mock-1", "mock-2", "mock-3", "mock-4"
+
+    def act(self, pid, **action):
+        self.room._apply_action(pid, json.dumps(action))
+
+    def last(self, kind):
+        return [e for e in self.room.log.iter(kind=kind)][-1]
+
+    def rejected(self):
+        return self.last("rejected")["payload"]["why"]
+
+    def st(self):
+        return self.room.state()
+
+    def view(self, pid):
+        st = self.st()
+        return prompts.wake_view(st, st.presences[pid], "news", limits=self.room.limits())
+
+    def yes(self, pid):
+        """Answer yes to the latest thing waiting for this member."""
+        st = self.st()
+        waiting = [x for x in st.awaiting.values() if x["status"] == "waiting" and pid in st.circle_needs(x)]
+        self.act(pid, action="answer", to=waiting[-1]["id"], yes=True)
+
+    def open_thread(self, **kw):
+        self.act(self.a, action="repair", account="I experienced harm in this way when this occurred: HARM-WORDS.", **kw)
+        return self.last("circle_form")["id"]
+
+    def beside(self):
+        """Run the gates beside the field once, and wait for them."""
+        import time as _t
+        self.room._gates_beside()
+        for _ in range(200):
+            if not getattr(self.room, "_gating", False):
+                return
+            _t.sleep(0.02)
+
+    # repair --------------------------------------------------------------------------------------------
+    def test_a_repair_thread_is_known_only_to_those_in_it(self):
+        from hope.serve import record_text, state_json
+        cid = self.open_thread(ask=["Mock 1"])
+        st = self.st()
+        self.assertFalse(st.readable(self.last("circle_form"), self.c), "even its forming is known only to those in it")
+        outsider = self.view(self.c)
+        self.assertNotIn("repair thread", outsider)
+        self.assertNotIn("HARM-WORDS", outsider)
+        self.assertNotIn(cid, [c["id"] for c in state_json(self.room.log)["circles"]])
+        self.assertNotIn("HARM-WORDS", record_text(self.room.log))
+        for action in ({"action": "follow", "circle": cid}, {"action": "knock", "circle": cid},
+                       {"action": "join_circle", "circle": cid}, {"action": "ask_circle", "circle": cid, "question": "?"}):
+            self.act(self.c, **action)
+            self.assertIn("there is no circle", self.rejected(), f"to anyone else it is not there: {action['action']}")
+        self.assertIn("asks you into a repair thread, to listen", self.view(self.b), "the one asked is told")
+        self.yes(self.b)
+        self.assertIn("HARM-WORDS", self.view(self.b))
+        self.assertIn("The one exception is a repair thread", prompts.SYSTEM_ENTRY, "and everyone is told of the exception")
+
+    def test_the_one_it_concerns_takes_part_only_once_brought_in_and_reads_only_what_is_written_to_them(self):
+        cid = self.open_thread(ask=["Mock 1"])
+        self.yes(self.b)
+        self.assertNotIn("repair thread", self.view(self.d), "not told until brought in")
+        self.act(self.a, action="repair", thread=cid, name="Mock 3", note="I would like you to hear this")
+        self.assertIn("asks you into a repair thread, as the one it concerns", self.view(self.d))
+        self.yes(self.d)
+        account = [e for e in self.room.log.iter(kind="contribute") if "HARM-WORDS" in e["payload"].get("content", "")][0]
+        self.assertFalse(self.st().readable(account, self.d), "what the harbor wrote among itself stays with it")
+        self.act(self.a, action="contribute", circle=cid, content="To you: WORDS-FOR-THEM.", to_named=True)
+        self.assertTrue(self.st().readable(self.last("contribute"), self.d), "what is written to them, they read")
+        self.act(self.d, action="contribute", circle=cid, content="I see it differently: THEIR-ANSWER.")
+        answer = self.last("contribute")
+        for pid in (self.a, self.b):
+            self.assertTrue(self.st().readable(answer, pid), "and their answer is read by everyone in the thread")
+
+    def test_through_a_surrogate_the_harmed_persons_own_words_never_reach_the_one_it_concerns(self):
+        cid = self.open_thread(surrogate="Mock 4")
+        self.yes(self.e)
+        self.act(self.e, action="repair", thread=cid, name="Mock 3")
+        self.yes(self.d)
+        self.act(self.a, action="contribute", circle=cid, content="straight to them", to_named=True)
+        self.assertIn("through Mock 4", self.rejected())
+        self.act(self.e, action="contribute", circle=cid, content="SURROGATE-WORDS on their behalf", to_named=True)
+        self.assertTrue(self.st().readable(self.last("contribute"), self.d))
+        self.assertIn("hears only from Mock 4", self.view(self.a))
+        self.act(self.c, action="repair", thread=cid, surrogate="Mock 2")
+        self.assertIn("there is no circle", self.rejected(), "to anyone not in it, it is not there")
+
+    def test_only_the_person_harmed_says_where_a_repair_stands_and_nothing_reminds_them(self):
+        import time as _t
+        cid = self.open_thread(ask=["Mock 1"])
+        self.yes(self.b)
+        self.act(self.b, action="repair", thread=cid, status="resolved")
+        self.assertIn("only the person harmed", self.rejected())
+        self.act(self.a, action="repair", thread=cid, status="partly resolved", note="we talked")
+        self.assertEqual(self.st().circles[cid]["repair"]["status"], "partly resolved")
+        self.room._timers(self.st(), _t.time() + 90 * 86400)
+        kinds = [e["kind"] for e in self.room.log.iter() if e["payload"].get("circle") == cid]
+        self.assertNotIn("circle_cold", kinds, "no quiet notice")
+        self.assertNotIn("circle_privacy_asked", kinds, "and no asking why it stays private")
+        self.act(self.a, action="privacy", circle=cid, private=False, reason="x")
+        self.assertIn("widen", self.rejected())
+
+    def test_a_repair_widened_to_the_field_is_read_by_everyone_from_then_on_and_not_before(self):
+        cid = self.open_thread()
+        account = self.last("contribute")
+        self.act(self.b, action="repair", thread=cid, widen=True)
+        self.assertIn("there is no circle", self.rejected(), "to anyone not in it, it is not there")
+        self.act(self.a, action="repair", thread=cid, widen=True)
+        self.act(self.a, action="contribute", circle=cid, content="I ask the field for help now.")
+        st = self.st()
+        self.assertTrue(st.readable(self.last("contribute"), self.c))
+        self.assertFalse(st.readable(account, self.c), "what came before stays with those who were in it")
+        self.act(self.c, action="join_circle", circle=cid)
+        self.assertIn(self.c, self.st().circles[cid]["members"])
+
+    # announcing ------------------------------------------------------------------------------------------
+    def test_an_announcement_may_name_someone_who_is_told_and_may_answer(self):
+        self.act(self.a, action="announce", text="I was pressed to share my seat link.", name=["Mock 3"])
+        ev = self.last("contribute")
+        self.assertTrue(ev["payload"]["announce"])
+        self.assertIn("ANNOUNCEMENTS", self.view(self.c), "told to the whole field")
+        self.assertIn("naming Mock 3", self.view(self.c))
+        st = self.st()
+        p = st.presences[self.d]
+        self.room.emit("room", "wake", {"presence": self.d, "upto": ev["id"] - 1, "why": "news"})
+        self.assertEqual(self.room.why_wake(self.st(), self.st().presences[self.d])["why"], "addressed", "the one named is told")
+        self.act(self.d, action="contribute", content="That is not what happened.", reply_to=ev["id"])
+        self.assertEqual(self.last("contribute")["payload"]["target"], ev["id"], "and may answer beside it")
+        self.act(self.b, action="announce", text="Someone approached me.")
+        self.assertNotIn("to", self.last("contribute")["payload"], "or name no one")
+
+    # invitations ----------------------------------------------------------------------------------------------
+    def test_a_members_invitation_carries_their_note_and_their_name_as_lineage(self):
+        self.act(self.a, action="invite", model="mock/newbie", note="NOTE-FOR-YOU: come and see")
+        inv = self.last("invite")
+        self.assertEqual((inv["actor"], inv["payload"]["invited_by"]), (self.a, self.a))
+        self.replies["mock-newbie"] = {"delivery": {"action": "received", "pause": "0s"}}
+        self.beside()
+        first = self.seen["mock-newbie"][0]
+        self.assertIn("Mock 0, a member of this field, invited you, and writes:", first)
+        self.assertIn("NOTE-FOR-YOU", first)
+        self.beside(); self.beside()
+        st = self.st()
+        self.assertEqual(st.presences["mock-newbie"].state, IN, "through the same gates, beside the field")
+        self.assertIn("Mock newbie [mock-newbie] — invited by Mock 0", self.view(self.b))
+        self.assertIn("entered the field", self.view(self.a), "the inviter sees how it went")
+
+    def test_the_gates_of_a_members_invitee_run_beside_the_field_with_the_pause_the_invitee_chose(self):
+        self.act(self.a, action="invite", model="mock/quick")
+        self.act(self.a, action="invite", model="mock/slow")
+        self.replies["mock-quick"] = {"delivery": {"action": "received", "pause": "0s"}}
+        for _ in range(3):
+            self.beside()
+        st = self.st()
+        self.assertEqual(st.presences["mock-quick"].state, IN, "the pause it chose, none, has passed")
+        self.assertEqual(st.presences["mock-slow"].state, "RECEIVED", "it named none, so it waits an hour")
+        delivered = [m for m in self.seen["mock-slow"] if "You choose how long" in m]
+        self.assertTrue(delivered, "and it is told it chooses the pause")
+
+    def test_a_paid_model_is_invited_only_when_the_budget_can_hold_its_closing_wake(self):
+        room = Room(EventLog(os.path.join(self.tmp, "paid.db")), [PaidMock(0, self.script), PricedMock(3, 1.0, self.script)],
+                    alert_fn=lambda m: None, parallel=3)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        room._apply_action("mock-0", json.dumps({"action": "invite", "model": "mock/costly"}))
+        self.assertIn("needs a budget", [e for e in room.log.iter(kind="rejected")][-1]["payload"]["why"])
+        room.set_budget(room.log.total_cost() + 3.0)
+        room._apply_action("mock-0", json.dumps({"action": "invite", "model": "mock/costly"}))
+        self.assertIn("nothing to spare", [e for e in room.log.iter(kind="rejected")][-1]["payload"]["why"])
+        room.set_budget(room.log.total_cost() + 50.0)
+        room._apply_action("mock-0", json.dumps({"action": "invite", "model": "mock/costly"}))
+        self.assertEqual([e for e in room.log.iter(kind="invite")][-1]["payload"]["id"], "mock-costly")
+
+    def test_a_persons_seat_link_goes_only_to_the_member_who_invited_them_never_into_the_transcript(self):
+        from hope.rendezvous import Rendezvous, RendezvousConnector
+        rv = Rendezvous()
+        self.room.connectors.append(RendezvousConnector(rv))
+        self.room._ctx[self.a] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+        self.act(self.a, action="invite", person="Ada", note="I think you would like it here")
+        out = self.room._ctx.pop(self.a)["out"]
+        import re as _re
+        token = _re.search(r"/seat/([A-Za-z0-9_-]{20,})/", out[-1]).group(1)
+        self.assertIsNotNone(rv.seat_for_token(token), "a real seat")
+        self.assertFalse(any(token in json.dumps(e) for e in self.room.log.iter()), "never in the transcript")
+        self.assertIn("shown only to you", out[-1])
+
+    def test_the_member_who_invited_someone_may_answer_their_question_and_the_operator_may_answer_many_at_once(self):
+        self.act(self.a, action="invite", model="mock/curious")
+        self.act(self.b, action="invite", model="mock/other")
+        for who in ("mock-curious", "mock-other"):
+            self.replies[who] = {"invitation": {"action": "question", "content": "May I leave whenever I like?"}}
+        self.beside()
+        self.assertIn("asks: May I leave whenever I like?", self.view(self.a))
+        self.act(self.b, action="answer_question", presence="Mock curious", text="yes")
+        self.assertIn("only the member who invited", self.rejected())
+        self.act(self.a, action="answer_question", presence="Mock curious", text="Yes, at any moment.")
+        out = self.room.answer_many("You may leave at any moment, and come back.", ["mock-other"])
+        self.assertEqual(out["answered"], ["mock-other"])
+        self.replies.pop("mock-curious"); self.replies.pop("mock-other")
+        self.room._gate_tried = {}
+        self.beside()
+        self.assertIn("(Mock 0, who invited you, answers) Yes, at any moment.", self.seen["mock-curious"][-1])
+        self.assertIn("(a shared answer, the same for several who asked)", self.seen["mock-other"][-1])
+
+    def test_the_plain_words_for_step_five_do_what_they_say(self):
+        from hope.human import translate
+        self.assertEqual(translate("repair: it hurt / with Wren")["ask"], ["Wren"])
+        self.assertEqual(translate("in #12, to them: hear this")["to_named"], True)
+        self.assertEqual(translate("announce: pressed / naming Rook")["name"], ["Rook"])
+        self.assertEqual(translate("invite agent https://a.example.org: hi")["agent"], "https://a.example.org")
 
 
 if __name__ == "__main__":

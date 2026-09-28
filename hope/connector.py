@@ -73,9 +73,24 @@ class OpenAICompatibleConnector:
         self._seats = seats
         self.timeout = timeout
         self.max_tokens = max_tokens
+        self.catalog = None      # set by providers.build: every model a member may invite, within the operator's rules
 
     def seats(self) -> List[Seat]:
         return list(self._seats)
+
+    def add_model(self, model: str) -> Seat:
+        """Seat a model a member invites: one this provider offers, within the operator's price
+        ceiling (and any allowance), as providers.build chose. Returns its seat."""
+        for s in self._seats:
+            if model in (s.model, s.id):
+                return s
+        if self.catalog is None:
+            raise ConnectorError(f"{self.provider_label} takes no invitations of other models")
+        for s in self.catalog():
+            if model in (s.model, s.id):
+                self._seats.append(s)
+                return s
+        raise ConnectorError(f"{self.provider_label} offers no model {model!r} within the operator's price ceiling")
 
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:
         body = {
@@ -156,6 +171,18 @@ class MockConnector:
 
     def seats(self):
         return list(self._seats)
+
+    def add_model(self, model: str) -> Seat:
+        """A mock model a member invites (for tests): "mock/<name>", free, answering like the others."""
+        for s in self._seats:
+            if model in (s.model, s.id):
+                return s
+        if not str(model).startswith("mock/"):
+            raise ConnectorError(f"the mock connector offers no model {model!r}")
+        name = str(model)[5:]
+        s = Seat(f"mock-{name}", f"Mock {name}", "mock", str(model), str(model), {"prompt": 0.0, "completion": 0.0})
+        self._seats.append(s)
+        return s
 
     def ask(self, seat, system, messages):
         self.calls += 1

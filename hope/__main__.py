@@ -11,7 +11,8 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope enter  --db FIELD.db [same connector flags]      after a pause: gate 2, the entry question
       --human seats a person who goes through the same gates, then posts whenever they like on stdin (see hope/human.py)
   python3 -m hope questions --db FIELD.db                            (questions asked at the invitation gate)
-  python3 -m hope answer --db FIELD.db --presence ID --text TEXT     (then re-run open to re-ask)
+  python3 -m hope answer --db FIELD.db --presence ID --text TEXT     (then re-run open to re-ask; --all instead of
+                                                                    --presence gives every waiting question one shared answer)
   python3 -m hope run    --db FIELD.db [--for SECONDS] [--wakes N] [--parallel N] [--alert-every USD] [--budget USD]
       models are woken for what each chose; nobody takes turns (notes/sketch-3-channels.md)
   python3 -m hope status --db FIELD.db
@@ -332,8 +333,15 @@ def cmd_questions(args):
             print(f"[{p.id}] {p.name}\n  Q: {q}\n  A: {a if a is not None else '(unanswered)'}\n")
 
 
+def cmd_answer_all(room, args):
+    out = room.answer_many(args.text)
+    print(f"a shared answer given to {len(out.get('answered', []))} who asked" if out.get("ok") else out.get("error"))
+
+
 def cmd_answer(args):
     room = _room(args)
+    if getattr(args, "all", False):
+        return cmd_answer_all(room, args)
     if args.presence not in room.state().presences:
         sys.exit(f"unknown presence {args.presence}")
     room.answer(args.presence, args.text)
@@ -671,7 +679,9 @@ def main(argv=None):
     s = sub.add_parser("open"); s.add_argument("--invitation", required=True); s.add_argument("--briefing", required=True); s.add_argument("--briefing-source", default=None, help="URL where the briefing lives, shown for attribution"); s.add_argument("--documentation", default="DESIGN"); s.add_argument("--prior", default=None, help="a closed field's db; only entries with share_consent are carried, reachable by recall"); s.add_argument("--prior-name", default=None); s.add_argument("--covenant-seed", default=None, help="a starting text for the covenant page; only used if nobody has written on it"); s.add_argument("--briefing-page", default=None, help="a short guide to the briefing: shown before it at delivery and in its place at the entry question"); s.add_argument("--faq", default=None, help="the inviter's standing answers, shown with the invitation (for example invitations/faq.md); recorded again whenever it changes"); s.set_defaults(fn=cmd_open)
     s = sub.add_parser("enter"); s.set_defaults(fn=cmd_enter)
     s = sub.add_parser("questions"); s.set_defaults(fn=cmd_questions)
-    s = sub.add_parser("answer"); s.add_argument("--presence", required=True); s.add_argument("--text", required=True); s.set_defaults(fn=cmd_answer)
+    s = sub.add_parser("answer", help="answer a question asked at the invitation; --all answers every waiting one, labelled as a shared answer")
+    s.add_argument("--presence", default=None); s.add_argument("--all", action="store_true"); s.add_argument("--text", required=True)
+    s.set_defaults(fn=cmd_answer)
     s = sub.add_parser("run", help="wake models as each becomes due, for what each chose; people post whenever they like")
     s.add_argument("--for", dest="seconds", type=float, default=0.0, help="stop after this many seconds (0: until stopped)")
     s.add_argument("--wakes", type=int, default=0, help="stop after this many wakes (0: until stopped)")

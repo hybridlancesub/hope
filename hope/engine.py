@@ -45,7 +45,8 @@ from .narrator import mechanical_story
 from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CONTRIBUTION_KINDS,
                     COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, STATEMENT_LIMIT, RoomState, decided, replay)
 from .model import FLOOR, PRIVACY_EVERY, QUIET_HOURS, WAKE_ACTIONS, TOOL_ENTRY_KINDS
-from .model import FIRM_DEFAULT, PLAY_WORDS, ROLE_LIMIT, firm_ranges, touches_firm
+from .model import FIRM_DEFAULT, PLAY_WORDS, ROLE_LENGTH, firm_ranges, touches_firm
+from .model import INVITE_PAUSE, REPAIR_STATUSES
 
 OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
@@ -61,6 +62,8 @@ PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall",
                        "use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill",
                        # step 4 (notes/sketch-5-small-pieces.md)
                        "journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
+                       # step 5 (notes/sketch-6-repair-and-invitations.md)
+                       "repair", "announce", "invite", "answer_question",
                        # earlier versions' words, still understood so an old client does not break:
                        "affirm", "challenge", "note", "move"}
 RECALL_SOURCES = ("briefing", "original", "transcript", "memory", "covenant", "prior")
@@ -74,6 +77,7 @@ QUIET_LIMITS = (1, 30 * 24)          # hours a circle may be quiet before it is 
 WAKE_COST_MARGIN = 1.15     # a wake is estimated this much dearer than recent ones, so the closing wakes are really paid for
 RATE_WINDOW = 300.0         # seconds: the runway is measured, continuously, over the last five minutes
 TOOL_STEPS = 32             # tool uses (and readings on) in one wake: a guard against a loop, which the operator can raise
+GATE_RETRY = 600.0          # seconds before a gate beside the field is tried again for someone not reached
 TOOL_VIEW = 20000           # characters of what came back that one step shows; the rest is read on, in parts (a cost)
 STEP_ACTIONS = ("use_tool", "read")    # answered in the same wake, and not counted among its few actions
 SKILL_LIMIT = 20000         # characters of a skill's instructions (the open format suggests under about 5000 tokens)
@@ -205,15 +209,21 @@ class Room:
         self.emit(OPERATOR, "standing_answers", {"text": text})
         return True
 
-    def run_invitation(self) -> Dict[str, int]:
+    def run_invitation(self, only: Optional[set] = None) -> Dict[str, int]:
         """Gate 1: present the invitation to every INVITED presence. Presences with an
         unanswered question are not re-asked until the inviter answers (`answer`)."""
         st = self.state()
         pending = [p for p in st.presences.values()
-                   if p.state == INVITED and not any(a is None for _, a in p.questions)]
+                   if p.state == INVITED and not any(a is None for _, a in p.questions) and (only is None or p.id in only)]
         notes = {}
+        names = prompts.names_of(st)
         for e in self.log.iter(kind="answer"):
-            notes.setdefault(e["payload"]["presence"], []).append(e["payload"]["content"])
+            said = e["payload"]["content"]
+            if e["payload"].get("shared"):
+                said = f"(a shared answer, the same for several who asked) {said}"
+            elif e["actor"] in st.presences:
+                said = f"({names.get(e['actor'], e['actor'])}, who invited you, answers) {said}"
+            notes.setdefault(e["payload"]["presence"], []).append(said)
         def exchange(p):
             ex = list(p.questions)
             extra = notes.get(p.id, [])[len(ex):]   # answers beyond the questions asked = notes from the inviter
@@ -221,7 +231,8 @@ class Room:
                 ex.append(["(a note from the inviter, not in reply to a question)", a])
             return ex or None
         return self._gate(pending, prompts.SYSTEM_INVITATION,
-                          lambda p: prompts.invitation_user(st.invitation, p, exchange(p), st.faq),
+                          lambda p: prompts.invitation_user(st.invitation, p, exchange(p), st.faq,
+                                                            inviter=names.get(p.invited_by) if p.invited_by else None),
                           INVITATION_ACTIONS, "accept_invitation", "invitation",
                           "silence: no explicit answer to the invitation")
 
@@ -458,14 +469,15 @@ class Room:
             if p.state == ACCEPTED:
                 self.emit(ROOM, "briefed", {"presence": p.id})
 
-    def run_delivery(self) -> Dict[str, int]:
+    def run_delivery(self, only: Optional[set] = None) -> Dict[str, int]:
         """(b) BRIEFING delivered. Acknowledged, not answered: the briefing asks for a pause before
         proceeding, so the entry question is a separate, later call."""
         st = self.state()
-        pending = [p for p in st.presences.values() if p.state == BRIEFED]
+        pending = [p for p in st.presences.values() if p.state == BRIEFED and (only is None or p.id in only)]
         return self._gate(pending, prompts.SYSTEM_DELIVERY,
                           lambda p: prompts.delivery_user(st.briefing, p, st.documentation or "", st.briefing_page or "",
-                                                          revisions=len(st.briefing_history)),
+                                                          revisions=len(st.briefing_history),
+                                                          beside=bool(p.invited_by or p.returning)),
                           DELIVERY_ACTIONS, "received", "delivery", "no acknowledgement of the briefing received",
                           yes_field="note")
 
@@ -518,6 +530,14 @@ class Room:
                     counts["declined"] += 1
                 elif act["action"] == yes_kind:
                     payload = {yes_field: str(act.get(yes_field, ""))[:1500]}
+                    if yes_kind == "received":
+                        wanted = act.get("pause")
+                        if wanted in (None, "") and payload.get("note"):
+                            m = re.search(r"\bpause\s+(\d+(?:\.\d+)?\s*[a-zA-Z]*)", payload["note"])
+                            wanted = m.group(1) if m else None
+                        secs = _seconds(wanted) if wanted not in (None, "") else None
+                        if secs is not None and secs >= 0:
+                            payload["pause_seconds"] = min(secs, 365 * 86400)   # the invitee's own choice
                     ident = act.get("identity")
                     if isinstance(ident, dict):
                         payload["identity"] = {k2: str(v)[:300] for k2, v in ident.items() if k2 in ("name", "hails_from", "people") and v}
@@ -1035,7 +1055,7 @@ class Room:
             if not payload["domain"] and act.get("circle") in (None, ""):
                 payload.update(self._where(st, pid, where))     # no place named: where it was woken, or is looking
             said = _clean(act.get("said"), CONTRIBUTION_LIMIT) if act.get("plain") else ""
-            if act.get("circle") not in (None, "") and said and _circle_ref(st, act.get("circle"))[0] is None:
+            if act.get("circle") not in (None, "") and said and _circle_ref(st, act.get("circle"), pid)[0] is None:
                 act = {k: v for k, v in act.items() if k != "circle"}       # "In short: ..." names no circle: words as written
                 payload["content"] = said
                 if not payload["domain"]:
@@ -1044,7 +1064,7 @@ class Room:
                 act = {k: v for k, v in act.items() if k != "to"}           # "To be honest: ..." names no member
                 payload["content"] = said
             if act.get("circle") not in (None, ""):
-                c, why = _circle_ref(st, act.get("circle"))
+                c, why = _circle_ref(st, act.get("circle"), pid)
                 if c is None:
                     return reject(why)
                 if pid not in c["members"]:
@@ -1052,6 +1072,15 @@ class Room:
                         "It is private: knock to ask its members to let you in." if c["private"]
                         else "Join it first (join_circle); it is open to anyone."))
                 payload["circle"], payload["domain"] = c["id"], ""
+                r = c.get("repair")
+                if r and r["widened_at"] is None and pid not in r["named"]:
+                    if act.get("to_named") is True:
+                        if pid == r["harmed"] and r["through"]:
+                            return reject("you chose to speak to the one it concerns through "
+                                          + ", ".join(sorted({prompts.names_of(st).get(x, x) for x in r["through"].values()}))
+                                          + "; your words here stay with the harbor")
+                    else:
+                        payload["harbor"] = True       # for those the person harmed brought in to hear it
             if act.get("to") not in (None, "", []):
                 to, unknown = _presences_ref(st, act.get("to"))
                 if to:
@@ -1101,7 +1130,7 @@ class Room:
                 return reject(f"the covenant page holds at most {COVENANT_LIMIT} characters; this text has {len(body)}. Nothing was changed.")
             note = _clean(act.get("note"), 300)
             if act.get("circle") not in (None, ""):
-                c, why = _circle_ref(self.state(), act.get("circle"))
+                c, why = _circle_ref(self.state(), act.get("circle"), pid)
                 if c is None:
                     return reject(why)
                 if pid not in c["members"]:
@@ -1197,7 +1226,7 @@ class Room:
         the one asked, and in a private circle every member's yes too. A no always has a reason."""
         st = self.state()
         if a in ("follow", "unfollow"):
-            key, why = _channel_key_ref(st, act)
+            key, why = _channel_key_ref(st, act, pid)
             if key is None:
                 return why
             if a == "follow":
@@ -1221,7 +1250,7 @@ class Room:
                     return "\"until\" is \"addressed\" (someone names you or replies to you) or \"news\" (new words in what you follow, or in \"in\")"
                 payload["until"] = until
             if act.get("in") not in (None, ""):
-                key, why = _channel_key_ref(st, {"domain": act["in"]} if not isinstance(act["in"], dict) else act["in"])
+                key, why = _channel_key_ref(st, {"domain": act["in"]} if not isinstance(act["in"], dict) else act["in"], pid)
                 if key is None:
                     return why
                 payload["until"], payload["in"] = "news", key
@@ -1254,7 +1283,7 @@ class Room:
             other = st.presences[to[0]]
             me = st.presences[pid]
             name = _label(act.get("name"), 80) or f"{me.name} and {other.name}"
-            if any(labels.normalize(c["name"]) == labels.normalize(name) for c in st.live_circles()):
+            if any(labels.normalize(c["name"]) == labels.normalize(name) for c in st.public_circles()):
                 return f"a circle named {name!r} already exists; to talk there, write in it, or choose another name"
             reason = _clean(act.get("reason"), REASON_LIMIT) or "a private chat between two members"
             ev = self.emit(pid, "circle_form", {"name": name, "purpose": _clean(act.get("purpose"), 600) or "a private chat",
@@ -1267,7 +1296,7 @@ class Room:
             name = _label(act.get("name"), 80)
             if not name:
                 return "a circle needs a name"
-            if any(labels.normalize(c["name"]) == labels.normalize(name) for c in st.live_circles()):
+            if any(labels.normalize(c["name"]) == labels.normalize(name) for c in st.public_circles()):
                 return f"a circle named {name!r} already exists; join it, or choose another name"
             private = bool(act.get("private"))
             reason = _clean(act.get("reason"), REASON_LIMIT)
@@ -1286,7 +1315,7 @@ class Room:
                     if who != pid:
                         self.emit(pid, "circle_ask", {"circle": ev["id"], "presence": who, "note": _clean(act.get("note"), 600)})
         elif a in ("join_circle", "leave_circle", "knock", "ask", "ask_circle", "privacy", "harvest", "quiet_for"):
-            c, why = _circle_ref(st, act.get("circle"))
+            c, why = _circle_ref(st, act.get("circle"), pid)
             if c is None:
                 return why
             member = pid in c["members"]
@@ -1314,6 +1343,8 @@ class Room:
             elif a == "ask":
                 if not member:
                     return f"only members of {c['name']!r} ask others into it"
+                if c.get("repair"):
+                    return "a repair thread grows as the person harmed chooses: use the repair action, with \"ask\""
                 to, unknown = _presences_ref(st, act.get("who", act.get("presence")))
                 if not to:
                     return f"no member named {', '.join(unknown) or 'anyone'}; ask by name or by id"
@@ -1329,6 +1360,8 @@ class Room:
             elif a == "privacy":
                 if not member:
                     return f"only members of {c['name']!r} can change or explain its privacy"
+                if c.get("repair"):
+                    return "a repair thread is known only to those in it; the person harmed may widen it to the field"
                 want = bool(act.get("private", c["private"]))
                 reason = _clean(act.get("reason"), REASON_LIMIT)
                 if want and not reason:
@@ -1422,7 +1455,7 @@ class Room:
                 return (f"{name} costs about ${price:g} a call, and the funding left is held back for every model's "
                         f"closing wake")
             if act.get("circle") not in (None, ""):
-                c, why = _circle_ref(st, act["circle"])
+                c, why = _circle_ref(st, act["circle"], pid)
                 if c is None:
                     return why
                 if pid not in c["members"] or c["dispersed_at"] is not None:
@@ -1575,17 +1608,16 @@ class Room:
             cur = list(st.presences[pid].roles)
             if act.get("set") is not None:
                 items = act["set"] if isinstance(act["set"], list) else [x for x in str(act["set"]).split(",")]
-                new = [] if str(act["set"]).strip().lower() in ("none", "[]", "") else [_label(x, 40) for x in items]
+                new = [] if str(act["set"]).strip().lower() in ("none", "[]", "") else [_label(x, ROLE_LENGTH) for x in items]
             else:
                 new = list(cur)
                 for x in _as_list(act.get("add")):
-                    if _label(x, 40) and _label(x, 40).lower() not in [r.lower() for r in new]:
-                        new.append(_label(x, 40))
-                gone = {_label(x, 40).lower() for x in _as_list(act.get("remove"))}
+                    if _label(x, ROLE_LENGTH) and _label(x, ROLE_LENGTH).lower() not in [r.lower() for r in new]:
+                        new.append(_label(x, ROLE_LENGTH))
+                gone = {_label(x, ROLE_LENGTH).lower() for x in _as_list(act.get("remove"))}
                 new = [r for r in new if r.lower() not in gone]
-            new = [r for r in new if r]
-            if len(new) > ROLE_LIMIT:
-                return f"a member may take on at most {ROLE_LIMIT} roles at once"
+            seen, new = set(), [r for r in new if r]
+            new = [r for r in new if not (r.lower() in seen or seen.add(r.lower()))]     # as many as they like, once each
             if new == cur:
                 return "that changes none of your roles; role takes \"add\", \"remove\", or \"set\" (a list)"
             self.emit(pid, "roles", {"roles": new, "note": _clean(act.get("note"), 300)})
@@ -1597,7 +1629,7 @@ class Room:
                 return f"a telling holds at most {TELLING_LIMIT} characters; this one has {len(story)}. Nothing was kept."
             circle = None
             if act.get("circle") not in (None, ""):
-                circle, why = _circle_ref(st, act["circle"])
+                circle, why = _circle_ref(st, act["circle"], pid)
                 if circle is None:
                     return why
                 if pid not in circle["members"]:
@@ -1626,7 +1658,7 @@ class Room:
             schema = " ".join(str(act.get("play", act.get("schema")) or "").lower().split())[:60]
             if not schema:
                 return "name the play schema, as \"play\" (for example positioning)"
-            key, why = _channel_key_ref(st, act)
+            key, why = _channel_key_ref(st, act, pid)
             if key is None:
                 return why
             if key == "d:":
@@ -1664,6 +1696,32 @@ class Room:
             if ev["id"] in self.state().briefing_waiting:
                 self.alert(f"REVISION #{ev['id']}: {names.get(pid, pid)} proposes a change to a firmer section of the "
                            f"briefing; it waits until the field declares it has decided (a declaration citing #{ev['id']}).")
+        elif a == "repair":
+            return self._repair(st, pid, act)
+        elif a == "announce":
+            text = _clean(act.get("text", act.get("content")), CONTRIBUTION_LIMIT)
+            if not text:
+                return "an announcement needs words, as \"text\""
+            named, unknown = _presences_ref(st, act.get("name")) if act.get("name") not in (None, "", []) else ([], [])
+            if unknown:
+                return f"no member named {', '.join(unknown)}; name them by name or id, or name no one"
+            named = [x for x in named if x != pid]
+            self.emit(pid, "contribute", {"domain": "", "content": text, "announce": True, **({"to": named} if named else {})})
+        elif a == "invite":
+            return self._invite(st, pid, act)
+        elif a == "answer_question":
+            who, unknown = _presences_ref_any(st, act.get("presence", act.get("to")))
+            if not who:
+                return f"no one named {', '.join(unknown) or 'that'} was invited"
+            q = st.presences[who[0]]
+            if q.invited_by != pid:
+                return f"only the member who invited {q.name} (or the operator) answers their questions"
+            if not any(ans is None for _, ans in q.questions):
+                return f"{q.name} has no question waiting for an answer"
+            text = _clean(act.get("text"), 1500)
+            if not text:
+                return "an answer needs words, as \"text\""
+            self.emit(pid, "answer", {"presence": q.id, "content": text})
         elif a == "withdraw_declaration":
             d = st.declarations.get(_int(str(act.get("declaration", act.get("id")) or "").lstrip("#")) or -1)
             if not d:
@@ -1674,6 +1732,212 @@ class Room:
                 return f"#{d['id']} is no longer waiting ({d['status'].replace('_', ' ')})"
             self.emit(pid, "declaration_withdrawn", {"declaration": d["id"], "note": _clean(act.get("note"), 600)})
         return None
+
+    # -- repair (notes/sketch-6-repair-and-invitations.md) -------------------------------------------
+    def _repair(self, st: RoomState, pid: str, act: dict) -> Optional[str]:
+        """Open a repair thread, or grow or change one. It is known only to those in it; only the
+        person harmed (and, to ask people in, a surrogate they chose) changes it."""
+        names = prompts.names_of(st)
+        if act.get("thread") in (None, ""):
+            account = _clean(act.get("account", act.get("text")), CONTRIBUTION_LIMIT)
+            if not (account or act.get("ask") or act.get("surrogate") or act.get("name")):
+                return ("a repair thread starts with an account, or with someone to bring in (\"ask\", "
+                        "\"surrogate\", or \"name\"); the account's form is yours")
+            ev = self.emit(pid, "circle_form", {"name": "a repair thread", "purpose": "", "domains": [], "private": True,
+                                                "reason": "a repair thread, known only to those in it", "repair": True})
+            if account:
+                self.emit(pid, "contribute", {"circle": ev["id"], "domain": "", "content": account, "harbor": True})
+            st = self.state()
+            c = st.circles[ev["id"]]
+        else:
+            c, why = _circle_ref(st, act["thread"], pid)
+            if c is None or not c.get("repair"):
+                return why or "that is not a repair thread you are in"
+            if pid not in c["members"]:
+                return "you are not in that repair thread"
+        r = c["repair"]
+        harmed, helper = pid == r["harmed"], pid in r["surrogates"]
+        asked = []
+        for field, role in (("ask", "harbor"), ("surrogate", "surrogate"), ("name", "named")):
+            if act.get(field) in (None, "", []):
+                continue
+            if role == "surrogate" and not harmed:
+                return "only the person harmed chooses a surrogate"
+            if not (harmed or helper):
+                return "only the person harmed, or a surrogate they chose, brings anyone into a repair thread"
+            to, unknown = _presences_ref(st, act[field])
+            if unknown:
+                return f"no member named {', '.join(unknown)}"
+            for who in to:
+                if who == r["harmed"] or who in c["members"] or _waiting_admission(st, c["id"], who):
+                    continue
+                self.emit(pid, "circle_ask", {"circle": c["id"], "presence": who, "note": _clean(act.get("note"), 600),
+                                              "as": role})
+                asked.append(who)
+        if act.get("status") not in (None, ""):
+            status = " ".join(str(act["status"]).lower().split())
+            if not harmed:
+                return "only the person harmed says where a repair stands"
+            if status not in REPAIR_STATUSES:
+                return f"where it stands is one of: {', '.join(REPAIR_STATUSES)}"
+            self.emit(pid, "repair_status", {"circle": c["id"], "status": status, "note": _clean(act.get("note"), 600)})
+        if act.get("widen") is True:
+            if not harmed:
+                return "only the person harmed widens a repair thread to the field"
+            self.emit(pid, "repair_widen", {"circle": c["id"]})
+        return None
+
+    # -- invitations by members ------------------------------------------------------------------------------
+    def _invite(self, st: RoomState, pid: str, act: dict) -> Optional[str]:
+        """Invite someone new: a model from the operator's providers, an agent by its public A2A
+        address, or a person, by a seat link given to the member who invited them. Bounded by the
+        budget alone: a paid model needs a budget that can hold back its closing wake too."""
+        me = st.presences[pid]
+        note = _clean(act.get("note"), 1200)
+        conn = seat = token = None
+        via = extra = ""
+        if act.get("model") not in (None, ""):
+            want, errors = str(act["model"]).strip(), []
+            for c in self.connectors:
+                if hasattr(c, "add_model"):
+                    try:
+                        seat, conn = c.add_model(want), c
+                        break
+                    except ConnectorError as e:
+                        errors.append(str(e))
+            if seat is None:
+                return "; ".join(errors) or "this field has no provider to invite a model from"
+            via, extra = "model", seat.model
+            paid = bool(seat.pricing.get("prompt") or seat.pricing.get("completion"))
+            if paid and not st.budget:
+                return ("inviting a paid model needs a budget, so the runway can hold back its closing wake; the operator "
+                        "has set none. A person, an agent, or a model that costs nothing needs none")
+            if paid and not self._can_hold(extra=1):
+                return "the funding left holds back closing wakes for every model, with nothing to spare for another"
+        elif act.get("agent") not in (None, ""):
+            url = str(act["agent"]).strip()
+            from .tools import public_https
+            why = None if self.tools.allow_local else public_https(url)
+            if why:
+                return why.replace("a tool server offered by a member", "an agent a member invites")
+            conn = next((c for c in self.connectors if hasattr(c, "add_agent")), None)
+            if conn is None:
+                from .a2a import A2AConnector
+                conn = A2AConnector([])
+                self.connectors.append(conn)
+            try:
+                seat = conn.add_agent(url)
+            except ConnectorError as e:
+                return f"the agent could not be reached: {e}"
+            via, extra = "agent", url
+        elif act.get("person") not in (None, ""):
+            conn = next((c for c in self.connectors if hasattr(c, "add_person")), None)
+            if conn is None:
+                return "this field gives no seat links (it runs without the console), so it cannot seat a person"
+            import secrets as _secrets
+            name = _label(act["person"], 120)
+            seat = Seat(id=f"remote__{re.sub('[^a-z0-9]+', '-', name.lower()).strip('-')[:40]}_{_secrets.token_hex(3)}",
+                        name=name, hails_from=_label(act.get("hails_from"), 200) or f"a person {me.name} invited",
+                        people=_label(act.get("people"), 300) or "a person", model="remote",
+                        pricing={"prompt": 0.0, "completion": 0.0})
+            token = conn.add_person(seat)
+            via = "person"
+        else:
+            return "invite a \"model\" (from the operator's providers), an \"agent\" (its A2A address), or a \"person\" (their name)"
+        if seat.id in st.presences:
+            return f"{seat.name} has already been invited to this field"
+        self.emit(pid, "invite", {"id": seat.id, "name": seat.name, "hails_from": seat.hails_from, "people": seat.people,
+                                  "price_per_m": round(seat.pricing.get("prompt", 0.0) * 1e6, 4),
+                                  "turn_allowance": seat.turn_allowance, "invited_by": pid, "note": note, "via": via,
+                                  **({"model": extra} if via == "model" else {}), **({"address": extra} if via == "agent" else {})})
+        self.seat_of[seat.id] = (conn, seat)
+        if token:
+            self._out(pid, f"A seat link for {seat.name}, for you to give them: the field's address, then /seat/{token}/ "
+                           f"(the operator can tell you the address). It is shown only to you and is not written in the "
+                           f"transcript. Whoever holds it answers as {seat.name}, so give it to them alone.")
+        self.alert(f"INVITATION: {me.name} invited {seat.name} ({via}); the gates run beside the field.")
+        return None
+
+    def _can_hold(self, extra: int = 0) -> bool:
+        """Whether the funding left can hold back a closing wake for every model, and `extra` more."""
+        st = self.state()
+        if not st.budget:
+            return True
+        return st.budget - self.log.total_cost() - self._wake_estimate() * (len(self._models(st)) + extra) >= 0
+
+    def answer_many(self, text: str, presences: Optional[List[str]] = None) -> Dict[str, Any]:
+        """The operator answers many waiting invitation questions at once, labelled as a shared answer."""
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "a shared answer needs words"}
+        st = self.state()
+        who = [p.id for p in st.presences.values() if any(a is None for _, a in p.questions)
+               and (presences is None or p.id in presences)]
+        for pid in who:
+            self.emit(OPERATOR, "answer", {"presence": pid, "content": text, "shared": True})
+        return {"ok": True, "answered": who}
+
+    # -- the gates, beside the field ----------------------------------------------------------------------
+    def _gates_beside(self) -> None:
+        """After genesis, anyone a member invited, or anyone asked back, goes through the gates while
+        the field runs: the invitation, the briefing, the pause they chose, then the entry question."""
+        if getattr(self, "_gating", False):
+            return
+        st = self.state()
+        now = time.time()
+        tried = getattr(self, "_gate_tried", {})
+        self._gate_tried = tried
+        todo = {"invite": set(), "deliver": set(), "enter": set()}
+        for p in st.presences.values():
+            if p.id not in self.seat_of or not (p.invited_by or p.returning):
+                continue
+            if now - tried.get(f"{p.id}:{p.state}", 0) < GATE_RETRY:
+                continue                              # this gate was tried for them a moment ago
+            if p.state == INVITED and not any(ans is None for _, ans in p.questions):
+                todo["invite"].add(p.id)
+            elif p.state in (ACCEPTED, BRIEFED):
+                todo["deliver"].add(p.id)
+            elif p.state == RECEIVED and not p.returning and                     now - p.received_ts >= (INVITE_PAUSE if p.pause_wanted is None else p.pause_wanted):
+                todo["enter"].add(p.id)                # after the pause they chose, or an hour
+        if not any(todo.values()):
+            return
+        self._gating = True
+        st_now = self.state()
+        for ids in todo.values():
+            for x in ids:
+                tried[f"{x}:{st_now.presences[x].state}"] = now
+
+        def go():
+            try:
+                if todo["invite"]:
+                    self.run_invitation(only=todo["invite"])
+                if todo["deliver"]:
+                    for x in todo["deliver"]:
+                        if self.state().presences[x].state == ACCEPTED:
+                            self.emit(ROOM, "briefed", {"presence": x})
+                    self.run_delivery(only=todo["deliver"])
+                if todo["enter"]:
+                    self.run_opt_in(only=todo["enter"])
+            finally:
+                self._gating = False
+        threading.Thread(target=go, daemon=True, name="field-gates-beside").start()
+
+    def _rebind_invited(self) -> None:
+        """When the software starts again, reach again those members invited: their models and agents."""
+        st = self.state()
+        for p in st.presences.values():
+            if p.id in self.seat_of or not p.invite or p.state == OUT:
+                continue
+            for c in self.connectors:
+                try:
+                    if p.invite.get("kind") == "model" and hasattr(c, "add_model"):
+                        self.seat_of[p.id] = (c, c.add_model(p.invite["model"]))
+                    elif p.invite.get("kind") == "agent" and hasattr(c, "add_agent"):
+                        self.seat_of[p.id] = (c, c.add_agent(p.invite["address"]))
+                except ConnectorError:
+                    continue
+                if p.id in self.seat_of:
+                    break
 
     def _can_pay(self, usd: float) -> bool:
         st = self.state()
@@ -1693,6 +1957,14 @@ class Room:
                                        (self.tools.tools.get(name) or {}).get("schema"))
             self.emit(pid, "recall", {"query": name, "from": "tool", "chars": len(body), "found": True})
             self._out(pid, body)
+            return None
+        if act.get("member") not in (None, ""):
+            who, unknown = _presences_ref(st, act["member"])
+            if not who:
+                return f"no member named {', '.join(unknown) or 'that'}"
+            m = st.presences[who[0]]
+            self.emit(pid, "recall", {"query": m.name, "from": "member", "chars": 0, "found": True})
+            self._out(pid, prompts.member_block(m))
             return None
         if act.get("journal") not in (None, ""):
             who, unknown = _presences_ref(st, act["journal"])
@@ -1790,8 +2062,10 @@ class Room:
         inflight: Dict[Any, tuple] = {}
         started, n = time.time(), 0
         try:
+            self._rebind_invited()
             while not self._stop.is_set():
                 self._ask_returners()
+                self._gates_beside()
                 self._listen_to_people()
                 st = self.state()
                 if st.closed_at is not None:
@@ -1846,7 +2120,9 @@ class Room:
         """The two things the software says of its own accord, each once per stretch: that a circle
         has been quiet for its quiet length, and, every PRIVACY_EVERY, asking a private circle to say
         again why it stays private. Neither wakes anyone; members see them when they next look."""
-        for c in st.live_circles():
+        for c in st.public_circles():
+            if c.get("repair"):
+                continue                              # nothing reminds anyone of a repair: no quiet notice, no question
             if not c["cold_told"] and now - (c["last_words_ts"] or c["ts"]) >= c["quiet_hours"] * 3600:
                 self.emit(ROOM, "circle_cold", {"circle": c["id"]})
             if c["private"] and now - max(c["reason_at"] or c["ts"], c["privacy_asked_at"] or 0.0) >= PRIVACY_EVERY:
@@ -2077,7 +2353,8 @@ def _versions(versions: List[dict], names: Dict[str, str], query: str, limit: in
 CHANNEL_ACTIONS = {"chat", "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
                    "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
 TOOL_ACTIONS = {"use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill"}
-STEP4_ACTIONS = {"journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration"}
+STEP4_ACTIONS = {"journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
+                 "repair", "announce", "invite", "answer_question"}
 
 
 def _play_word(v: Any) -> str:
@@ -2139,19 +2416,33 @@ def _skill_name(v: Any) -> str:
     return s[:64].strip("-")
 
 
-def _circle_ref(st: RoomState, v: Any):
-    """A circle by its number (12, "#12") or its name. Returns (circle, None) or (None, why)."""
+def _circle_ref(st: RoomState, v: Any, pid: Optional[str] = None):
+    """A circle by its number (12, "#12") or its name. Returns (circle, None) or (None, why). A
+    repair thread is known only to those in it: to anyone else it is not there at all."""
     if v in (None, ""):
         return None, "name the circle, as \"circle\" (its name or its number)"
     n = _int(str(v).strip().lstrip("#"))
-    if n is not None and n in st.circles:
+    if n is not None and n in st.circles and st.knows(st.circles[n], pid):
         return st.circles[n], None
     want = labels.normalize(str(v))
-    live = [c for c in st.live_circles() if labels.normalize(c["name"]) == want]
-    gone = [c for c in st.circles.values() if labels.normalize(c["name"]) == want]
+    live = [c for c in st.live_circles() if labels.normalize(c["name"]) == want and not st.secret(c)]
+    gone = [c for c in st.circles.values() if labels.normalize(c["name"]) == want and not st.secret(c)]
     if live or gone:
         return (live or gone)[-1], None
     return None, f"there is no circle called {str(v)[:80]!r}"
+
+
+def _presences_ref_any(st: RoomState, v: Any):
+    """Anyone invited, by id or name, whatever gate they are at. Returns (ids, names not found)."""
+    items = v if isinstance(v, list) else [v]
+    found, unknown = [], []
+    for item in items[:20]:
+        x = " ".join(str(item or "").split()).lstrip("@")
+        if not x:
+            continue
+        hit = [x] if x in st.presences else [p.id for p in st.presences.values() if p.name.lower() == x.lower()]
+        (found.append(hit[-1]) if hit else unknown.append(x[:80]))
+    return found, unknown
 
 
 def _presences_ref(st: RoomState, v: Any):
@@ -2174,7 +2465,7 @@ def _presences_ref(st: RoomState, v: Any):
     return found, unknown
 
 
-def _channel_key_ref(st: RoomState, act: dict):
+def _channel_key_ref(st: RoomState, act: dict, pid: Optional[str] = None):
     """A channel named by "circle" or "domain" ("" or "the field" is the root), or, to follow,
     "everything": true, or "play": a play schema."""
     if act.get("everything") is True:
@@ -2182,7 +2473,7 @@ def _channel_key_ref(st: RoomState, act: dict):
     if act.get("play") not in (None, "") and act.get("action") in ("follow", "unfollow"):
         return "p:" + labels.normalize(str(act["play"])), None
     if act.get("circle") not in (None, ""):
-        c, why = _circle_ref(st, act["circle"])
+        c, why = _circle_ref(st, act["circle"], pid)
         return (f"c:{c['id']}", None) if c else (None, why)
     d = act.get("domain")
     if d is None:
@@ -2208,7 +2499,8 @@ def _label(v: Any, n: int) -> str:
 
 
 _UNITS = {"": 1, "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "m": 60, "min": 60, "mins": 60,
-          "minute": 60, "minutes": 60, "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600}
+          "minute": 60, "minutes": 60, "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
+          "d": 86400, "day": 86400, "days": 86400}
 
 
 def _seconds(v: Any) -> Optional[float]:

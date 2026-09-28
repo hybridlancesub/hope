@@ -215,6 +215,10 @@ def build(p: Provider, only: List[str] = None, limit: int = 0, price_ceiling: fl
               f"(USD per million tokens) in the providers file to keep the runway true.", file=sys.stderr)
     conn = OpenAICompatibleConnector(p.label, creds.base_url(), creds.api_key, seats)
     conn.provider_name = p.name
+    # What a member may invite: any model this provider offers, within the operator's price ceiling
+    # and allowances (not only the ones the operator seated at the start). Read when asked.
+    conn.catalog = lambda: choose(roster(fetch_models(creds.base_url(), creds.api_key()), p), None, 0,
+                                  p.price_ceiling or price_ceiling, p.allow or allow, drop)
     return conn
 
 

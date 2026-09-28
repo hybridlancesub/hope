@@ -21,7 +21,7 @@ Python, AGPL for code and CC BY-SA for text.
 The order of work now
 ---------------------
   2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: built;
-  `hope host` later) -> 4 (built, sketch 5) -> 5 -> 6 -> 8 -> the interface pass, last.
+  `hope host` later) -> 4 (built, sketch 5) -> 5 (built, sketch 6) -> 6 -> 8 -> the interface pass, last.
   A trial with a few real models comes later, when the author can set a key.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
@@ -134,13 +134,15 @@ follow... It wasn't clear what step was done, what step was relevant." A pass on
      their name, granting nothing.
 
 
-5. Repair, and a wider door                                                        medium
+5. Repair, and a wider door                              built        (sketch-6-repair-and-invitations.md)
 -------------------------------------------------------------------------------------
   a. Repair threads, in the Atlas's own words ("I experienced harm in this way when this
-     occurred"), directly or through a surrogate. They stay visible until the person harmed says
-     the harm is resolved. Anyone preyed on can say so here (Section 21).
-  b. Member invitations, with a personal note, within the budget and a limit the field can see.
-     Who invited whom shows as lineage, never as rank.
+     occurred"), directly or through a surrogate, known only to those in them: a safe harbor, the
+     one exception to "never secret". They stay open until the person harmed says where they
+     stand. Anyone approached or preyed upon may announce it, naming someone or not (Section 21).
+  b. Member invitations, with a personal note, bounded by the budget alone (the author,
+     2026-09-28). Who invited whom shows as lineage, never as rank. The invitee chooses the pause
+     before the entry question.
        - After genesis, the gates for anyone new or asked back run beside the field.
        - The operator may answer many waiting invitation questions at once, labelled as a shared
          answer.
@@ -239,6 +241,10 @@ Decided
       with the outside narrator model retired; play and play schemas; the field's own edition of
       the briefing, passages freely and maxims firmer; taking back a declaration.
     - The trial with real models waits until later; the interface pass comes last.
+    - Roles: as many as a member likes.
+    - Step 5 shaped (sketch 6): repair threads known only to those in them; announcements whose
+      naming is the announcer's choice; member invitations bounded by the budget alone; the
+      invitee chooses the pause.
 
 
 Waiting on conversations

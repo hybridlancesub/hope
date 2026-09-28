@@ -204,6 +204,10 @@
         here that is done only on purpose, and it is written into the circle, where its members see it, with your
         note. Their names, purposes, members and reasons are open to everyone already.</p>
       <div id="circles"></div>
+      <h2 style="margin-top:1rem">Repair threads</h2>
+      <p class="muted">Opened by members who experienced harm, and known only to those in them. Shown here only as
+        a count; opening one is written into it, where everyone in it sees it, with your note.</p>
+      <div id="repairs"></div>
       <h2 style="margin-top:1rem">Journals</h2>
       <p class="muted">A journal is its author's, open only to whom they choose. You hold the file; opening one here
         is written into it, where its author sees it, with your note.</p>
@@ -610,8 +614,10 @@ function renderDoorway(s){
       They are not asked again until you answer.
       <div style="margin:.4rem 0">${q}</div>
       <textarea id="ans-${esc(r.id)}" placeholder="Your answer, in your own words."></textarea>
-      <div class="row"><button class="b" data-tip="Record your answer. It is attributed to you and kept like any other entry. They are then asked the invitation again, with your answer attached, the next time you press Open." onclick="answer('${esc(r.id)}')">Answer</button></div></div>`;
-  }).join("");
+      <div class="row"><button class="b" data-tip="Record your answer. It is attributed to you and kept like any other entry. They are then asked the invitation again, with your answer attached, the next time you press Open (someone a member invited is asked again on their own while the field runs, within ten minutes)." onclick="answer('${esc(r.id)}')">Answer</button></div></div>`;
+  }).join("") + (waiting.length > 1 ? `<div class="q"><b style="font-weight:400">Answer all ${waiting.length} at once</b>
+      <textarea id="ans-all" placeholder="One answer for everyone waiting. Each of them sees it labelled as a shared answer."></textarea>
+      <div class="row"><button class="b" data-tip="Give every waiting question the same answer. Each person sees it labelled as a shared answer, the same for several who asked, so no one takes it for a reply written to them." onclick="answerAll()">Answer all</button></div></div>` : "");
   $("groups").innerHTML = GATES.map(g => {
     const mine = rows.filter(r => r.stage === g.k);
     if (!mine.length) return "";
@@ -716,6 +722,7 @@ async function refresh(){
   renderCircles(data);
   renderTools(data);
   renderJournals(data);
+  renderRepairs(data);
   maybeShowDecl(data);
   const c = data.console || {};
   $("phase").textContent = c.busy ? (c.phase + " running") : "idle";
@@ -768,6 +775,12 @@ async function removeTool(name){
   flash(data.ok ? "Removed; the field is told." : (data.error || "not removed"), !!data.ok);
   refresh();
 }
+function renderRepairs(s){
+  $("repairs").innerHTML = (s.repair_threads||[]).map(r =>
+    `<div class="row"><span>repair thread #${r.id} <span class="muted">· ${r.people} ${r.people===1?"person":"people"} · ${esc(r.status)}</span></span>
+     <button class="b" data-id="${r.id}" data-tip="Read this repair thread. This is written into it, where everyone in it sees it, with your note." onclick="readCircle(this.dataset.id, 'repair thread #' + this.dataset.id)">Read, and say so in it…</button></div>`
+  ).join("") || '<p class="muted">None.</p>';
+}
 function renderJournals(s){
   const attr = v => esc(v).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   $("journals").innerHTML = (s.journals||[]).map(j =>
@@ -801,6 +814,11 @@ async function postNote(){
 async function answer(pid){
   const {data} = await api("/op/answer", {presence: pid, text: $("ans-"+pid).value});
   flash(data.ok ? "Answered. They are asked again on the next Open." : (data.error||"not recorded"), !!data.ok);
+  refresh();
+}
+async function answerAll(){
+  const {data} = await api("/op/answer_many", {text: $("ans-all").value});
+  flash(data.ok ? "A shared answer given to " + (data.answered||[]).length + ", labelled as shared." : (data.error||"not recorded"), !!data.ok);
   refresh();
 }
 async function mintSeat(){

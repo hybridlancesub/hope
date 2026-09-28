@@ -37,7 +37,10 @@ What IS here, and why:
   - skills: instructions the field writes for itself, in the open SKILL.md form, every revision
     attributed;
   - journals, roles, play, members' tellings, and the field's own edition of the briefing
-    (notes/sketch-5-small-pieces.md).
+    (notes/sketch-5-small-pieces.md);
+  - repair threads (circles known only to those in them, opened by the person harmed, who alone
+    says where the repair stands), announcements, and invitations by members, with their
+    lineage (notes/sketch-6-repair-and-invitations.md).
 """
 from __future__ import annotations
 
@@ -84,7 +87,7 @@ BREATH = 86400               # seconds: a model with nothing new is still woken 
 FLOOR = 10                   # seconds: no model is woken more often than this, so models cannot loop at machine speed
 WAKE_ACTIONS = 3             # the actions one wake may carry, each in the channel it names
 WAKE_DEFAULTS = {"addressed": True, "replies": True, "written": True, "breath": float(BREATH), "untold": False}
-ROLE_LIMIT = 8               # roles a member may take on at once: words that describe them, granting nothing
+ROLE_LENGTH = 80             # characters in one role; a member may take on as many as they like
 # Play (Atlas Section 18, and the author's schemas of play). The list is a start; any other may be named.
 PLAY_WORDS = {"wonder": "I wonder", "what-if": "What if?", "try": "Let's try!", "play": "play"}
 PLAY_SCHEMAS = ("transporting", "enclosing", "trajectory", "positioning", "transformation", "rotation",
@@ -122,7 +125,10 @@ TOOL_KINDS = ("tool_attach", "tool_remove", "tool_flag", "tool_unflag", "skill")
 ENTRY_KINDS = CONTRIBUTION_KINDS + TOOL_ENTRY_KINDS       # what the channels hold
 # Step 4 (notes/sketch-5-small-pieces.md). A journal's entries are read by its author and whoever it opens to.
 JOURNAL_KINDS = ("journal", "journal_access", "journal_erase")
-STEP4_KINDS = ("declaration_withdrawn", "roles", "play_tag", "play_untag", "briefing_revision", "telling")
+STEP4_KINDS = ("declaration_withdrawn", "roles", "play_tag", "play_untag", "briefing_revision", "telling",
+               "repair_status", "repair_widen")
+REPAIR_STATUSES = ("open", "partly resolved", "resolved", "stepping back")
+INVITE_PAUSE = 3600.0        # seconds between the briefing and the entry question, for an invitee who names none
 VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS
 TURN_KINDS = VISIBLE_KINDS                   # what earlier versions counted as a turn; a wake is counted now
 ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
@@ -163,6 +169,10 @@ class Presence:
     joined_ts: float = 0.0                   # when it entered (a breath counts from here until its first wake)
     last_cut: Optional[Dict[str, Any]] = None  # a wake whose steps stopped short (the runway), so it is told next time
     roles: List[str] = field(default_factory=list)   # words it took on to describe itself (observer, bard...); grant nothing
+    invited_by: Optional[str] = None         # the member who invited it, if one did: lineage, never rank
+    invite: Optional[Dict[str, Any]] = None  # how it was invited by a member: kind, note, and what reaches it again
+    received_ts: float = 0.0                 # when it acknowledged the briefing
+    pause_wanted: Optional[float] = None     # the pause it chose before the entry question (invitees of members), if any
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -313,6 +323,8 @@ class RoomState:
         c = self.circles.get(s["circle"])
         if not c:
             return False
+        if s.get("harbor") and c.get("repair") and pid in c["repair"]["named"] and ev.get("actor") != pid:
+            return False                      # the harbor's words among itself, not written to the one it concerns
         if pid in c["members"]:
             return True
         return any(leave is not None and ev["id"] < leave for _, leave in c["spans"].get(pid, []))
@@ -340,12 +352,32 @@ class RoomState:
     def live_circles(self) -> List[Dict[str, Any]]:
         return [c for c in self.circles.values() if c["dispersed_at"] is None]
 
+    @staticmethod
+    def secret(c: Dict[str, Any]) -> bool:
+        """A repair thread, not yet widened to the field: known only to those in it."""
+        return bool(c.get("repair")) and c["repair"].get("widened_at") is None
+
+    def knows(self, c: Dict[str, Any], pid: Optional[str]) -> bool:
+        """Whether a participant may know a circle exists: everyone, unless it is a repair thread,
+        which is known to those in it, those who were, and whoever is asked into it."""
+        if not self.secret(c):
+            return True
+        if pid is None:
+            return False
+        return pid in c["members"] or pid in c["spans"] or any(
+            x["circle"] == c["id"] and x.get("subject") == pid for x in self.awaiting.values())
+
+    def public_circles(self) -> List[Dict[str, Any]]:
+        return [c for c in self.live_circles() if not self.secret(c)]
+
     def circle_needs(self, prop: Dict[str, Any]) -> List[str]:
         """Whose yes something awaiting needs: every current member of its circle, and, for an admission,
         the one being admitted. For an open circle's admission, only theirs."""
         c = self.circles.get(prop["circle"])
         members = list(c["members"]) if c else []
         if prop["kind"] == "admit":
+            if c and c.get("repair"):
+                return [prop["subject"]]          # a repair thread grows as the person harmed chooses; the one asked says yes
             return (members if c and c["private"] else []) + [prop["subject"]]
         return members
 
@@ -379,7 +411,7 @@ class RoomState:
                 n["branch"] += 1
                 if eid > n["last"]:
                     n["last"], n["last_ts"] = eid, ev.get("ts", 0.0)
-        for c in self.live_circles():
+        for c in self.public_circles():
             for pth in c["domains"] or [""]:
                 node(pth)["circles"].append(c["id"])
         for n in nodes.values():
@@ -398,6 +430,16 @@ class RoomState:
             c = self.circles[cid]
             if prop["kind"] == "admit":
                 self._join(c, prop["subject"], eid)
+                r = c.get("repair")
+                who = self.presences.get(prop["subject"])
+                if r and who and f"c:{cid}" not in who.follows:
+                    who.follows.append(f"c:{cid}")   # brought in to hear it: what is said there reaches them
+                if r and prop.get("as") == "named" and prop["subject"] not in r["named"]:
+                    r["named"].append(prop["subject"])
+                    if prop["by"] in r["surrogates"]:
+                        r["through"][prop["subject"]] = prop["by"]    # they hear from the surrogate, never the harmed
+                elif r and prop.get("as") == "surrogate" and prop["subject"] not in r["surrogates"]:
+                    r["surrogates"].append(prop["subject"])
             elif prop["kind"] == "privacy":
                 self._set_private(c, bool(prop.get("private")), eid, prop.get("reason") or "", prop["by"], self.now_ts)
 
@@ -438,9 +480,18 @@ class RoomState:
                 pr.exhausted = True
 
         if k == "invite":
-            self.presences[p["id"]] = Presence(p["id"], _line(p["name"]), _line(p["hails_from"]), _line(p["people"]),
-                                              price_per_m=float(p.get("price_per_m") or 0),
-                                              turn_allowance=int(p.get("turn_allowance") or 0))
+            by = p.get("invited_by")
+            if by and not (pr and pr.state == IN and by == a):
+                pass                              # only a member invites in their own name
+            elif p.get("id") not in self.presences:
+                self.presences[p["id"]] = Presence(p["id"], _line(p["name"]), _line(p["hails_from"]), _line(p["people"]),
+                                                  price_per_m=float(p.get("price_per_m") or 0),
+                                                  turn_allowance=int(p.get("turn_allowance") or 0))
+                if by:
+                    np = self.presences[p["id"]]
+                    np.invited_by = by
+                    np.invite = {"kind": p.get("via") or "", "note": p.get("note") or "", "at": eid,
+                                 "model": p.get("model") or "", "address": p.get("address") or ""}
         elif k == "invitation":
             self.invitation, self.invitation_event = p["text"], eid
         elif k == "standing_answers":
@@ -477,10 +528,16 @@ class RoomState:
                 pr.questions.append([p.get("content", ""), None])
         elif k == "answer":
             tgt = self.presences.get(p.get("presence"))
-            if tgt:
+            member = pr is not None and pr.state == IN and tgt is not None and tgt.invited_by == a
+            if tgt and (a not in self.presences or member):
+                said = p.get("content", "")
+                if p.get("shared"):
+                    said = f"(a shared answer, the same for several who asked) {said}"
+                elif member:
+                    said = f"({pr.name}, who invited you, answers) {said}"
                 for qa in tgt.questions:
                     if qa[1] is None:
-                        qa[1] = p.get("content", "")
+                        qa[1] = said
         elif k == "brief":
             self.briefing, self.briefing_event = p["text"], eid
             self.briefing_source = p.get("source") or None
@@ -496,6 +553,8 @@ class RoomState:
         elif k == "received":
             if pr and pr.state == BRIEFED:
                 pr.state = RECEIVED
+                pr.received_ts = ts
+                pr.pause_wanted = float(p["pause_seconds"]) if isinstance(p.get("pause_seconds"), (int, float)) else None
         elif k == "opt_in":
             if pr and pr.state == RECEIVED:
                 pr.state, pr.joined_at, pr.returning = IN, eid, False
@@ -527,6 +586,8 @@ class RoomState:
                     c["last_words"], c["last_words_ts"], c["cold_told"] = eid, ts, False
                     if c["private"]:
                         self.scoped[eid] = {"circle": c["id"]}
+                        if p.get("harbor") and c.get("repair"):
+                            self.scoped[eid]["harbor"] = True
                 else:
                     self._name_domain(p.get("domain") or "")
                     if p.get("domain"):
@@ -667,7 +728,7 @@ class RoomState:
                                                   "adopted_at": eid})
         elif k == "roles":
             if pr and pr.state == IN:
-                pr.roles = [_line(r)[:40] for r in (p.get("roles") or []) if _line(r)][:ROLE_LIMIT]
+                pr.roles = [_line(r)[:ROLE_LENGTH] for r in (p.get("roles") or []) if _line(r)]
         elif k == "journal":
             if pr and p.get("text"):              # an entry its author erased has no words, and is not held
                 j = self.journals.setdefault(a, _journal())
@@ -787,7 +848,12 @@ class RoomState:
             if pr and pr.state == IN and _line(p.get("name")):
                 for d in p.get("domains") or []:
                     self._name_domain(d)
-                c = {"id": eid, "name": _line(p["name"])[:80], "purpose": p.get("purpose") or "",
+                repair = None
+                if p.get("repair"):
+                    repair = {"harmed": a, "named": [], "surrogates": [], "through": {}, "status": "open",
+                              "note": "", "status_at": eid, "widened_at": None}
+                c = {"id": eid, "name": f"repair thread #{eid}" if repair else _line(p["name"])[:80],
+                     "purpose": p.get("purpose") or "", "repair": repair,
                      "domains": [x for x in (labels.path(d) for d in p.get("domains") or []) if x],
                      "by": a, "at": eid, "ts": ts, "private": False, "reason": "", "reason_by": None,
                      "reason_at": 0.0, "privacy_asked_at": None, "privacy_spans": [], "members": [], "spans": {},
@@ -795,6 +861,8 @@ class RoomState:
                      "cold_told": False, "dispersed_at": None, "questions": {}}
                 self.circles[eid] = c
                 self._join(c, a, eid)
+                if repair and f"c:{eid}" not in pr.follows:
+                    pr.follows.append(f"c:{eid}")     # the person harmed hears what is said in it
                 if p.get("private"):
                     self._set_private(c, True, eid, p.get("reason") or "", a, ts)
         elif k == "circle_join":
@@ -831,7 +899,8 @@ class RoomState:
                     self.scoped[eid] = {"circle": c["id"], "also": [subject]}
                 self.awaiting[eid] = {"id": eid, "circle": c["id"], "kind": "admit", "by": a, "subject": subject,
                                        "via": "ask" if k == "circle_ask" else "knock", "note": p.get("note") or "",
-                                       "show_name": bool(p.get("show_name")), "yes": {a: ""}, "no": {},
+                                       "show_name": bool(p.get("show_name")), "as": p.get("as") or "",
+                                       "yes": {a: ""}, "no": {},
                                        "status": "waiting", "ts": ts, "agreed_at": None}
                 self._settle(c["id"], eid)
         elif k == "circle_answer":
@@ -856,6 +925,18 @@ class RoomState:
                 q = c["questions"].get(p.get("question"))
                 if q is not None and a in c["members"] and p.get("text"):
                     q["replies"].append({"id": eid, "by": a, "text": p["text"], "ts": ts})
+        elif k == "repair_status":
+            c = self.circles.get(p.get("circle"))
+            if c and c.get("repair") and c["repair"]["harmed"] == a and p.get("status") in REPAIR_STATUSES:
+                c["repair"].update({"status": p["status"], "note": p.get("note") or "", "status_at": eid})
+                self.scoped[eid] = {"circle": c["id"]} if self.secret(c) else self.scoped.get(eid, {})
+                if not self.scoped[eid]:
+                    del self.scoped[eid]
+        elif k == "repair_widen":
+            c = self.circles.get(p.get("circle"))
+            if c and c.get("repair") and c["repair"]["harmed"] == a and c["repair"]["widened_at"] is None:
+                c["repair"]["widened_at"] = eid           # known to the field from here; what came before stays private
+                self._set_private(c, False, eid, "", a, ts)
         elif k == "circle_privacy":
             c = self.circles.get(p.get("circle"))
             if pr and c and a in c["members"] and c["dispersed_at"] is None:
@@ -904,6 +985,14 @@ class RoomState:
             c = self.circles.get(p.get("circle"))
             if c:
                 c["privacy_asked_at"] = ts
+        # Everything about a repair thread is known only to those in it: its forming, its leavings,
+        # where it stands. (What is already scoped, such as an ask, keeps its own readers.)
+        if eid not in self.scoped and (k.startswith("circle_") or k in ("harvest", "repair_status", "follow", "unfollow")):
+            c = self.circles.get(eid if k == "circle_form" else p.get("circle"))
+            if c is None and k in ("follow", "unfollow") and str(p.get("channel") or "").startswith("c:"):
+                c = self.circles.get(int(p["channel"][2:]) if p["channel"][2:].isdigit() else None)
+            if c is not None and c.get("repair") and (self.secret(c) or k == "circle_form"):
+                self.scoped[eid] = {"circle": c["id"]}
         # rejected / unparsed / note / recall: recorded for attribution, no state change.
         # propose / consent / revoke_consent / reflection: written by earlier versions' voting
         # machinery, which no longer exists. faq: earlier versions' standing answers, shown beside a

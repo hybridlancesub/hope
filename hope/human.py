@@ -60,6 +60,15 @@ The format is plain text, translated to the same JSON actions models send:
     revise briefing: <the words as they stand> ==> <the new words> [// why]
                                     revise the field's edition of the briefing
     withdraw declaration #12 [note] take back a declaration you made, while it waits
+    repair: <what happened> [/ with <names>] [/ surrogate <name>] [/ naming <name>]
+                                    open a repair thread, known only to those you bring in
+    repair #12 with <names> | repair #12 surrogate <name> | repair #12 naming <name>
+    repair #12 status resolved|partly resolved|stepping back|open [/ note] | repair #12 widen
+    in #12, to them: <text>         in a repair thread, words for the one it concerns (otherwise they stay
+                                    with those you brought in to hear it)
+    announce: <text> [/ naming <names>]   tell the field you were approached or preyed upon
+    invite person <name> [: note] | invite model <id> [: note] | invite agent <address> [: note]
+    answer invitee <name>: <text>   answer a question from someone you invited
     read journal <name>             a journal opened to you
     withdraw [reason] [/ when it would be fair to ask you back]
     question <text>                 (invitation gate only)
@@ -331,6 +340,43 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     if low.startswith("harvest "):
         circle, _, text = s[8:].partition(":")
         return {"action": "harvest", "circle": circle.strip(), "text": text.strip()}
+    m = re.match(r"repair\s*:\s*(.*)$", s, re.I | re.S)
+    if m:
+        parts = [x.strip() for x in m.group(1).split(" / ")]
+        d = {"action": "repair", "account": parts[0]}
+        for extra in parts[1:]:
+            low_ = extra.lower()
+            for key, word in (("ask", "with "), ("surrogate", "surrogate "), ("name", "naming ")):
+                if low_.startswith(word):
+                    d[key] = [x.strip() for x in extra[len(word):].split(",") if x.strip()]
+        return d
+    m = re.match(r"repair\s+#?(\d+)\s+(with|surrogate|naming|status|widen)\b\s*(.*)$", s, re.I | re.S)
+    if m:
+        d = {"action": "repair", "thread": int(m.group(1))}
+        verb, rest = m.group(2).lower(), m.group(3).strip()
+        if verb == "widen":
+            d["widen"] = True
+        elif verb == "status":
+            status, _, note = rest.partition("/")
+            d["status"], d["note"] = status.strip(), note.strip()
+        else:
+            d[{"with": "ask", "surrogate": "surrogate", "naming": "name"}[verb]] = [x.strip() for x in rest.split(",") if x.strip()]
+        return d
+    m = re.match(r"in\s+#?(\d+)\s*,?\s*to them\s*:\s*(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "contribute", "circle": int(m.group(1)), "content": m.group(2).strip(), "to_named": True}
+    m = re.match(r"announce\s*:\s*(.*?)(?:\s+/\s*naming\s+(.+))?$", s, re.I | re.S)
+    if m:
+        d = {"action": "announce", "text": m.group(1).strip()}
+        if m.group(2):
+            d["name"] = [x.strip() for x in m.group(2).split(",") if x.strip()]
+        return d
+    m = re.match(r"invite\s+(person|model|agent)\s+(.+?)(?::\s+(.*))?$", s, re.I | re.S)
+    if m:
+        return {"action": "invite", m.group(1).lower(): m.group(2).strip(), "note": (m.group(3) or "").strip()}
+    m = re.match(r"answer\s+invitee\s+([^:]+):\s*(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "answer_question", "presence": m.group(1).strip(), "text": m.group(2).strip()}
     m = re.match(r"withdraw\s+declaration\s+#?(\d+)\s*(.*)$", s, re.I | re.S)
     if m:                          # before withdrawing from the field: this takes back a declaration, nothing more
         return {"action": "withdraw_declaration", "declaration": int(m.group(1)), "note": m.group(2).strip()}

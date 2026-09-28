@@ -330,6 +330,10 @@ class Console:
                 self._say(f"you removed the tool server {payload.get('server')!r}; the field is told, with your note")
             return out
 
+        if action == "answer_many":
+            # Many waiting invitation questions answered at once, labelled so: a shared answer.
+            return self.room.answer_many(payload.get("text") or "", payload.get("presences"))
+
         if action == "read_journal":
             # A journal is its author's. The operator holds the file; in the console, reading one is
             # written into it, where its author sees it, as they were told it would be.

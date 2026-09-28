@@ -29,7 +29,9 @@ signal... they are intending to lurk the field with low contributions... 'mathem
 signaling their work around arithmetic and math."
   - Any member takes on words that describe how they mean to take part: observer, mathematician,
     bard, fire keeper, fili, griot, anything. Shown beside their name in every view; changed or
-    let go at any time. Up to 8, each a few words.
+    let go at any time. As many as they like (the author, 2026-09-28: "participants deserve to
+    have as many titles as they would like"); a view shows as many as fit beside a name and counts
+    the rest.
   - Roles are signals. They grant nothing and bind no one. The software hardcodes no role word.
 
 
