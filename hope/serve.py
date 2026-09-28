@@ -83,8 +83,12 @@ def record_text(log: EventLog, everything: bool = False) -> str:
     for ev in log.iter():
         k, p, who = ev["kind"], ev["payload"], names.get(ev["actor"], ev["actor"])
         if ev["id"] in st.scoped:
-            out.append(f"#{ev['id']} (written in a private circle; not shown here. Opening it from the console is "
-                       f"recorded in the circle)\n")
+            if st.scoped[ev["id"]].get("journal") is not None:
+                out.append(f"#{ev['id']} (in a member's journal; not shown here. Opening it from the console is "
+                           f"recorded in the journal)\n")
+            else:
+                out.append(f"#{ev['id']} (written in a private circle; not shown here. Opening it from the console is "
+                           f"recorded in the circle)\n")
             continue
         if k in ("connector_ok", "connector_error", "briefed") and not everything:
             continue
@@ -205,7 +209,7 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                 "domain": p.domain, "joined_at": p.joined_at, "left_at": p.left_at, "left_reason": p.left_reason,
                 "turns": p.turns, "turn_allowance": p.turn_allowance, "exhausted": p.exhausted,
                 "unreachable": p.unreachable, "self_described": p.self_described,
-                "pausing": bool(p.pause), "pause_note": (p.pause or {}).get("note") or None,
+                "pausing": bool(p.pause), "pause_note": (p.pause or {}).get("note") or None, "roles": list(p.roles),
                 "resting_until": None}
                for p in st.presences.values() if p.joined_at is not None]
     covenant = {"text": st.covenant, "by": names.get(st.covenant_by, st.covenant_by) if st.covenant_by else None,
@@ -229,6 +233,12 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                    "note": s["note"], "flags": [{"id": f["id"], "by": names.get(f["by"], f["by"]), "tool": f["tool"],
                                                  "reason": f["reason"]} for f in s["flags"].values()]}
                   for s in st.tools.values()],
+        # journals: how many entries each holds, never their words (the console opens one only on purpose)
+        "journals": [{"presence": pid, "by": names.get(pid, pid), "entries": len(j["entries"]),
+                      "open": "everyone" if j["everyone"] else len(j["open_to"])}
+                     for pid, j in st.journals.items() if j["entries"]],
+        "briefing_edition": {"revisions": len(st.briefing_history), "firm": st.firm,
+                             "waiting": [r["id"] for r in st.briefing_waiting.values() if r["status"] == "waiting"]},
         "skills": [{"name": k["name"], "description": k["description"], "chars": len(k.get("text") or ""),
                     "authors": [names.get(a, a) for a in k["authors"]], "revisions": len(k["revisions"])}
                    for k in st.skills.values() if k.get("text")],

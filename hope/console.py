@@ -330,6 +330,21 @@ class Console:
                 self._say(f"you removed the tool server {payload.get('server')!r}; the field is told, with your note")
             return out
 
+        if action == "read_journal":
+            # A journal is its author's. The operator holds the file; in the console, reading one is
+            # written into it, where its author sees it, as they were told it would be.
+            st = self.room.state()
+            pid = str(payload.get("presence") or "")
+            j = st.journals.get(pid)
+            if not j or not j["entries"]:
+                return {"ok": False, "error": "no journal with entries for that member"}
+            self.room.emit("operator", "operator_read", {"journal": pid, "note": (payload.get("note") or "").strip()[:600]})
+            from .prompts import render_event
+            names = {q: pr.name for q, pr in st.presences.items()}
+            words = [render_event(ev, names, width=None) for ev in self.room.log.iter() if ev["id"] in set(j["entries"])]
+            self._say(f"you opened {names.get(pid, pid)}'s journal; that is now written in it, where they see it")
+            return {"ok": True, "entries": words}
+
         if action == "read_circle":
             # The operator holds the file and could read it with other tools; in the console, reading a
             # private circle is written into it, where its members see it, as they were told it would be.

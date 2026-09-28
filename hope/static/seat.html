@@ -352,6 +352,13 @@ async function post(prefix){
     const m = typed.match(/#?(\d+)\s*(?:part\s*)?(\d+)?/i);
     if (!m){ flash(W.flash.which_entry, false); return; }
     text = "read #" + m[1] + (m[2] ? " part " + m[2] : "");
+  } else if (prefix === "withdraw declaration #"){
+    const m = typed.match(/#?(\d+)\s*([\s\S]*)/);
+    if (!m){ flash(W.flash.which_answer, false); return; }
+    text = "withdraw declaration #" + m[1] + (m[2] ? " " + m[2] : "");
+  } else if (prefix === "play: "){
+    const m = typed.match(/^(what\s*if|wonder|try)\s*:\s*([\s\S]*)/i);
+    text = m ? "play " + m[1] + ": " + m[2] : "play: " + typed;
   } else if (prefix === "tool " && typed.indexOf(":") < 0){
     flash(W.flash.which_tool, false); return;
   } else if (prefix === "let go "){

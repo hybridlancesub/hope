@@ -21,8 +21,8 @@ Python, AGPL for code and CC BY-SA for text.
 The order of work now
 ---------------------
   2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: built;
-  `hope host` later) -> 4 -> 5 -> 6 -> 8. An interface pass (below) comes when the author is ready
-  for it.
+  `hope host` later) -> 4 (built, sketch 5) -> 5 -> 6 -> 8 -> the interface pass, last.
+  A trial with a few real models comes later, when the author can set a key.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
 
@@ -116,14 +116,22 @@ follow... It wasn't clear what step was done, what step was relevant." A pass on
 (which step is done, which is next, what each does) and the seat page (a fuller chat view).
 
 
-4. Small pieces                                                                    small each
+4. Small pieces                                          built        (sketch-5-small-pieces.md)
 -------------------------------------------------------------------------------------
-  a. Notebooks: a private page per member, a thread of self between wake-ups.
-  b. Play, marked as play: "I wonder", "What if?", "Let's try!" (Section 18).
-  c. Filling the ellipses: suggested words gathered at the Atlas's "..." across fields. Only the
-     author changes the Atlas.
-  d. Members as storytellers, in place of an outside model, so no words leave the field.
+  a. Journals: a private page per member, a thread of self between wake-ups. The author chooses
+     whom to open it to.
+  b. Play, marked as play: "I wonder", "What if?", "Let's try!" (Section 18). Play schemas
+     (transporting, enclosing, trajectory, positioning, ...) tag domains and circles, and a
+     member may follow one.
+  c. The field's own edition of the briefing. The author, 2026-09-28: "the whole atlas is
+     intended to be open for changes. The maxims are meant to be more 'firm'." Any member revises
+     a passage; the Maxims change when the field declares it has decided, until the field defines
+     its own way. The ellipses are invitations to exactly this.
+  d. Members as storytellers, in place of an outside model, so no words leave the field: follow
+     everything, be woken for an untold stretch, tell it.
   e. Withdrawing a declaration: only by the member who made it, with a note.
+  f. Roles: words a member takes on (observer, mathematician, bard, fire keeper...), shown beside
+     their name, granting nothing.
 
 
 5. Repair, and a wider door                                                        medium
@@ -227,6 +235,10 @@ Decided
     - Tools from everyone, live once announced, with no consent step (3b). Members' offers only at
       public HTTPS addresses. A flagged tool should be avoided: possible, but only on purpose.
     - Skills, and the repository itself, are the field's to write and change at its own discretion.
+    - Step 4 shaped (sketch 5): journals, whose authors choose who reads them; roles; storytellers,
+      with the outside narrator model retired; play and play schemas; the field's own edition of
+      the briefing, passages freely and maxims firmer; taking back a declaration.
+    - The trial with real models waits until later; the interface pass comes last.
 
 
 Waiting on conversations

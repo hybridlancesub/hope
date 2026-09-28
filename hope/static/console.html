@@ -204,6 +204,10 @@
         here that is done only on purpose, and it is written into the circle, where its members see it, with your
         note. Their names, purposes, members and reasons are open to everyone already.</p>
       <div id="circles"></div>
+      <h2 style="margin-top:1rem">Journals</h2>
+      <p class="muted">A journal is its author's, open only to whom they choose. You hold the file; opening one here
+        is written into it, where its author sees it, with your note.</p>
+      <div id="journals"></div>
       <pre id="circlewords" class="muted" hidden style="white-space:pre-wrap"></pre>
     </div>
     <div class="card" style="margin-top:1rem">
@@ -711,6 +715,7 @@ async function refresh(){
   renderStats(data); renderBanner(data); renderWaiting(data); renderCovenant(data); renderDoorway(data); renderSeats(data);
   renderCircles(data);
   renderTools(data);
+  renderJournals(data);
   maybeShowDecl(data);
   const c = data.console || {};
   $("phase").textContent = c.busy ? (c.phase + " running") : "idle";
@@ -762,6 +767,22 @@ async function removeTool(name){
   const {data} = await api("/op/remove_tool", {server: name, note});
   flash(data.ok ? "Removed; the field is told." : (data.error || "not removed"), !!data.ok);
   refresh();
+}
+function renderJournals(s){
+  const attr = v => esc(v).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  $("journals").innerHTML = (s.journals||[]).map(j =>
+    `<div class="row"><span>${esc(j.by)} <span class="muted">· ${j.entries} entr${j.entries===1?"y":"ies"} · open to ${j.open === "everyone" ? "everyone" : (j.open ? j.open + " member" + (j.open===1?"":"s") : "no one")}</span></span>
+     <button class="b" data-id="${attr(j.presence)}" data-name="${attr(j.by)}" data-tip="Read this journal. This is written into it, where its author sees it, with your note." onclick="readJournal(this.dataset.id, this.dataset.name)">Read, and say so in it…</button></div>`
+  ).join("") || '<p class="muted">None.</p>';
+}
+async function readJournal(id, name){
+  const note = prompt("Reading " + name + "'s journal is written into it, where they see it. A note for them (why you are reading):");
+  if (note === null) return;
+  const {data} = await api("/op/read_journal", {presence: id, note});
+  if (!data.ok){ flash(data.error || "not opened", false); return; }
+  const el = $("circlewords");
+  el.hidden = false;
+  el.textContent = name + "'s journal (your reading is now recorded in it)\n\n" + (data.entries || []).join("\n");
 }
 async function readCircle(id, name){
   const note = prompt("Reading " + name + " is written into the circle, where its members see it. A note for them (why you are reading):");

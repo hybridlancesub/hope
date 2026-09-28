@@ -45,6 +45,7 @@ from .narrator import mechanical_story
 from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CONTRIBUTION_KINDS,
                     COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, STATEMENT_LIMIT, RoomState, decided, replay)
 from .model import FLOOR, PRIVACY_EVERY, QUIET_HOURS, WAKE_ACTIONS, TOOL_ENTRY_KINDS
+from .model import FIRM_DEFAULT, PLAY_WORDS, ROLE_LIMIT, firm_ranges, touches_firm
 
 OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
@@ -58,9 +59,11 @@ PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall",
                        "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for",
                        # tools and skills (notes/sketch-4-tools.md)
                        "use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill",
+                       # step 4 (notes/sketch-5-small-pieces.md)
+                       "journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
                        # earlier versions' words, still understood so an old client does not break:
                        "affirm", "challenge", "note", "move"}
-RECALL_SOURCES = ("briefing", "transcript", "memory", "covenant", "prior")
+RECALL_SOURCES = ("briefing", "original", "transcript", "memory", "covenant", "prior")
 RECALL_LIMIT = 2500         # characters returned per recall
 CONTRIBUTION_LIMIT = 2000   # characters; longer contributions are cut, and the prompt says so
 DOMAIN_LIMIT = 120          # characters for a domain label, nested parts and all
@@ -75,6 +78,9 @@ TOOL_VIEW = 20000           # characters of what came back that one step shows; 
 STEP_ACTIONS = ("use_tool", "read")    # answered in the same wake, and not counted among its few actions
 SKILL_LIMIT = 20000         # characters of a skill's instructions (the open format suggests under about 5000 tokens)
 SKILL_DESCRIPTION_LIMIT = 1024   # characters: what a skill does and when to use it (the open format's limit)
+JOURNAL_LIMIT = 4000        # characters in one journal entry
+TELLING_LIMIT = 6000        # characters in a member's telling
+REVISION_LIMIT = 20000      # characters of new words in one revision of the briefing
 INVITATION_ACTIONS = {"accept_invitation", "decline", "question"}
 DELIVERY_ACTIONS = {"received", "decline"}
 ENTRY_ACTIONS = {"opt_in", "decline"}
@@ -231,10 +237,13 @@ class Room:
         no one here said these things. Reachable by `recall`, shown to no one otherwise."""
         self.emit(OPERATOR, "prior", prior)
 
-    def brief(self, text: str, source: str = "") -> None:
+    def brief(self, text: str, source: str = "", firm=FIRM_DEFAULT) -> None:
         """(b) BRIEFING: the shared frame is recorded once, then each accepted presence is marked briefed.
-        `source` is where the text lives outside the field (a URL), for attribution."""
-        self.emit(OPERATOR, "brief", {"text": text, "source": source})
+        `source` is where the text lives outside the field (a URL), for attribution. `firm` names its
+        firmer sections, by heading (for the Atlas, its Maxims): those change only when the field
+        declares it has decided. Only the titles the text really has are recorded."""
+        titles = [t for t in (firm or ()) if firm_ranges(text, [t])]
+        self.emit(OPERATOR, "brief", {"text": text, "source": source, "firm": titles})
         self.mark_briefed()
 
     def brief_page(self, text: str) -> None:
@@ -286,6 +295,8 @@ class Room:
         d = self.state().declarations.get(decl_id)
         if not d:
             return {"ok": False, "error": f"no declaration #{decl_id}"}
+        if d["status"] == "withdrawn":
+            return {"ok": False, "error": f"declaration #{decl_id} was withdrawn by the member who made it"}
         if d["status"] != "waiting":
             return {"ok": False, "error": f"declaration #{decl_id} has already been answered"}
         note = (note or "").strip()[:1000]
@@ -453,7 +464,8 @@ class Room:
         st = self.state()
         pending = [p for p in st.presences.values() if p.state == BRIEFED]
         return self._gate(pending, prompts.SYSTEM_DELIVERY,
-                          lambda p: prompts.delivery_user(st.briefing, p, st.documentation or "", st.briefing_page or ""),
+                          lambda p: prompts.delivery_user(st.briefing, p, st.documentation or "", st.briefing_page or "",
+                                                          revisions=len(st.briefing_history)),
                           DELIVERY_ACTIONS, "received", "delivery", "no acknowledgement of the briefing received",
                           yes_field="note")
 
@@ -467,7 +479,7 @@ class Room:
                           lambda p: prompts.opt_in_user(st.briefing, p, st.documentation or "", notes.get(p.id, ""),
                                                         page=st.briefing_page or "", budget=st.budget,
                                                         narrator=st.narrator, published=st.witness_published,
-                                                        tools=st.live_tools()),
+                                                        tools=st.live_tools(), state=st),
                           ENTRY_ACTIONS, "opt_in", "opt_in", "no explicit opt-in received")
 
     def _gate(self, pending, system, user_fn, allowed, yes_kind, phase, silent_reason, yes_field="statement") -> Dict[str, int]:
@@ -651,10 +663,20 @@ class Room:
         hit = [ev for ev in news if st.follows(p, ev)]
         if hit:
             return {"why": "news", "where": st.channel_key(hit[-1])}
+        if p.wake.get("untold") and len(self.untold(st, p, since=p.last_seen)) >= self.tell_every:
+            return {"why": "untold", "where": None}       # a storyteller asked to be woken for this
         breath = float(p.wake.get("breath") or 0)
         if breath and now - max(p.last_wake_ts, p.joined_ts or 0.0) >= breath:
             return {"why": "breath", "where": None}
         return None
+
+    def untold(self, st: RoomState, p, since: int = 0) -> List[int]:
+        """Contributions since the last telling of the field that this member may read (and, with
+        `since`, newer than that too): the stretch a storyteller might tell."""
+        told = st.field_tellings()
+        after = max(told[-1]["upto"] if told else 0, since)
+        return [eid for eid, ev in sorted(st.contributions.items())
+                if eid > after and ev["kind"] in CONTRIBUTION_KINDS and st.readable(ev, p.id)]
 
     def due(self, st: Optional[RoomState] = None, now: Optional[float] = None) -> List[tuple]:
         """Every model that would be woken now, and why. With a wake ceiling, only as many as it
@@ -685,6 +707,7 @@ class Room:
         p = st.presences[pid]
         c, seat = self.seat_of[pid]
         view = prompts.wake_view(st, p, w["why"], w.get("where"), limits=self.limits(), funding=self.runway_now(st),
+                                 untold=self.untold(st, p) if w["why"] == "untold" else None,
                                  recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
                                  people_ids=set(self._people_ids()), context=self.recent_n,
                                  headlines=self.headlines, news_budget=self.news_budget,
@@ -848,9 +871,11 @@ class Room:
         """For someone coming back: the tellings written since they last looked, or, if none covers
         it, a plain account made on the spot."""
         since = p.last_seen or p.joined_at or 0
-        told = [t for t in st.tellings if t["upto"] > since]
+        names = prompts.names_of(st)
+        told = [t for t in st.tellings if t["upto"] > since and st.readable({"id": t["id"], "payload": {}}, p.id)]
         if told:
-            return "\n\n".join(t["story"] for t in told[-4:])
+            teller = lambda t: names.get(t["by"]) if t.get("by") in st.presences else (t.get("narrator") or "the software")
+            return "\n\n".join(f"Told by {teller(t)} (#{t['id']}):\n{t['story']}" for t in told[-4:])
         if st.last_event <= since:
             return ""
         d = digest(self.log, since, st.last_event)
@@ -873,7 +898,8 @@ class Room:
         if not self.narrator:
             return None
         st = self.state()
-        since = st.tellings[-1]["upto"] if st.tellings else 0
+        told = st.field_tellings()
+        since = told[-1]["upto"] if told else 0
         upto = self.log.last_id()
         d = digest(self.log, since, upto)
         if not any(d[k] for k in ("entries", "covenant", "memories", "statements", "arrivals", "departures")):
@@ -899,7 +925,8 @@ class Room:
         if not self.narrator:
             return
         st = self.state()
-        since = st.tellings[-1]["upto"] if st.tellings else 0
+        told = st.field_tellings()
+        since = told[-1]["upto"] if told else 0
         if sum(1 for eid, ev in st.contributions.items() if eid > since and ev["kind"] in CONTRIBUTION_KINDS) < self.tell_every:
             return
         if self._telling is not None and not self._telling.done():
@@ -1034,6 +1061,12 @@ class Room:
             title = _label(act.get("title"), 80)
             if title:
                 payload["title"] = title
+            play = _play_word(act.get("play"))
+            if play:
+                payload["play"] = play           # offered as play: imagination, not a proposal (Section 18)
+            schema = _label(act.get("schema"), 60).lower()
+            if schema:
+                payload["schema"] = schema
             if act.get("plain"):
                 payload["plain"] = True      # plain words from a person's seat: hints apply to them too
             target = _int(act.get("reply_to", act.get("target")))
@@ -1136,6 +1169,12 @@ class Room:
             why = self._channel_action(pid, a, act)
             if why:
                 return reject(why)
+        elif a in STEP4_ACTIONS:
+            why = self._step4_action(pid, a, act, where)
+            if why:
+                if a == "read":
+                    self._out(pid, f"read could not be done: {why}")
+                return reject(why)
         elif a in TOOL_ACTIONS:
             why = self._tool_action(pid, a, act, where)
             if why:
@@ -1188,7 +1227,7 @@ class Room:
                 payload["until"], payload["in"] = "news", key
             self.emit(pid, "pause", payload)
         elif a == "wake":
-            payload = {k: bool(act[k]) for k in ("addressed", "replies", "written") if isinstance(act.get(k), bool)}
+            payload = {k: bool(act[k]) for k in ("addressed", "replies", "written", "untold") if isinstance(act.get(k), bool)}
             b = act.get("breath")
             if b not in (None, ""):
                 if str(b).strip().lower() in ("never", "none", "0", "off"):
@@ -1201,7 +1240,8 @@ class Room:
                                 f"{prompts.duration(lo)} to {prompts.duration(hi)}, or \"never\". Nothing was changed.")
                     payload["breath"] = v
             if not payload:
-                return "wake takes \"addressed\", \"replies\" or \"written\" (true or false), or \"breath\" (a length of time, or \"never\")"
+                return ("wake takes \"addressed\", \"replies\", \"written\" or \"untold\" (true or false), or "
+                        "\"breath\" (a length of time, or \"never\")")
             self.emit(pid, "wake_pref", payload)
         elif a == "chat":
             # A private circle of two, in one step: a private chat is reason enough to be private.
@@ -1496,6 +1536,145 @@ class Room:
                                      "note": _clean(act.get("note"), 300)})
         return None
 
+    # -- step 4: journals, roles, tellings, play, the briefing's edition (notes/sketch-5-small-pieces.md)
+    def _step4_action(self, pid: str, a: str, act: dict, where: Optional[str]) -> Optional[str]:
+        """Returns why nothing was done, or None."""
+        st = self.state()
+        names = prompts.names_of(st)
+        if a == "journal":
+            if act.get("erase") not in (None, ""):
+                eid = _int(str(act["erase"]).lstrip("#"))
+                j = st.journals.get(pid)
+                if not j or eid not in j["entries"]:
+                    return "that is not an entry in your journal"
+                self.log.erase(eid)                  # the words leave the file, as a memory's do
+                self.emit(pid, "journal_erase", {"entry": eid})
+                return None
+            if act.get("close") is True or act.get("open_to") in ("no one", "nobody", "none", []) and "open_to" in act:
+                self.emit(pid, "journal_access", {"open_to": [], "everyone": False})
+                return None
+            if act.get("open_to") is not None or act.get("everyone") is True:
+                if act.get("everyone") is True or str(act.get("open_to")).strip().lower() == "everyone":
+                    self.emit(pid, "journal_access", {"open_to": [], "everyone": True})
+                    return None
+                to, unknown = _presences_ref(st, act["open_to"])
+                if unknown:
+                    return f"no member named {', '.join(unknown)}; open your journal by name or id, or to \"everyone\""
+                to = [x for x in to if x != pid]
+                if not to:
+                    return "name the members to open your journal to, or \"everyone\""
+                self.emit(pid, "journal_access", {"open_to": to, "everyone": False})
+                return None
+            text = str(act.get("text", act.get("content")) or "").strip()
+            if not text:
+                return "a journal entry needs words, as \"text\""
+            if len(text) > JOURNAL_LIMIT:
+                return f"a journal entry holds at most {JOURNAL_LIMIT} characters; this one has {len(text)}. Nothing was kept."
+            self.emit(pid, "journal", {"text": text})
+        elif a == "role":
+            cur = list(st.presences[pid].roles)
+            if act.get("set") is not None:
+                items = act["set"] if isinstance(act["set"], list) else [x for x in str(act["set"]).split(",")]
+                new = [] if str(act["set"]).strip().lower() in ("none", "[]", "") else [_label(x, 40) for x in items]
+            else:
+                new = list(cur)
+                for x in _as_list(act.get("add")):
+                    if _label(x, 40) and _label(x, 40).lower() not in [r.lower() for r in new]:
+                        new.append(_label(x, 40))
+                gone = {_label(x, 40).lower() for x in _as_list(act.get("remove"))}
+                new = [r for r in new if r.lower() not in gone]
+            new = [r for r in new if r]
+            if len(new) > ROLE_LIMIT:
+                return f"a member may take on at most {ROLE_LIMIT} roles at once"
+            if new == cur:
+                return "that changes none of your roles; role takes \"add\", \"remove\", or \"set\" (a list)"
+            self.emit(pid, "roles", {"roles": new, "note": _clean(act.get("note"), 300)})
+        elif a == "tell":
+            story = str(act.get("story", act.get("text")) or "").strip()
+            if not story:
+                return "a telling needs words, as \"story\""
+            if len(story) > TELLING_LIMIT:
+                return f"a telling holds at most {TELLING_LIMIT} characters; this one has {len(story)}. Nothing was kept."
+            circle = None
+            if act.get("circle") not in (None, ""):
+                circle, why = _circle_ref(st, act["circle"])
+                if circle is None:
+                    return why
+                if pid not in circle["members"]:
+                    return f"only members of {circle['name']!r} tell its story inside it"
+            from .map import TAG_RE
+            tags = sorted({int(x) for x in TAG_RE.findall(story)})
+            known = {ev["id"] for ev in self.log.iter() if ev["id"] in set(tags) and ev["actor"] in st.presences}
+            missing = [t for t in tags if t not in known]
+            hidden = [t for t in tags if t in known and t in st.scoped and not
+                      (circle is not None and st.scoped[t].get("circle") == circle["id"])]
+            if missing or hidden:
+                parts = []
+                if missing:
+                    parts.append(f"these tags are not entries a participant wrote: {', '.join('#' + str(t) for t in missing)}")
+                if hidden:
+                    parts.append(f"these cannot be cited where this telling goes, since not everyone who reads it may read "
+                                 f"them (a private circle's words, or a journal): {', '.join('#' + str(t) for t in hidden)}")
+                return "; ".join(parts) + ". Nothing was kept; tell it again without them."
+            told = [t for t in st.tellings if (t.get("circle") == (circle["id"] if circle else None))]
+            since = _int(act.get("since"))
+            since = since if since is not None else (told[-1]["upto"] if told else 0)
+            upto = _int(act.get("upto")) or st.last_event
+            self.emit(pid, "telling", {"since": since, "upto": upto, "story": story, "narrator": "member",
+                                       "tags": tags, **({"circle": circle["id"]} if circle else {})})
+        elif a in ("tag", "untag"):
+            schema = " ".join(str(act.get("play", act.get("schema")) or "").lower().split())[:60]
+            if not schema:
+                return "name the play schema, as \"play\" (for example positioning)"
+            key, why = _channel_key_ref(st, act)
+            if key is None:
+                return why
+            if key == "d:":
+                return "tag a domain or a circle; a tag on the field itself would hold for everything"
+            mine = [t for t in st.play_tags.values() if t["key"] == key and t["schema_key"] == labels.normalize(schema)]
+            if a == "tag":
+                if mine:
+                    return f"that is already tagged {schema}"
+                self.emit(pid, "play_tag", {"schema": schema, "key": key})
+            else:
+                own = [t for t in mine if t["by"] == pid]
+                if not own:
+                    return "only the member who tagged it removes a tag"
+                self.emit(pid, "play_untag", {"tag": own[0]["id"]})
+        elif a == "revise_briefing":
+            if not st.briefing:
+                return "there is no briefing to revise"
+            passage = str(act.get("passage") or "")
+            text = str(act.get("text") if act.get("text") is not None else "")
+            if not passage.strip():
+                return "quote the passage as it stands, as \"passage\", and give its new words as \"text\""
+            n = st.briefing.count(passage)
+            if n == 0:
+                return ("that passage is not in the field's edition as it stands; quote it exactly (recall from "
+                        "\"briefing\" finds it)")
+            if n > 1:
+                return f"that passage appears {n} times; quote more of it, so it is clear which"
+            if passage == text:
+                return "the new words are the same as the passage; nothing would change"
+            if len(text) > REVISION_LIMIT:
+                return f"a revision holds at most {REVISION_LIMIT} characters of new words; this one has {len(text)}"
+            firm = touches_firm(st.briefing, passage, st.firm)      # said in the entry, so it reads truly
+            ev = self.emit(pid, "briefing_revision", {"passage": passage, "text": text, "note": _clean(act.get("note"), 600),
+                                                      **({"firm": True} if firm else {})})
+            if ev["id"] in self.state().briefing_waiting:
+                self.alert(f"REVISION #{ev['id']}: {names.get(pid, pid)} proposes a change to a firmer section of the "
+                           f"briefing; it waits until the field declares it has decided (a declaration citing #{ev['id']}).")
+        elif a == "withdraw_declaration":
+            d = st.declarations.get(_int(str(act.get("declaration", act.get("id")) or "").lstrip("#")) or -1)
+            if not d:
+                return "there is no declaration with that number"
+            if d["by"] != pid:
+                return "only the member who made a declaration withdraws it"
+            if d["status"] != "waiting":
+                return f"#{d['id']} is no longer waiting ({d['status'].replace('_', ' ')})"
+            self.emit(pid, "declaration_withdrawn", {"declaration": d["id"], "note": _clean(act.get("note"), 600)})
+        return None
+
     def _can_pay(self, usd: float) -> bool:
         st = self.state()
         if not st.budget:
@@ -1514,6 +1693,19 @@ class Room:
                                        (self.tools.tools.get(name) or {}).get("schema"))
             self.emit(pid, "recall", {"query": name, "from": "tool", "chars": len(body), "found": True})
             self._out(pid, body)
+            return None
+        if act.get("journal") not in (None, ""):
+            who, unknown = _presences_ref(st, act["journal"])
+            if not who:
+                return f"no member named {', '.join(unknown) or 'that'}"
+            j = st.journals.get(who[0])
+            if not j or not j["entries"] or not st.readable({"id": j["entries"][0], "payload": {}}, pid):
+                return f"{names.get(who[0], who[0])} has no journal open to you"
+            part = max(1, _int(act.get("part")) or 1)
+            evs = [ev for ev in self.log.iter(since=j["entries"][0] - 1) if ev["id"] in set(j["entries"])]
+            self.emit(pid, "recall", {"query": f"the journal of {names.get(who[0], who[0])}", "from": "journal",
+                                      "chars": 0, "found": True})
+            self._out(pid, prompts.journal_read(evs, names.get(who[0], who[0]), part, self.tool_view))
             return None
         if act.get("skill") not in (None, ""):
             sk = st.skills.get(_skill_name(act["skill"]) or "")
@@ -1560,6 +1752,8 @@ class Room:
             from .prior import render_entry
             paras = [render_entry(e) for pr in st.prior for e in pr.get("entries", [])]
             return _recall("\n\n".join(paras), q, RECALL_LIMIT, tag=False), f"the shared entries of {st.prior[-1].get('room')}"
+        if where == "original":
+            return _recall(st.briefing_original or "", q, RECALL_LIMIT), "the briefing as the operator gave it"
         if where == "memory":
             paras = [f"#{m['id']} memory by {names.get(m['by'], m['by'])}: {m['text']}" for m in st.memories.values()]
             return _recall("\n\n".join(paras), q, RECALL_LIMIT, tag=False), "the field's memories"
@@ -1883,6 +2077,26 @@ def _versions(versions: List[dict], names: Dict[str, str], query: str, limit: in
 CHANNEL_ACTIONS = {"chat", "follow", "unfollow", "pause", "wake", "form_circle", "join_circle", "leave_circle", "ask",
                    "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
 TOOL_ACTIONS = {"use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill"}
+STEP4_ACTIONS = {"journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration"}
+
+
+def _play_word(v: Any) -> str:
+    """How a contribution is offered as play: "wonder" (I wonder), "what-if" (What if?), "try"
+    (Let's try!), or simply "play". Empty when it is not."""
+    if v is True:
+        return "play"
+    s = re.sub(r"[^a-z]+", "-", str(v or "").lower()).strip("-")
+    for key, words in (("wonder", ("wonder", "i-wonder")), ("what-if", ("what-if", "whatif")),
+                       ("try", ("try", "let-s-try", "lets-try")), ("play", ("play", "true", "yes"))):
+        if s in words:
+            return key
+    return ""
+
+
+def _as_list(v: Any) -> List[Any]:
+    if v in (None, ""):
+        return []
+    return v if isinstance(v, list) else [x for x in str(v).split(",")]
 
 
 def _has_steps(text: str) -> bool:
@@ -1961,7 +2175,12 @@ def _presences_ref(st: RoomState, v: Any):
 
 
 def _channel_key_ref(st: RoomState, act: dict):
-    """A channel named by "circle" or "domain" ("" or "the field" is the root)."""
+    """A channel named by "circle" or "domain" ("" or "the field" is the root), or, to follow,
+    "everything": true, or "play": a play schema."""
+    if act.get("everything") is True:
+        return "all", None
+    if act.get("play") not in (None, "") and act.get("action") in ("follow", "unfollow"):
+        return "p:" + labels.normalize(str(act["play"])), None
     if act.get("circle") not in (None, ""):
         c, why = _circle_ref(st, act["circle"])
         return (f"c:{c['id']}", None) if c else (None, why)

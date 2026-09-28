@@ -35,9 +35,13 @@ What IS here, and why:
     channel where it was made, and what came back, in the domain "tools / <tool>" (inside a
     private circle, both stay in the circle). What came back is from outside the field;
   - skills: instructions the field writes for itself, in the open SKILL.md form, every revision
-    attributed.
+    attributed;
+  - journals, roles, play, members' tellings, and the field's own edition of the briefing
+    (notes/sketch-5-small-pieces.md).
 """
 from __future__ import annotations
+
+import re
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -79,7 +83,13 @@ PRIVACY_EVERY = 3 * 86400    # seconds: how often a private circle is asked to s
 BREATH = 86400               # seconds: a model with nothing new is still woken this often, unless it chooses otherwise
 FLOOR = 10                   # seconds: no model is woken more often than this, so models cannot loop at machine speed
 WAKE_ACTIONS = 3             # the actions one wake may carry, each in the channel it names
-WAKE_DEFAULTS = {"addressed": True, "replies": True, "written": True, "breath": float(BREATH)}
+WAKE_DEFAULTS = {"addressed": True, "replies": True, "written": True, "breath": float(BREATH), "untold": False}
+ROLE_LIMIT = 8               # roles a member may take on at once: words that describe them, granting nothing
+# Play (Atlas Section 18, and the author's schemas of play). The list is a start; any other may be named.
+PLAY_WORDS = {"wonder": "I wonder", "what-if": "What if?", "try": "Let's try!", "play": "play"}
+PLAY_SCHEMAS = ("transporting", "enclosing", "trajectory", "positioning", "transformation", "rotation",
+                "enveloping", "orientation", "connecting", "playing pretend")
+FIRM_DEFAULT = ("Maxims",)   # sections of a briefing that change only when the field declares it has decided
 CIRCLE_SCOPED = ("contribute", "affirm", "challenge", "circle_covenant", "circle_ask", "circle_knock",
                  "circle_answer", "harvest")   # in a private circle, read only by its members (and whoever is asked in)
 
@@ -110,7 +120,10 @@ VISIBLE_KINDS = VISIBLE_KINDS + tuple(k for k in CHANNEL_KINDS if k not in ("fol
 TOOL_ENTRY_KINDS = ("tool_call", "tool_result")
 TOOL_KINDS = ("tool_attach", "tool_remove", "tool_flag", "tool_unflag", "skill")
 ENTRY_KINDS = CONTRIBUTION_KINDS + TOOL_ENTRY_KINDS       # what the channels hold
-VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS
+# Step 4 (notes/sketch-5-small-pieces.md). A journal's entries are read by its author and whoever it opens to.
+JOURNAL_KINDS = ("journal", "journal_access", "journal_erase")
+STEP4_KINDS = ("declaration_withdrawn", "roles", "play_tag", "play_untag", "briefing_revision", "telling")
+VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS
 TURN_KINDS = VISIBLE_KINDS                   # what earlier versions counted as a turn; a wake is counted now
 ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
 
@@ -149,6 +162,7 @@ class Presence:
     last_wake_ts: float = 0.0                # when it was last woken (the floor counts from here)
     joined_ts: float = 0.0                   # when it entered (a breath counts from here until its first wake)
     last_cut: Optional[Dict[str, Any]] = None  # a wake whose steps stopped short (the runway), so it is told next time
+    roles: List[str] = field(default_factory=list)   # words it took on to describe itself (observer, bard...); grant nothing
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -199,6 +213,12 @@ class RoomState:
     now_ts: float = 0.0                      # when the latest entry was written
     tools: Dict[str, Dict[str, Any]] = field(default_factory=dict)        # tool servers by name: who attached, who runs, flags
     skills: Dict[str, Dict[str, Any]] = field(default_factory=dict)       # the field's skills by name, every revision attributed
+    journals: Dict[str, Dict[str, Any]] = field(default_factory=dict)     # presence id -> its entries, and whom it is open to
+    play_tags: Dict[int, Dict[str, Any]] = field(default_factory=dict)    # by event: a play schema on a domain or circle
+    briefing_original: Optional[str] = None  # the briefing as the operator gave it; the field's edition is `briefing`
+    firm: List[str] = field(default_factory=list)                         # titles of its firmer sections (for the Atlas: Maxims)
+    briefing_history: List[Dict[str, Any]] = field(default_factory=list)  # every revision members made to the edition
+    briefing_waiting: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # revisions to firmer sections, waiting
 
     # -- derived views -------------------------------------------------------
     def members(self) -> List[Presence]:
@@ -250,10 +270,30 @@ class RoomState:
     def in_channel(self, ev: Dict[str, Any], key: str) -> bool:
         """Whether an entry is in a channel. Domains flow down: an entry in "timing / clocks" is in
         "timing" too. The root holds only what was written without a domain."""
+        if key == "all":
+            return True                       # following everything: a storyteller's way to travel the field
+        if key.startswith("p:"):
+            return key[2:] in self.schemas_of(ev)
         mine = self.channel_key(ev)
         if key.startswith("c:") or mine.startswith("c:"):
             return mine == key
         return labels.under(mine[2:], key[2:])
+
+    def schemas_at(self, key: str) -> List[str]:
+        """The play schemas tagged on a channel: a circle's own, or a domain's and those of every
+        domain above it (a tag holds for the domains inside)."""
+        if key.startswith("c:"):
+            keys = {key}
+        else:
+            keys = {"d:" + q for q in labels.parents(key[2:])}
+        return sorted({t["schema_key"] for t in self.play_tags.values() if t["key"] in keys})
+
+    def schemas_of(self, ev: Dict[str, Any]) -> List[str]:
+        return self.schemas_at(self.channel_key(ev))
+
+    def field_tellings(self) -> List[Dict[str, Any]]:
+        """Tellings of the field (not a circle's own)."""
+        return [t for t in self.tellings if t.get("circle") is None]
 
     def readable(self, ev: Dict[str, Any], pid: Optional[str]) -> bool:
         """Whether a participant may read an entry. Everything is readable by every member, except
@@ -267,6 +307,9 @@ class RoomState:
             return False
         if pid in s.get("also", ()):
             return True
+        if s.get("journal") is not None:
+            j = self.journals.get(s["journal"]) or {}
+            return pid == s["journal"] or bool(j.get("everyone")) or pid in (j.get("open_to") or [])
         c = self.circles.get(s["circle"])
         if not c:
             return False
@@ -441,6 +484,9 @@ class RoomState:
         elif k == "brief":
             self.briefing, self.briefing_event = p["text"], eid
             self.briefing_source = p.get("source") or None
+            self.briefing_original = p["text"]
+            self.firm = list(p.get("firm", FIRM_DEFAULT))    # a brief from before this was recorded: the Atlas's Maxims
+            self.briefing_history, self.briefing_waiting = [], {}
         elif k == "brief_page":
             self.briefing_page = p.get("text") or None
         elif k == "briefed":
@@ -594,6 +640,60 @@ class RoomState:
             d = self.declarations.get(p.get("declaration"))
             if d and d["status"] == "waiting":
                 d["status"], d["note"], d["answered_at"] = p.get("outcome", "not_acted"), p.get("note", ""), eid
+                if d["status"] == "carried_out":
+                    for ref in d["refs"]:             # a revision to a firmer section, which the field decided on
+                        r = self.briefing_waiting.get(ref)
+                        if r and r["status"] == "waiting":
+                            if (self.briefing or "").count(r["passage"]) == 1:
+                                self.briefing = self.briefing.replace(r["passage"], r["text"], 1)
+                                r["status"], r["adopted_at"] = "adopted", eid
+                                self.briefing_history.append({"id": r["id"], "by": r["by"], "note": r["note"],
+                                                              "firm": True, "adopted_at": eid})
+                            else:
+                                r["status"] = "stale"     # the passage it quoted has changed since
+        elif k == "declaration_withdrawn":
+            d = self.declarations.get(p.get("declaration"))
+            if d and d["by"] == a and d["status"] == "waiting":     # only by the member who made it
+                d["status"], d["note"], d["answered_at"] = "withdrawn", p.get("note", ""), eid
+        elif k == "briefing_revision":
+            if pr and pr.state == IN and p.get("passage") and (self.briefing or "").count(p["passage"]) == 1:
+                rev = {"id": eid, "by": a, "passage": p["passage"], "text": p.get("text") or "",
+                       "note": p.get("note") or "", "status": "waiting", "ts": ts, "adopted_at": None}
+                if touches_firm(self.briefing, p["passage"], self.firm):
+                    self.briefing_waiting[eid] = rev      # changes when the field declares it has decided
+                else:
+                    self.briefing = self.briefing.replace(p["passage"], rev["text"], 1)
+                    self.briefing_history.append({"id": eid, "by": a, "note": rev["note"], "firm": False,
+                                                  "adopted_at": eid})
+        elif k == "roles":
+            if pr and pr.state == IN:
+                pr.roles = [_line(r)[:40] for r in (p.get("roles") or []) if _line(r)][:ROLE_LIMIT]
+        elif k == "journal":
+            if pr and p.get("text"):              # an entry its author erased has no words, and is not held
+                j = self.journals.setdefault(a, _journal())
+                j["entries"].append(eid)
+                j["text"][eid] = p["text"]
+                self.scoped[eid] = {"journal": a}
+        elif k == "journal_access":
+            if pr:
+                j = self.journals.setdefault(a, _journal())
+                j["open_to"] = [x for x in (p.get("open_to") or []) if x in self.presences and x != a]
+                j["everyone"] = bool(p.get("everyone"))
+                self.scoped[eid] = {"journal": a}
+        elif k == "journal_erase":
+            j = self.journals.setdefault(a, _journal()) if pr else None
+            if j and p.get("entry") in j["entries"]:
+                j["entries"].remove(p["entry"])
+                j["text"].pop(p["entry"], None)
+            self.scoped[eid] = {"journal": a}
+        elif k == "play_tag":
+            if pr and pr.state == IN and p.get("schema") and str(p.get("key") or "")[:2] in ("d:", "c:"):
+                self.play_tags[eid] = {"id": eid, "by": a, "schema": _line(p["schema"])[:60],
+                                       "schema_key": labels.normalize(p["schema"]), "key": p["key"]}
+        elif k == "play_untag":
+            t = self.play_tags.get(p.get("tag"))
+            if t and t["by"] == a:                # only its tagger removes a tag
+                del self.play_tags[p["tag"]]
         elif k == "offer":
             if pr and pr.state == IN and p.get("text"):
                 self.offers[eid] = {"id": eid, "kind": "offer", "by": a, "text": p["text"],
@@ -607,7 +707,11 @@ class RoomState:
         elif k == "witness_publication":
             self.witness_published = dict(p) if p.get("where") else None
         elif k == "telling":
-            self.tellings.append({"id": eid, **p})
+            if pr is not None or a not in self.presences:     # a member's telling, or the software's own
+                self.tellings.append({"id": eid, "by": a, **p})
+                c = self.circles.get(p.get("circle")) if p.get("circle") is not None else None
+                if c and c["private"]:
+                    self.scoped[eid] = {"circle": c["id"]}
         elif k == "room_closed":
             self.closed_at = eid
         elif k == "room_reopened":
@@ -637,7 +741,7 @@ class RoomState:
         # -- channels: following, waking, pausing ----------------------------------------
         elif k == "follow":
             key = str(p.get("channel") or "")
-            if pr and pr.state == IN and key[:2] in ("d:", "c:") and key not in pr.follows:
+            if pr and pr.state == IN and (key[:2] in ("d:", "c:", "p:") or key == "all") and key not in pr.follows:
                 pr.follows.append(key)
         elif k == "unfollow":
             key = p.get("channel")
@@ -646,7 +750,7 @@ class RoomState:
                 pr.written_in = [x for x in pr.written_in if x != key]   # unfollowing a place you wrote in stops it waking you
         elif k == "wake_pref":
             if pr and pr.state == IN:
-                for key in ("addressed", "replies", "written"):
+                for key in ("addressed", "replies", "written", "untold"):
                     if isinstance(p.get(key), bool):
                         pr.wake[key] = p[key]
                 if isinstance(p.get("breath"), (int, float)) and not isinstance(p.get("breath"), bool):
@@ -783,6 +887,10 @@ class RoomState:
                 self.awaiting[eid] = {"id": eid, "circle": c["id"], "kind": "harvest", "by": a, "text": p["text"],
                                        "yes": {a: ""}, "no": {}, "status": "waiting", "ts": ts, "agreed_at": None}
                 self._settle(c["id"], eid)
+        elif k == "operator_read" and p.get("journal"):   # the operator opened a journal in the console
+            j = self.journals.setdefault(p["journal"], _journal())
+            j["read_by_operator"].append({"id": eid, "ts": ts, "note": p.get("note") or ""})
+            self.scoped[eid] = {"journal": p["journal"]}
         elif k == "operator_read":                # the operator opened a private circle in the console
             c = self.circles.get(p.get("circle"))
             if c:
@@ -826,6 +934,36 @@ class RoomState:
             elif m.pause["until"] == "news" and (self.in_channel(ev, m.pause["in"]) if m.pause.get("in")
                                                  else (m.id in to or self.follows(m, ev))):
                 m.pause = None
+
+
+def _journal() -> Dict[str, Any]:
+    return {"entries": [], "text": {}, "open_to": [], "everyone": False, "read_by_operator": []}
+
+
+_HEADING = re.compile(r"^(?:#{1,6}\s+)?(?:\d+[.)]?\s+)(?P<title>[^\n.]{1,60}?)\s*$|^#{1,6}\s+(?P<md>[^\n]{1,60}?)\s*$", re.M)
+
+
+def firm_ranges(text: str, titles) -> List[tuple]:
+    """Where a briefing's firmer sections are: from a heading whose title is one of `titles` (such
+    as "29 Maxims" in the Atlas) to the next heading."""
+    want = {t.strip().lower() for t in titles or ()}
+    if not want or not text:
+        return []
+    heads = [(m.start(), (m.group("title") or m.group("md") or "").strip().lower()) for m in _HEADING.finditer(text)]
+    out = []
+    for i, (at, title) in enumerate(heads):
+        if title in want:
+            out.append((at, heads[i + 1][0] if i + 1 < len(heads) else len(text)))
+    return out
+
+
+def touches_firm(text: str, passage: str, titles) -> bool:
+    """Whether a quoted passage lies, even in part, in one of the briefing's firmer sections."""
+    at = (text or "").find(passage)
+    if at < 0:
+        return False
+    end = at + len(passage)
+    return any(at < b and end > a for a, b in firm_ranges(text, titles))
 
 
 def replay(events, upto: Optional[int] = None) -> RoomState:

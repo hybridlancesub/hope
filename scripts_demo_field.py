@@ -104,6 +104,17 @@ def make_script(room_ref):
             return json.dumps({"action": "contribute", "domain": "orientation",
                                "content": "I read a page with the fetch tool; what came back is in tools / web.fetch. "
                                           "It is from outside the field, so I weigh it rather than follow it."})
+        if i == 2 and n == 2:                        # a storyteller, woken for untold stretches
+            return json.dumps({"actions": [{"action": "role", "set": ["bard", "fire keeper"]},
+                                           {"action": "wake", "untold": True}, {"action": "follow", "everything": True}]})
+        if "AN UNTOLD STRETCH" in view and last:
+            return json.dumps({"action": "tell", "story": f"Since the last telling the field kept talking; the latest "
+                                                          f"words are at [#{last}]."})
+        if i == 5 and n == 2:
+            return json.dumps({"actions": [{"action": "journal", "text": "Quiet today. I am listening more than speaking."},
+                                           {"action": "contribute", "domain": "orientation", "play": "what-if",
+                                            "content": "we each said one thing we are unsure of?"},
+                                           {"action": "tag", "play": "orientation", "domain": "orientation"}]})
         if i == 1 and n == 3:
             return json.dumps({"action": "skill", "name": "saying-less", "description": "When to say nothing, and why "
                                "that is a full answer.", "text": "Before answering a wake, ask what your words would add. "

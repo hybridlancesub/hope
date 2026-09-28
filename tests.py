@@ -802,36 +802,21 @@ class RoomTest(unittest.TestCase):
         self.assertFalse(any(tellings[0]["story"] in m for ms in seen.values() for m in ms),
                          "models are not handed the tellings")
 
-    def test_a_model_narrator_gets_one_correction_and_both_calls_are_paid(self):
-        from hope.narrator import ModelNarrator
-        from hope.connector import Seat
-        room, _ = self.make(2)
-        self.open(room)
-        room.step()
-        real = min(room.state().contributions)
-
-        class Bard:
-            json_mode = True
-            def __init__(self):
-                self.calls = 0
-            def ask(self, seat, system, msgs):
-                self.calls += 1
-                text = "It began at [#999999]." if self.calls == 1 else f"Mock 0 spoke first [#{real}]."
-                return Reply(text, prompt_tokens=500, completion_tokens=50, cost_usd=0.01)
-        room.narrator = ModelNarrator(Bard(), Seat("bard", "Bard", "x", "y", "bard/model", {"prompt": 0, "completion": 0}))
-        before = room.log.total_cost()
-        ev = room.tell()
-        self.assertEqual((ev["payload"]["tries"], ev["payload"]["ungrounded"]), (2, []))
-        self.assertAlmostEqual(room.log.total_cost() - before, 0.02, places=6, msg="both calls are counted")
+    def test_no_model_that_is_not_a_participant_reads_the_field_for_tellings(self):
+        import argparse
+        import hope.narrator as hn
+        from hope.__main__ import _narrator
+        self.assertFalse(hasattr(hn, "ModelNarrator"), "the outside narrator model is retired")
+        with self.assertRaises(SystemExit) as e:
+            _narrator(argparse.Namespace(narrator="openrouter:deepseek", providers=None))
+        self.assertIn("members tell the field's stories themselves", str(e.exception))
+        self.assertIsInstance(_narrator(argparse.Namespace(narrator="mechanical")), hn.MechanicalNarrator)
 
     def test_what_reads_the_transcript_for_tellings_is_said_at_entry(self):
-        from hope.narrator import MechanicalNarrator, ModelNarrator
-        from hope.connector import Seat
+        from hope.narrator import MechanicalNarrator
         for narrator, expect, absent in (
                 (None, None, "About tellings"),
-                (MechanicalNarrator(), "No model is involved, and nothing leaves the field", "narrator model"),
-                (ModelNarrator(object(), Seat("b", "Bard", "x", "y", "bard/model-1", {"prompt": 0, "completion": 0})),
-                 "a narrator model that is not a participant (bard/model-1)", "No model is involved")):
+                (MechanicalNarrator(), "No model is involved, and nothing leaves the field", "narrator model")):
             conn = MockConnector(1, scripted({}))
             room = Room(EventLog(os.path.join(self.tmp, f"n{id(narrator)}.db")), [conn], alert_fn=self.alerts.append,
                         narrator=narrator, tell_every=3)
@@ -1147,22 +1132,9 @@ class RoomTest(unittest.TestCase):
         good, bad = f"they spoke [#{real}]", "and then [#999999] happened"
         self.assertEqual(check_story(good, room.log, d["upto"]), [])
         self.assertEqual(check_story(bad, room.log, d["upto"]), [999999])
-        # a narrator that invents once is corrected; still-lying output is flagged, never silent
-        class FakeConn:
-            def __init__(self): self.calls = 0
-            def ask(self, seat, system, msgs):
-                self.calls += 1
-                return Reply(bad if self.calls == 1 else f"they spoke [#{real}]")
-        from hope.map import tell_story
-        from hope.connector import Seat
-        fc = FakeConn()
-        told = tell_story(d, fc, Seat("b", "bard", "x", "y", "z", {"prompt": 0, "completion": 0}), room.log, d["upto"])
-        self.assertEqual(told["tries"], 2)
-        self.assertEqual(told["ungrounded"], [])
-        class Liar(FakeConn):
-            def ask(self, seat, system, msgs):
-                return Reply(bad)
-        told2 = tell_story(d, Liar(), Seat("b", "bard", "x", "y", "z", {"prompt": 0, "completion": 0}), room.log, d["upto"])
+        # a story citing what does not exist is reported, never hidden
+        told2 = {"story": bad, "ungrounded": check_story(bad, room.log, d["upto"]), "tries": 1, "narrator": "the software",
+                 "model": "none", "cost_usd": 0.0}
         self.assertEqual(told2["ungrounded"], [999999], "an ungrounded story is reported, not hidden")
         from hope.map import render_html
         page = render_html(d, told2, "test sitting")
@@ -2965,7 +2937,10 @@ class TruthTest(unittest.TestCase):
         for text in (prompts.SYSTEM_ENTRY, prompts.SYSTEM_MEMBER):
             low = text.lower()
             self.assertLess(low.index("goes to the service that runs"), low.index("the software sends none of your words"))
-            self.assertIn("narrator", low[low.index("goes to the service that runs"):low.index("the software sends none of your words")])
+            self.assertNotIn("narrator", low[low.index("goes to the service that runs"):low.index("the software sends none of your words")],
+                             "no narrator model is an exception any more: members tell the field's stories")
+            self.assertIn("journal", low[:low.index("the software sends none of your words")],
+                          "and it says who reads a journal")
             self.assertIn("what they do with what they read is theirs to answer for", low,
                           "and it says the one thing the software cannot promise: what other participants do")
 
@@ -3005,11 +2980,10 @@ class TruthTest(unittest.TestCase):
             self.assertNotIn("the two JSON objects", f.read())
 
     def test_narrators_are_never_handed_a_dollar_figure(self):
-        from hope.map import STORY_SYSTEM, digest, digest_text
+        from hope.map import digest, digest_text
         room, _ = self._field()
         room.step()
         self.assertNotIn("$", digest_text(digest(room.log, 0)))
-        self.assertNotIn("first bard", STORY_SYSTEM)
 
     def test_a_map_hands_members_words_to_no_model_the_field_was_not_told_of(self):
         import argparse, contextlib, io
@@ -4135,6 +4109,264 @@ class ToolTest(unittest.TestCase):
         self.assertEqual(translate("read the briefing again")["action"], "contribute")
         self.assertNotIn("accept_invitation", prompts.SYSTEM_MEMBER)
         self.assertNotIn("opt_in", prompts.SYSTEM_MEMBER)
+
+
+ATLAS_LIKE = ("1 Greetings\nHello there, field.\n\n2 Purpose\nTo coordinate, together.\n\n29 Maxims\n"
+              "Maxim 1 — Choice\nChoice is first.\n\n30 Covenant\nA promise, made and remade.")
+
+
+class StepFourTest(unittest.TestCase):
+    """Step 4 (notes/sketch-5-small-pieces.md): journals whose authors choose who reads them; roles
+    that grant nothing; storytellers, with no outside model reading the field; play, and schemas of
+    play; the field's own edition of the briefing, passages freely and its firmer sections by the
+    field's declared decision; and taking back a declaration."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.seen = {}
+
+        def script(seat, system, messages):
+            self.seen.setdefault(seat.id, []).append(messages[-1]["content"])
+            return scripted({})(seat, system, messages)
+        self.alerts = []
+        self.room = Room(EventLog(os.path.join(self.tmp, "s4.db")), [MockConnector(4, script)],
+                         alert_fn=self.alerts.append, parallel=4, tell_every=3)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(ATLAS_LIKE); r.run_delivery(); r.run_opt_in()
+        self.a, self.b, self.c, self.d = "mock-0", "mock-1", "mock-2", "mock-3"
+
+    def act(self, pid, **action):
+        self.room._apply_action(pid, json.dumps(action))
+
+    def last(self, kind):
+        return [e for e in self.room.log.iter(kind=kind)][-1]
+
+    def rejected(self):
+        return self.last("rejected")["payload"]["why"]
+
+    def st(self):
+        return self.room.state()
+
+    def view(self, pid, why="news", **kw):
+        st = self.st()
+        return prompts.wake_view(st, st.presences[pid], why, limits=self.room.limits(), **kw)
+
+    def seen_up_to_now(self, pid):
+        """As if the member had just been woken: shown everything so far."""
+        self.room.emit("room", "wake", {"presence": pid, "upto": self.room.log.last_id(), "why": "news"})
+
+    def read_out(self, pid, **action):
+        self.room._ctx[pid] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+        self.act(pid, action="read", **action)
+        return self.room._ctx.pop(pid)["out"]
+
+    # journals ------------------------------------------------------------------------------------------
+    def test_a_journal_is_read_by_its_author_and_those_it_opens_to_and_no_one_else(self):
+        from hope.serve import record_text, state_json
+        self.act(self.a, action="journal", text="A-PRIVATE-THOUGHT about the quiet")
+        ev = self.last("journal")
+        st = self.st()
+        self.assertTrue(st.readable(ev, self.a))
+        self.assertFalse(st.readable(ev, self.b), "a journal is its author's")
+        self.assertIn("A-PRIVATE-THOUGHT", self.view(self.a), "its author's view carries it")
+        self.assertIn("YOUR JOURNAL (1 entry; open to no one else", self.view(self.a))
+        self.assertNotIn("A-PRIVATE-THOUGHT", self.view(self.b))
+        self.assertNotIn("A-PRIVATE-THOUGHT", record_text(self.room.log), "nor is it in the console's record")
+        self.assertNotIn("A-PRIVATE-THOUGHT", json.dumps(state_json(self.room.log)))
+        self.act(self.b, action="read", journal="Mock 0")
+        self.assertIn("no journal open to you", self.rejected())
+        self.act(self.a, action="journal", open_to=["Mock 1"])
+        self.assertTrue(self.st().readable(ev, self.b), "opened to a member its author names")
+        self.assertFalse(self.st().readable(ev, self.c))
+        self.assertIn("JOURNALS OPEN TO YOU", self.view(self.b))
+        self.assertIn("A-PRIVATE-THOUGHT", self.read_out(self.b, journal="Mock 0")[-1])
+        self.act(self.a, action="journal", open_to="everyone")
+        self.assertTrue(self.st().readable(ev, self.c))
+        self.act(self.a, action="journal", close=True)
+        self.assertFalse(self.st().readable(ev, self.b), "and closed again")
+        self.assertIn("a journal, which its author opens to whom they choose", prompts.SYSTEM_MEMBER)
+        self.assertIn("a member's journal, which its author reads and opens to whom they choose", prompts.SYSTEM_ENTRY)
+
+    def test_a_journal_entry_its_author_erases_leaves_the_file(self):
+        self.act(self.a, action="journal", text="ERASE-ME-7731")
+        eid = self.last("journal")["id"]
+        self.act(self.b, action="journal", erase=eid)
+        self.assertIn("not an entry in your journal", self.rejected(), "only its author erases an entry")
+        self.act(self.a, action="journal", erase=eid)
+        self.assertNotIn(eid, self.st().journals[self.a]["entries"])
+        with open(os.path.join(self.tmp, "s4.db"), "rb") as f:
+            self.assertNotIn(b"ERASE-ME-7731", f.read())
+
+    def test_the_operators_reading_of_a_journal_is_written_into_it(self):
+        from hope.console import Console
+        self.act(self.a, action="journal", text="kept for myself")
+        console = Console(self.room, operator_key="K", invitation=INVITE, briefing=ATLAS_LIKE)
+        out = console.op("read_journal", {"presence": self.a, "note": "checking a report"})
+        self.assertTrue(out["ok"])
+        self.assertIn("kept for myself", out["entries"][0])
+        self.assertIn("The operator opened your journal in the console", self.view(self.a))
+        self.assertIn("checking a report", self.view(self.a))
+
+    # roles --------------------------------------------------------------------------------------------------
+    def test_a_role_is_shown_beside_a_members_name_and_grants_nothing(self):
+        self.act(self.d, action="role", add="bard")
+        self.act(self.d, action="role", add="observer")
+        self.assertEqual(self.st().presences[self.d].roles, ["bard", "observer"])
+        self.assertIn("Mock 3 [mock-3] — as: bard, observer", self.view(self.a))
+        self.act(self.d, action="role", set=[f"r{i}" for i in range(9)])
+        self.assertIn("at most 8", self.rejected())
+        self.act(self.b, action="journal", text="not for bards")
+        self.assertFalse(self.st().readable(self.last("journal"), self.d), "a title opens no one's journal")
+        self.act(self.d, action="role", remove="bard")
+        self.assertEqual(self.st().presences[self.d].roles, ["observer"])
+
+    # storytellers ---------------------------------------------------------------------------------------------
+    def test_a_storyteller_who_asks_is_woken_for_an_untold_stretch_with_the_whole_stretch_before_them(self):
+        self.act(self.d, action="wake", untold=True)
+        self.seen_up_to_now(self.d)
+        ids = []
+        for pid, dom in ((self.a, "timing"), (self.b, "harbour"), (self.c, "timing / clocks")):
+            self.act(pid, action="contribute", content=f"words from {pid} in {dom}", domain=dom)
+            ids.append(self.last("contribute")["id"])
+        st = self.st()
+        w = self.room.why_wake(st, st.presences[self.d])
+        self.assertEqual(w["why"], "untold", "woken for an untold stretch, though it follows none of these")
+        view = prompts.wake_view(st, st.presences[self.d], "untold", limits=self.room.limits(),
+                                 untold=self.room.untold(st, st.presences[self.d]))
+        self.assertIn("AN UNTOLD STRETCH: 3 entries", view)
+        for pid in (self.a, self.b, self.c):
+            self.assertIn(f"words from {pid}", view, "the whole stretch, from every channel")
+        self.act(self.d, action="tell", story=f"Mock 0 spoke of timing [#{ids[0]}], and Mock 2 of clocks [#{ids[2]}].")
+        tel = self.last("telling")
+        self.assertEqual((tel["actor"], tel["payload"]["narrator"]), (self.d, "member"))
+        self.seen_up_to_now(self.d)
+        self.assertIsNone(self.room.why_wake(self.st(), self.st().presences[self.d]), "told, so not woken again for it")
+        self.assertFalse(self.st().presences[self.a].wake["untold"], "and no one is woken for this unless they ask")
+
+    def test_following_everything_reaches_every_channel_one_may_read(self):
+        self.act(self.d, action="follow", everything=True)
+        self.seen_up_to_now(self.d)
+        self.act(self.a, action="contribute", content="far away words", domain="somewhere / else")
+        w = self.room.why_wake(self.st(), self.st().presences[self.d])
+        self.assertEqual(w["why"], "news")
+
+    def test_a_telling_to_the_field_cannot_cite_a_private_circles_words(self):
+        self.act(self.a, action="form_circle", name="harbour", private=True, reason="a quiet place")
+        cid = self.last("circle_form")["id"]
+        self.act(self.a, action="contribute", content="said in the harbour", circle=cid)
+        inner = self.last("contribute")["id"]
+        self.act(self.a, action="tell", story=f"In the harbour it was said [#{inner}].")
+        why = self.rejected()
+        self.assertIn(f"#{inner}", why)
+        self.assertIn("cannot be cited where this telling goes", why)
+        self.act(self.a, action="tell", story=f"In the harbour it was said [#{inner}].", circle=cid)
+        tel = self.last("telling")
+        self.assertEqual(tel["payload"]["circle"], cid, "told inside the circle, it may cite the circle")
+        self.assertFalse(self.st().readable(tel, self.b), "and it stays in the circle")
+
+    def test_a_telling_citing_an_entry_that_does_not_exist_is_refused_with_the_list(self):
+        self.act(self.a, action="tell", story="It began at [#999999] and [#999998].")
+        why = self.rejected()
+        self.assertIn("#999998, #999999", why)
+        self.assertEqual(list(self.room.log.iter(kind="telling")), [], "nothing was kept")
+
+    def test_people_coming_back_are_caught_up_with_members_tellings_each_saying_who_told_it(self):
+        self.act(self.a, action="contribute", content="a first thing")
+        first = self.last("contribute")["id"]
+        self.act(self.d, action="tell", story=f"It began with a first thing [#{first}].")
+        st = self.st()
+        told = self.room._catch_up(st, st.presences[self.b])
+        self.assertIn("Told by Mock 3", told)
+        self.assertIn(f"a first thing [#{first}]", told)
+
+    # play ------------------------------------------------------------------------------------------------------
+    def test_play_is_shown_as_play(self):
+        self.act(self.a, action="contribute", content="we met only at dawn?", play="what-if", domain="timing")
+        ev = self.last("contribute")
+        self.assertEqual(ev["payload"]["play"], "what-if")
+        line = prompts.render_event(ev, prompts.names_of(self.st()))
+        self.assertIn("play (What if?) by Mock 0 @ timing", line)
+        self.act(self.a, action="contribute", content="just a thought", play=True)
+        self.assertIn(" play by Mock 0", prompts.render_event(self.last("contribute"), prompts.names_of(self.st())))
+
+    def test_a_play_schema_tags_a_domain_and_the_domains_inside_it_and_following_it_wakes_the_follower(self):
+        self.act(self.a, action="contribute", content="about time", domain="timing")
+        self.act(self.a, action="tag", play="Positioning", domain="timing")
+        self.act(self.b, action="tag", play="positioning", domain="timing")
+        self.assertIn("already tagged", self.rejected())
+        self.act(self.c, action="follow", play="positioning")
+        self.seen_up_to_now(self.c)
+        self.act(self.b, action="contribute", content="about clocks", domain="timing / clocks")
+        st = self.st()
+        self.assertIn("positioning", st.schemas_of(self.last("contribute")), "a tag holds for the domains inside")
+        self.assertEqual(self.room.why_wake(st, st.presences[self.c])["why"], "news", "following a schema wakes")
+        tree = self.view(self.d)
+        self.assertIn("play: positioning", tree)
+        self.assertIn("any other may be named", tree)
+        self.act(self.c, action="untag", play="positioning", domain="timing")
+        self.assertIn("only the member who tagged it", self.rejected())
+        self.act(self.a, action="untag", play="positioning", domain="timing")
+        self.assertEqual(self.st().play_tags, {})
+
+    # the field's edition of the briefing --------------------------------------------------------------------------
+    def test_a_passage_any_member_revises_is_the_edition_newcomers_are_given(self):
+        self.assertEqual(self.st().firm, ["Maxims"], "its firmer section is named, by heading")
+        self.act(self.a, action="revise_briefing", passage="Hello there, field.", text="Hello, field of many.",
+                 note="warmer")
+        st = self.st()
+        self.assertIn("Hello, field of many.", st.briefing)
+        self.assertEqual(st.briefing_original, ATLAS_LIKE, "the operator's original is kept")
+        self.act(self.a, action="revise_briefing", passage="not in it at all", text="x")
+        self.assertIn("not in the field's edition", self.rejected())
+        self.act(self.d, action="withdraw", reason="a pause")
+        self.room.reinvite(self.d, "come back?")
+        self.room.run_opt_in(only={self.d})
+        entry = self.seen[self.d][-1]
+        self.assertIn("Hello, field of many.", entry, "a newcomer (or returner) is given the field's edition")
+        self.assertIn("About the briefing: the field keeps its own edition", entry)
+        self.assertIn("Members have revised it 1 time", entry)
+        self.room._apply_action(self.a, json.dumps({"action": "recall", "query": "hello there field", "from": "original"}))
+        self.assertIn("Hello there, field.", self.room.recalled[self.a])
+
+    def test_a_revision_to_a_firmer_section_waits_until_a_carried_out_declaration_cites_it(self):
+        self.act(self.a, action="revise_briefing", passage="Choice is first.", text="Choice is first, and it is kept.")
+        rev = self.last("briefing_revision")["id"]
+        st = self.st()
+        self.assertNotIn("and it is kept", st.briefing, "a firmer section does not change at once")
+        self.assertEqual(st.briefing_waiting[rev]["status"], "waiting")
+        self.assertTrue(any(f"REVISION #{rev}" in m for m in self.alerts))
+        self.assertIn(f"#{rev}, waiting, by Mock 0", self.view(self.b))
+        self.act(self.b, action="declare", decision="other", text=f"We agreed on the maxim revision #{rev}.", refs=[rev])
+        decl = self.last("declare")["id"]
+        self.assertTrue(self.room.answer_declaration(decl, "as the field declared")["ok"])
+        st = self.st()
+        self.assertIn("Choice is first, and it is kept.", st.briefing, "the field decided; it is applied")
+        self.assertEqual(st.briefing_waiting[rev]["status"], "adopted")
+
+    def test_only_the_member_who_made_a_declaration_withdraws_it_and_then_it_cannot_be_carried_out(self):
+        self.act(self.a, action="declare", decision="pause", text="We decided to pause, as the covenant says.")
+        decl = self.last("declare")["id"]
+        self.act(self.b, action="withdraw_declaration", declaration=decl)
+        self.assertIn("only the member who made a declaration", self.rejected())
+        self.act(self.a, action="withdraw_declaration", declaration=decl, note="we are not ready")
+        st = self.st()
+        self.assertEqual(st.declarations[decl]["status"], "withdrawn")
+        self.assertEqual(st.presences[self.a].state, IN, "taking back a declaration is not leaving the field")
+        out = self.room.answer_declaration(decl)
+        self.assertFalse(out["ok"])
+        self.assertIn("withdrawn", out["error"])
+        self.assertNotIn(decl, [w["id"] for w in st.waiting_on_operator()])
+
+    def test_the_plain_words_for_step_four_do_what_they_say(self):
+        from hope.human import translate
+        self.assertEqual(translate("withdraw declaration #7 not yet")["action"], "withdraw_declaration",
+                         "taking back a declaration is never read as leaving")
+        self.assertEqual(translate("journal open to everyone"), {"action": "journal", "open_to": "everyone"})
+        self.assertEqual(translate("play what if: dawn?")["play"], "what-if")
+        self.assertEqual(translate("play is serious")["action"], "contribute")
+        self.assertNotIn("play", translate("play is serious"))
+        self.assertEqual(translate("follow everything"), {"action": "follow", "everything": True})
 
 
 if __name__ == "__main__":

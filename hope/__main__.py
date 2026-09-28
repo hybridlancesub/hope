@@ -26,6 +26,13 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope offer  --db FIELD.db --id N (--accept | --decline) [--note TEXT]
                                                                     answer a member's offer of resources
   python3 -m hope reopen --db FIELD.db --note TEXT                   undo a close carried out by mistake
+  python3 -m hope tools  --db FIELD.db [--remove NAME --note TEXT]   the field's tools, flags and uses; remove one
+  python3 -m hope skills --db FIELD.db [--out DIR]                   write the field's skills as DIR/<name>/SKILL.md
+  python3 -m hope briefing --db FIELD.db --out FILE                  write the field's own edition of the briefing
+
+  Tools (notes/sketch-4-tools.md), on open, enter, run and console: --tools FILE (the operator's MCP tool
+  servers; see tools.example.json), --no-fetch, --tool-steps N, --tool-view CHARS, --skills DIR (skills for
+  the field to take up, such as skills/), --tools-allow-local (members' offers at local addresses, for testing).
 """
 from __future__ import annotations
 
@@ -102,28 +109,18 @@ def _providers(args):
 
 
 def _narrator(args):
-    """Who writes tellings, from --narrator: `mechanical` (the software, free, nothing leaves the
-    field) or PROVIDER:REGEX, a model that reads each stretch (the entry question says so, and
-    through which provider). A bare REGEX means a Nous model, as it always has."""
+    """--narrator mechanical: the software also writes a plain account every so many contributions
+    (free; nothing leaves the field). Members tell the field's stories themselves; the outside
+    narrator model is retired (roadmap, step 4d)."""
     spec = getattr(args, "narrator", None)
-    if not spec:
+    if not spec or spec == "none":
         return None
-    from .narrator import MechanicalNarrator, ModelNarrator
+    from .narrator import MechanicalNarrator
     if spec == "mechanical":
         return MechanicalNarrator()
-    from . import providers
-    listed = providers.load(args.providers) if getattr(args, "providers", None) else []
-    name, sep, pattern = spec.partition(":")
-    if not sep or not (name in providers.PRESETS or any(p.name == name for p in listed)):
-        name, pattern = "nous", spec           # a bare pattern means Nous, as it always has
-    try:
-        conn = providers.build(providers.named(name, listed), only=[pattern])
-    except RuntimeError as e:
-        sys.exit(str(e))
-    seats = conn.seats()
-    if not seats:
-        sys.exit(f"no {name} model matches --narrator {spec!r}")
-    return ModelNarrator(conn, seats[0])
+    sys.exit("--narrator takes \"mechanical\" (the software's own plain account) or \"none\". The outside narrator model "
+             "is retired: members tell the field's stories themselves, so no model that is not a participant reads the "
+             "field for tellings.")
 
 
 def _tools(args):
@@ -462,13 +459,9 @@ def cmd_export(args):
 
 
 def cmd_map(args):
-    """A sitting retold. The story is the software's own plain account, unless the field was told
-    at entry that a model narrator reads it; then that model, and no other, tells it, and what it
-    costs is charged to the field like any telling. Members' words go nowhere they were not told of."""
-    import re
+    """A sitting retold, by the software's own plain account. Members' words go to no model for it."""
     from .map import digest, render_html, publish_story
-    from .model import replay
-    from .narrator import MechanicalNarrator, ModelNarrator
+    from .narrator import MechanicalNarrator
     log = EventLog(args.db)
     since = args.since or 0
     upto = args.upto or log.last_id()
@@ -476,21 +469,7 @@ def cmd_map(args):
     title = args.title or f"Sitting — events #{d['since']}..#{d['upto']}"
     told = None
     if not args.no_story:
-        disclosed = replay(log.iter()).narrator
-        if disclosed and disclosed.get("kind") == "model" and disclosed.get("model"):
-            from . import providers
-            listed = providers.load(args.providers) if getattr(args, "providers", None) else []
-            conn = providers.build(providers.named(disclosed.get("provider") or "nous", listed),
-                                   only=[re.escape(disclosed["model"]) + "$"])
-            seats = conn.seats()
-            if not seats:
-                sys.exit(f"the narrator the field was told of ({disclosed['model']}) is not on the roster; "
-                         f"use --no-story, or the software's own account will not be substituted silently")
-            told = ModelNarrator(conn, seats[0]).tell(d, log, upto)
-            log.charge("narrator", told["model"], told.get("prompt_tokens", 0), told.get("completion_tokens", 0),
-                       told.get("cost_usd", 0.0))
-        else:
-            told = MechanicalNarrator().tell(d, log, upto)
+        told = MechanicalNarrator().tell(d, log, upto)
         print(f"story told by {told['narrator']} in {told['tries']} call(s), ${told['cost_usd']:.4f}; "
               f"ungrounded tags: {told['ungrounded'] or 'none'}")
         publish_story(told, d, title,
@@ -582,6 +561,17 @@ def cmd_skills(args):
     print(f"{len(paths)} skill(s) written to {out}; commit them to publish", file=sys.stderr)
 
 
+def cmd_briefing(args):
+    """Write the field's edition of the briefing to a file: the operator's text, with every revision
+    members made to it (and every one the field decided on, for its firmer sections)."""
+    st = replay(EventLog(args.db).iter())
+    if not st.briefing:
+        sys.exit("this field has no briefing")
+    with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+        f.write(st.briefing)
+    print(f"the field's edition ({len(st.briefing_history)} revision(s) by members) written to {args.out}", file=sys.stderr)
+
+
 def cmd_tools(args):
     """The field's tools as the transcript records them; with --remove, remove one (a notice in the field)."""
     if args.remove:
@@ -630,10 +620,12 @@ def main(argv=None):
     ap.add_argument("--headlines", type=int, default=180,
                     help="entries before the recent ones, shown as one line each in their author's own title (0 = none)")
     ap.add_argument("--narrator", default=None,
-                    help="who writes tellings for people following at a slower pace: 'mechanical' (the software; free; "
-                         "nothing leaves the field) or PROVIDER:REGEX, a model that reads each stretch (disclosed at entry). "
-                         "A bare REGEX means a Nous model")
-    ap.add_argument("--tell-every", type=int, default=20, help="write a telling every this many contributions (with --narrator)")
+                    help="'mechanical': the software also writes a plain account every --tell-every contributions (free; "
+                         "nothing leaves the field). Members tell the field's stories themselves; the outside narrator "
+                         "model is retired")
+    ap.add_argument("--tell-every", type=int, default=20,
+                    help="a stretch this many contributions long, untold, wakes members who asked (and, with --narrator "
+                         "mechanical, is told by the software)")
     ap.add_argument("--linger", type=int, default=200,
                     help="a person's latest words in a channel stay in full in models' views until this many more entries "
                          "have been written there")
@@ -701,7 +693,7 @@ def main(argv=None):
     s.add_argument("--note", required=True); s.set_defaults(fn=cmd_reopen)
     s = sub.add_parser("log"); s.add_argument("--since", type=int, default=0); s.add_argument("--kind"); s.add_argument("--actor"); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("cost"); s.set_defaults(fn=cmd_cost)
-    s = sub.add_parser("map", help="a sitting retold: the software's own account, or the model narrator the field was told of at entry")
+    s = sub.add_parser("map", help="a sitting retold, by the software's own account")
     s.add_argument("--since", type=int, default=None); s.add_argument("--upto", type=int, default=None); s.add_argument("--title"); s.add_argument("--out")
     s.add_argument("--no-story", action="store_true", help="map only, no story at all"); s.set_defaults(fn=cmd_map)
     s = sub.add_parser("serve", help="a read-only view for this machine only; it asks for no key, so it never listens beyond it (use console for that)")
@@ -715,6 +707,8 @@ def main(argv=None):
     s = sub.add_parser("export"); s.add_argument("--out", default=None); s.add_argument("--everything", action="store_true", help="include connector events and full texts"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("skills", help="write the field's skills as <name>/SKILL.md, to commit to the repository")
     s.add_argument("--out", default=None, help="the folder (default: skills/ in the repository)"); s.set_defaults(fn=cmd_skills)
+    s = sub.add_parser("briefing", help="write the field's own edition of the briefing to a file")
+    s.add_argument("--out", required=True); s.set_defaults(fn=cmd_briefing)
     s = sub.add_parser("tools", help="the field's tools, who runs each, their flags and uses; --remove one")
     s.add_argument("--remove", default=None, help="a tool server's name"); s.add_argument("--note", default=None)
     s.set_defaults(fn=cmd_tools)

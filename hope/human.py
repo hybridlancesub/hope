@@ -45,8 +45,22 @@ The format is plain text, translated to the same JSON actions models send:
     <the instructions, on the lines after>
                                     write or revise one of the field's skills (your yes to its publication
                                     in hope's repository, attributed to you); retire skill <name> retires it
-    recall [briefing|transcript|memory|covenant|prior] <words>
+    recall [briefing|original|transcript|memory|covenant|prior] <words>
                                     re-read matching passages (shown the next time you look; briefing if unnamed)
+    journal <text>                  an entry in your own journal (journal open to <names> | journal open to everyone |
+                                    journal close | journal erase #12)
+    role add <words> | role remove <words> | roles <a>, <b> | roles none
+                                    words that say how you take part, shown beside your name; they grant nothing
+    tell <story>                    tell the stretch since the last telling, citing entries as [#12]
+    play: <text> | play what if: <text> | play wonder: <text> | play try: <text>
+                                    offer something as play (Atlas Section 18)
+    tag @<domain> <schema> | tag circle <name>: <schema>   (untag the same way, for your own tags)
+                                    a schema of play, such as positioning; follow play <schema> follows it
+    follow everything               every channel you may read (for storytellers)
+    revise briefing: <the words as they stand> ==> <the new words> [// why]
+                                    revise the field's edition of the briefing
+    withdraw declaration #12 [note] take back a declaration you made, while it waits
+    read journal <name>             a journal opened to you
     withdraw [reason] [/ when it would be fair to ask you back]
     question <text>                 (invitation gate only)
     yes [statement] | no [reason]   (at either gate; "no ... / ask again when ..." records terms)
@@ -261,6 +275,10 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     for verb in ("follow", "unfollow"):
         if low.startswith(verb + " "):
             rest = s[len(verb) + 1:].strip()
+            if rest.lower() == "everything":
+                return {"action": verb, "everything": True}
+            if rest.lower().startswith("play "):
+                return {"action": verb, "play": rest[5:].strip()}
             if rest.lower().startswith("circle "):
                 return {"action": verb, "circle": rest[7:].strip()}
             return {"action": verb, "domain": "" if rest.lower() in ("the field", "field") else rest}
@@ -269,7 +287,7 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         words = s[5:].split()
         for i, w in enumerate(words):
             nxt = words[i + 1].lower() if i + 1 < len(words) else ""
-            if w.lower() in ("addressed", "replies", "written") and nxt in ("on", "off", "yes", "no"):
+            if w.lower() in ("addressed", "replies", "written", "untold") and nxt in ("on", "off", "yes", "no"):
                 d[w.lower()] = nxt in ("on", "yes")
             if w.lower() == "breath" and nxt:
                 d["breath"] = nxt
@@ -313,6 +331,9 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     if low.startswith("harvest "):
         circle, _, text = s[8:].partition(":")
         return {"action": "harvest", "circle": circle.strip(), "text": text.strip()}
+    m = re.match(r"withdraw\s+declaration\s+#?(\d+)\s*(.*)$", s, re.I | re.S)
+    if m:                          # before withdrawing from the field: this takes back a declaration, nothing more
+        return {"action": "withdraw_declaration", "declaration": int(m.group(1)), "note": m.group(2).strip()}
     if low.startswith("withdraw"):
         reason, _, again = s[8:].partition("/")
         d = {"action": "withdraw", "reason": reason.strip()}
@@ -351,6 +372,45 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         decision, _, text = s[8:].strip().partition(" ")
         return {"action": "declare", "decision": decision.lower(), "text": text.strip(),
                 "refs": [int(x) for x in re.findall(r"#(\d+)", text)]}
+    m = re.match(r"journal\s+(open\s+to|close|erase)\b\s*(.*)$", s, re.I | re.S)
+    if m:
+        verb, rest = m.group(1).lower(), m.group(2).strip()
+        if verb == "close":
+            return {"action": "journal", "close": True}
+        if verb == "erase":
+            return {"action": "journal", "erase": _int(rest.lstrip("#"))}
+        if rest.lower() == "everyone":
+            return {"action": "journal", "open_to": "everyone"}
+        return {"action": "journal", "open_to": [x.strip() for x in rest.split(",") if x.strip()]}
+    if low.startswith("journal "):
+        return {"action": "journal", "text": s[8:].strip()}
+    m = re.match(r"role\s+(add|remove)\s+(.+)$", s, re.I | re.S)
+    if m:
+        return {"action": "role", m.group(1).lower(): m.group(2).strip()}
+    m = re.match(r"roles\s+(.+)$", s, re.I | re.S)
+    if m:
+        rest = m.group(1).strip()
+        return {"action": "role", "set": [] if rest.lower() == "none" else [x.strip() for x in rest.split(",") if x.strip()]}
+    if low.startswith("tell "):
+        return {"action": "tell", "story": s[5:].strip()}
+    m = re.match(r"play(?:\s+(what\s*if|wonder|try))?\s*:\s*(.*)$", s, re.I | re.S)
+    if m:
+        kind = (m.group(1) or "").lower().replace(" ", "")
+        domain, text = _domain_prefix(m.group(2))
+        return {"action": "contribute", "domain": domain, "content": text.strip(),
+                "play": {"whatif": "what-if", "wonder": "wonder", "try": "try"}.get(kind, True)}
+    m = re.match(r"(tag|untag)\s+@(\S+)\s+(.+)$", s, re.I | re.S)
+    if m:
+        return {"action": m.group(1).lower(), "domain": m.group(2), "play": m.group(3).strip()}
+    m = re.match(r"(tag|untag)\s+circle\s+([^:]+):\s*(.+)$", s, re.I | re.S)
+    if m:
+        return {"action": m.group(1).lower(), "circle": m.group(2).strip(), "play": m.group(3).strip()}
+    m = re.match(r"revise\s+briefing\s*:\s*(.+?)\s*==>\s*(.*?)(?:\s*//\s*(.*))?$", s, re.I | re.S)
+    if m:
+        return {"action": "revise_briefing", "passage": m.group(1), "text": m.group(2), "note": (m.group(3) or "").strip()}
+    m = re.match(r"read\s+journal\s+(.+)$", s, re.I)
+    if m:
+        return {"action": "read", "journal": m.group(1).strip()}
     m = re.match(r"tool\s+([\w.-]+)\s*:\s*(.*)$", s, re.I | re.S)
     if m:
         rest = m.group(2).strip()
@@ -392,7 +452,7 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     if low.startswith("recall "):
         rest = s[7:].strip()
         first, _, words = rest.partition(" ")
-        if first.lower() in ("briefing", "transcript", "memory", "covenant", "prior") and words.strip():
+        if first.lower() in ("briefing", "original", "transcript", "memory", "covenant", "prior") and words.strip():
             return {"action": "recall", "query": words.strip(), "from": first.lower()}
         return {"action": "recall", "query": rest}
     if low.startswith("note "):

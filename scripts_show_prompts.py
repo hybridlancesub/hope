@@ -6,7 +6,7 @@
     python3 scripts_show_prompts.py entry        the entry question and its facts
     python3 scripts_show_prompts.py member       the instructions every model has at every wake
     python3 scripts_show_prompts.py view         what a woken model reads, in a sample field
-    python3 scripts_show_prompts.py telling      what the narrator writes for that field
+    python3 scripts_show_prompts.py telling      the software's own telling of that field
     python3 scripts_show_prompts.py person       what a person reads on opening their page
     python3 scripts_show_prompts.py runway       the two funding notices
     python3 scripts_show_prompts.py return       what someone asked back after leaving is told first
@@ -109,7 +109,7 @@ def main(argv):
              prompts.wake_view(st, p, "awaiting", "c:" + str(max(st.circles)), limits=room.limits(),
                                witness=room.log.witness()))
     if want in ("all", "telling"):
-        show("A TELLING: the software's own account of that field (a model narrator would write it in prose)",
+        show("A TELLING: the software's own account of that field (members tell theirs in their own words)",
              st.tellings[-1]["story"] if st.tellings else "(none)")
     if want in ("all", "person"):
         show("A PERSON OPENING THEIR PAGE (Mock 0 stands in for one): what answered them since they last looked, "

@@ -2,10 +2,9 @@
 """The MAP: one sitting, retold.
 
 A digest is computed from the log alone (deterministic, free). The story is the software's own
-plain account, unless the field was told at entry that a model narrator reads it: then that
-model, and only that one, may retell the sitting (every reference tagged [#id], verified against
-the log, one correction pass, anything still ungrounded flagged rather than shown as fact). No
-other model is ever handed members' words this way.
+plain account, every reference tagged [#id] and verified against the log. No model is handed
+members' words for it: the outside narrator model is retired (roadmap, step 4d), and members tell
+the field's stories themselves.
 
 The map itself (threads, memories, covenant revisions, arrivals, domains) is rendered from the
 transcript, never from the story. The story is a reading; the map is the record.
@@ -20,15 +19,6 @@ from typing import Dict, List, Optional
 
 from .log import EventLog
 from .model import CONTRIBUTION_KINDS, decided, replay
-
-STORY_SYSTEM = """You are the field's bard. You will receive a digest of one sitting of a coordination field: who was present, what they said (with event ids), what threads formed, what was remembered, how the covenant page changed, who arrived or left.
-
-Retell the sitting as a short story or a song (your choice of form; keep it playful but honest). Rules:
-- Every event you refer to MUST carry its tag, exactly like [#142]. Tags are how a reader checks you against the record.
-- Invent nothing: no speech, no motive, no event that is not in the digest. You may choose imagery, rhythm, and voice freely; you may not choose facts.
-- Name participants as the digest names them.
-- Under ~400 words. The digest is the ground; you are the melody over it."""
-
 
 def digest(log: EventLog, since: int, upto: Optional[int] = None) -> Dict:
     """The sitting, structurally. Pure replay; no model, no cost."""
@@ -115,37 +105,6 @@ def check_story(story: str, log: EventLog, upto: int) -> List[int]:
     cited = {int(m) for m in TAG_RE.findall(story)}
     real = {e["id"] for e in log.iter() if e["id"] <= upto}
     return sorted(cited - real)
-
-
-def tell_story(d: Dict, connector, seat, log: EventLog, upto: int) -> Dict:
-    """One model call (plus at most one correction pass). Returns story + grounding report."""
-    msgs = [{"role": "user", "content": digest_text(d) + "\n\nRetell this sitting."}]
-    saved, connector.json_mode = getattr(connector, "json_mode", True), False
-    try:
-        reply = connector.ask(seat, STORY_SYSTEM, msgs)
-    finally:
-        connector.json_mode = saved
-    story = reply.text.strip()
-    if not TAG_RE.search(story):
-        story = ""   # a telling that cites nothing cannot be checked; treat it as no telling
-    bad = check_story(story, log, upto) if story else []
-    tries = 1
-    if bad or not story:
-        msgs += [{"role": "assistant", "content": story or "(no usable telling was produced)"},
-                 {"role": "user", "content": ("These tags do not exist in the record: " + str(bad) + ". " if bad else "")
-                  + "Retell the sitting as prose (not JSON), citing only real event ids as [#id]; where you cannot cite, do not claim."}]
-        connector.json_mode = False
-        reply = connector.ask(seat, STORY_SYSTEM, msgs)
-        connector.json_mode = saved
-        story = reply.text.strip()
-        if not TAG_RE.search(story):
-            story = ""
-        bad = check_story(story, log, upto) if story else []
-        tries = 2
-    return {"story": story, "ungrounded": bad, "tries": tries,
-            "narrator": seat.name, "model": seat.model,
-            "prompt_tokens": reply.prompt_tokens, "completion_tokens": getattr(reply, "completion_tokens", 0),
-            "cost_usd": getattr(reply, "cost_usd", 0.0)}
 
 
 def publish_story(told: Dict, d: Dict, title: str, paths: List[str]) -> None:
