@@ -3,7 +3,7 @@
 
     python3 scripts_demo_field.py
 
-Costs nothing: every seat is a mock. It walks the gates, then wakes the mock members a few
+Costs nothing: every seat is a mock. It walks the gates, then wakes the mock participants a few
 times, and they do the things the field offers -- write on the covenant page and rewrite each
 other's words there, reply to one another, keep and let go of memories, pause, form a circle --
 so there is something real on the console's pages when you open it.
@@ -210,7 +210,7 @@ def main():
             room.step()
         fuller(room)
         st = room.state()
-        print(f"  seeded: {log.last_id()} events, {len(st.members())} members, "
+        print(f"  seeded: {log.last_id()} events, {len(st.members())} participants, "
               f"{len(st.covenant_history)} covenant version(s), {len(st.memories)} memories held")
     else:
         print(f"using the existing {DB} (delete it to start over)")

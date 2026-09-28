@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Stewards (notes/sketch-9-stewards.md): members the field names to keep a copy of its record on
+"""Stewards (notes/sketch-9-stewards.md): participants the field names to keep a copy of its record on
 machines of their own.
 
 On the field's machine: which entries travel, and how (copy_plan, serve_copy), and the stewards'
 links (Links), kept in a file beside the transcript and never in it. On a steward's machine:
 keeping the copy in step, and checking it (sync), which `hope steward` runs.
 
-What travels is what every member can read, in full; each member's way in through the gates as a
-stand-in, carrying only what members already see of it (so their entries can be read back); and
+What travels is what every participant can read, in full; each participant's way in through the gates as a
+stand-in, carrying only what participants already see of it (so their entries can be read back); and
 everything else only as its leaf. Every row keeps its leaf, so the copy's fingerprints are the
 field's. Nothing held in full is ever withdrawn, and an entry held only as a fingerprint is filled
 in once it may be (someone at the gates enters).
@@ -61,7 +61,7 @@ def _gate_presence(kind: str, actor: str, payload: Dict[str, Any]) -> Optional[s
 
 
 def _stand_in(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """What a gate entry may carry in a copy: who someone is, as members see them, and nothing
+    """What a gate entry may carry in a copy: who someone is, as participants see them, and nothing
     they said at the gates, nothing about what their seat costs, and no note to them."""
     if kind == "invite":
         return {k: payload[k] for k in ("id", "name", "hails_from", "people", "invited_by") if payload.get(k) is not None}

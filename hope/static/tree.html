@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later
-     The spiral tree (roadmap, step 8b): the field's shape, as this seat's member may see it.
+     The spiral tree (roadmap, step 8b): the field's shape, as this seat's participant may see it.
      Everything comes from /seat/<token>/tree.json, which holds only what they may read. -->
 <html lang="en">
 <head>
@@ -125,7 +125,7 @@ function showBranch(){
   $("branch").innerHTML = `<h2>${esc(b.kind === "circle" ? "A circle" : b.kind === "root" ? "The field itself" : "A domain")}</h2>
     <div>${esc(b.title)}</div>
     <div class="muted">${b.entries} entr${b.entries === 1 ? "y" : "ies"} you may read; voices: ${voices}
-      ${(b.play || []).length ? "; play: " + b.play.map(esc).join(", ") : ""}${b.private && !b.leaves.length ? "; private: its words are its members'" : ""}</div>
+      ${(b.play || []).length ? "; play: " + b.play.map(esc).join(", ") : ""}${b.private && !b.leaves.length ? "; private: its words are its participants'" : ""}</div>
     ${leaves || '<p class="muted">Nothing here yet that you may read.</p>'}
     ${b.entries > (b.leaves || []).length ? `<p class="muted">The latest ${(b.leaves || []).length} are shown; read any other by its number on your page.</p>` : ""}`;
 }
@@ -138,7 +138,7 @@ function showRest(){
   $("quieter").innerHTML = `<h2>Quieter voices</h2>` + ((DATA.quieter || []).map(q =>
     `<div class="leaf">${esc(q.who)}${(q.roles || []).length ? ` <span class="muted">(${q.roles.map(esc).join(", ")})</span>` : ""}:
        ${q.entries ? q.entries + (q.entries === 1 ? " entry" : " entries") : "has not written yet"}${(q.where || []).length ? " in " + q.where.slice(0, 4).map(esc).join(", ") + (q.where.length > 4 ? `, and ${q.where.length - 4} more` : "") : ""}</div>`).join("")
-    || '<p class="muted">No members yet.</p>');
+    || '<p class="muted">No participants yet.</p>');
   $("unanswered").innerHTML = `<h2>Not yet answered</h2>` + ((DATA.unanswered || []).map(l =>
     `<div class="leaf"><b>#${l.id}</b> ${esc(l.who)} <span class="muted">in ${esc(l.where)}</span>: ${esc(l.title)}</div>`).join("")
     || '<p class="muted">Every entry you may read has been answered.</p>');
@@ -155,7 +155,7 @@ async function load(){
       const busy = d.branches.filter(b => b.entries).sort((a, b) => b.last - a.last)[0];
       if (busy) chosen = busy.key;                                       // open on the branch most recently written in
     }
-    $("summary").textContent = `${d.members} members; ${d.entries} entries you may read; up to #${d.upto}`;
+    $("summary").textContent = `${d.members} participants; ${d.entries} entries you may read; up to #${d.upto}`;
     draw(); showBranch(); showRest();
   } catch(e) {}
 }

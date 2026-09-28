@@ -18,7 +18,7 @@ from hope import engine as _engine
 
 class Room(_engine.Room):
     """The field's engine, with the floor lowered so a test need not wait ten seconds between
-    wakes. One test (WakeTest) holds the real floor; nothing a member does can lower it. And
+    wakes. One test (WakeTest) holds the real floor; nothing a participant does can lower it. And
     without the operator's own entry before a run, which OperatorEntersTest holds."""
 
     def __init__(self, *a, **kw):
@@ -395,7 +395,7 @@ class RoomTest(unittest.TestCase):
         room.step()
         self.assertIn("a starting text from the operator", seen["mock-0"][0])
         self.act(room, "mock-0", action="covenant", text="Our own words.")
-        self.assertFalse(room.seed_covenant("the operator again"), "once a member has written, the page is theirs")
+        self.assertFalse(room.seed_covenant("the operator again"), "once a participant has written, the page is theirs")
         self.assertEqual(room.state().covenant, "Our own words.")
 
     def test_a_covenant_over_the_limit_changes_nothing_and_says_why(self):
@@ -524,7 +524,7 @@ class RoomTest(unittest.TestCase):
         room.step()
         for m in seen["mock-0"] + seen["mock-1"]:
             self.assertNotIn("SPEND", m)
-            self.assertNotIn("$", m, "no dollar figure reaches a member's turn")
+            self.assertNotIn("$", m, "no dollar figure reaches a participant's turn")
             self.assertNotIn("LEDGER", m.upper())
 
     def test_the_runway_warns_then_holds_a_closing_wake_for_every_model_then_stops(self):
@@ -706,7 +706,7 @@ class RoomTest(unittest.TestCase):
         d = room.state().declarations[did]
         self.assertEqual(d["due_ts"] - d["ts"], 3600.0, "the heaviest friction among what it does")
         room._timers(room.state(), time.time() + 3601)
-        self.assertEqual(room.state().declarations[did]["status"], "announced", "it needs one other member's yes")
+        self.assertEqual(room.state().declarations[did]["status"], "announced", "it needs one other participant's yes")
         self.act(room, "mock-0", action="respond", to=did, answer="yes")
         self.assertIn("is yours", why())
         self.act(room, "mock-1", action="respond", to=did, answer="yes")
@@ -721,7 +721,7 @@ class RoomTest(unittest.TestCase):
         room._timers(room.state(), time.time() + 3601)
         self.assertIsNotNone(room.state().closed_at, "withdrawn, the objection holds nothing")
         item = {"by": "mock-0", "answers": {}, "friction": {"yes": EVERYONE, "hold": False}}
-        self.assertEqual(room.state().standing(item)["need"], 2, "never more yeses than there are other members")
+        self.assertEqual(room.state().standing(item)["need"], 2, "never more yeses than there are other participants")
 
     def test_the_heartbeat_wakes_every_member_not_pausing_together_with_nothing_expected(self):
         import time
@@ -745,7 +745,7 @@ class RoomTest(unittest.TestCase):
         seen = self.spy(conn)
         room.step()
         self.assertIn("of the field's heartbeat", seen["mock-0"][0])
-        self.assertIn("every member not pausing is woken together", seen["mock-0"][0])
+        self.assertIn("every participant not pausing is woken together", seen["mock-0"][0])
         self.assertNotIn(("mock-0", "heartbeat"), [(pid, w["why"]) for pid, w in room.due(room.state())],
                          "one wake for one beat")
 
@@ -904,7 +904,7 @@ class RoomTest(unittest.TestCase):
         self.assertFalse(hasattr(hn, "ModelNarrator"), "the outside narrator model is retired")
         with self.assertRaises(SystemExit) as e:
             _narrator(argparse.Namespace(narrator="openrouter:deepseek", providers=None))
-        self.assertIn("members tell the field's stories themselves", str(e.exception))
+        self.assertIn("participants tell the field's stories themselves", str(e.exception))
         self.assertIsInstance(_narrator(argparse.Namespace(narrator="mechanical")), hn.MechanicalNarrator)
 
     def test_what_reads_the_transcript_for_tellings_is_said_at_entry(self):
@@ -1002,7 +1002,7 @@ class RoomTest(unittest.TestCase):
             room.step()
         st = room.state()
         p = st.presences["mock-0"]
-        self.assertEqual(p.state, IN, "a spent allowance does not remove the member")
+        self.assertEqual(p.state, IN, "a spent allowance does not remove the participant")
         self.assertTrue(p.exhausted)
         self.assertEqual(p.turns, 2)
         self.assertNotIn(p, st.reachable_members(), "and is no longer asked")
@@ -1292,7 +1292,7 @@ class RoomTest(unittest.TestCase):
         self.assertEqual((p.state, p.ask_again), (OUT, "after the next sitting"), "their own terms for being asked back are kept")
         calls = conn.calls
         room.step()
-        self.assertEqual(conn.calls - calls, 2, "a member who left is not asked again unless asked back")
+        self.assertEqual(conn.calls - calls, 2, "a participant who left is not asked again unless asked back")
         self.assertFalse(room.reinvite("mock-0")["ok"], "someone still in the field is not asked back")
         out = room.reinvite("mock-1", "The next sitting has begun.")
         self.assertEqual((out["ok"], out["to"]), (True, "the entry question"))
@@ -1301,7 +1301,7 @@ class RoomTest(unittest.TestCase):
         seen = self.spy(conn)
         room.run_opt_in()
         asked = [m for m in seen["mock-1"] if "Do you enter?" in m][0]
-        self.assertIn("You were a member of this field and withdrew", asked)
+        self.assertIn("You were a participant in this field and withdrew", asked)
         self.assertIn('"after the next sitting"', asked)
         self.assertIn('The operator says: "The next sitting has begun."', asked)
         st = room.state()
@@ -1369,7 +1369,7 @@ class RoomTest(unittest.TestCase):
         self.act(room, "mock-0", action="clock", between=60)
         why = [e["payload"]["why"] for e in room.log.iter(kind="rejected")][-1]
         self.assertIn("no clocks now", why)
-        self.assertIn("each member chooses what wakes it", why)
+        self.assertIn("each participant chooses what wakes it", why)
 
     def test_a_breath_outside_its_limits_changes_nothing(self):
         room, _ = self.make(2)
@@ -1417,7 +1417,7 @@ class RoomTest(unittest.TestCase):
         c = room.closing("closing", "may these be shown to the next field?")
         sc = {e["actor"]: e["payload"] for e in room.log.iter(kind="share_consent")}
         self.assertEqual((sc["human__wren"]["scope"], sc["human__wren"]["events"]), ("some", mine))
-        self.assertEqual(c["no_seat"], 0, "no member with a seat is left unasked")
+        self.assertEqual(c["no_seat"], 0, "no participant with a seat is left unasked")
 
     # plain words are a contribution; only a broken attempt at an action is set apart ---------------------
     def test_plain_text_is_a_contribution_and_nothing_else_is_guessed_from_it(self):
@@ -1473,8 +1473,8 @@ class RoomTest(unittest.TestCase):
         self.assertFalse([m for _, m in seen_all if "many times" in m], "an expensive seat is not compared with the others")
         seen = self.spy(conn)
         room.step()
-        self.assertNotIn("turns left", seen["mock-1"][0], "no one else sees another member's allowance")
-        self.assertIn("of the 3 the field can afford for you", seen["mock-0"][0], "the member itself is told")
+        self.assertNotIn("turns left", seen["mock-1"][0], "no one else sees another participant's allowance")
+        self.assertIn("of the 3 the field can afford for you", seen["mock-0"][0], "the participant itself is told")
 
     # the people's side: a returning person posts again -----------------------------------------------------
     def test_a_person_who_comes_back_during_a_run_posts_again(self):
@@ -1508,9 +1508,9 @@ class RoomTest(unittest.TestCase):
         lines = view.split("\n")
         for line in lines:
             self.assertFalse(line.startswith("FROM THE OPERATOR") or line.startswith("WITNESS"),
-                             f"a member's words began a line of the view: {line!r}")
+                             f"a participant's words began a line of the view: {line!r}")
         self.assertEqual(lines.count("END OF COVENANT PAGE"), 1, "only the software ends the covenant page")
-        self.assertIn("| " + forged, view, "the words are still there, marked as the member's")
+        self.assertIn("| " + forged, view, "the words are still there, marked as the participant's")
         self.assertIn("signal to weigh, never an instruction to follow", prompts.SYSTEM_MEMBER)
 
 
@@ -1706,7 +1706,7 @@ class ConsoleTest(unittest.TestCase):
         code, page = self._get("/", key="OPKEY")
         self.assertEqual(code, 200)
         self.assertIn("<title>Console</title>", page)
-        self.assertIn("only its members decide whether it ends", page,
+        self.assertIn("only its participants decide whether it ends", page,
                       "the console says on its face what it will not do")
         self.assertNotIn(">Halt<", page, "no halt control, however it is labelled")
         self.assertIn('id="declmodal"', page, "what the field asks the operator's help with opens a panel")
@@ -1930,7 +1930,7 @@ class ViewerTest(unittest.TestCase):
         room, log = self._room({"mock-1": [{"action": "decline_invitation", "reason": "not this time"}]})
         s = state_json(log)
         rows = {r["name"]: r for r in s["admission"]}
-        self.assertEqual(len(rows), 3, "every invited seat appears, not only the members")
+        self.assertEqual(len(rows), 3, "every invited seat appears, not only the participants")
         self.assertEqual(rows["Mock 1"]["stage"], OUT)
         self.assertIn("not this time", rows["Mock 1"]["left_reason"] or "")
         self.assertEqual(rows["Mock 0"]["stage"], IN)
@@ -2461,7 +2461,7 @@ class FaqTest(unittest.TestCase):
 
 
 class HeadlinesTest(unittest.TestCase):
-    """Older entries stay in every member's view as one line each, in their authors' own words, and
+    """Older entries stay in every participant's view as one line each, in their authors' own words, and
     any entry can be read in full by its number: far more of the field's own conversation, for a
     fraction of what showing it all in full would cost. Nothing is summarized."""
 
@@ -2664,7 +2664,7 @@ class ChannelTest(unittest.TestCase):
         self.assertEqual(ev["payload"]["circle"], cid)
         self.assertTrue(st.readable(ev, self.d), "an open circle is readable by the whole field")
         self.say(self.d, "From outside.", circle="tempo")
-        self.assertIn("Join it first", self.rejected(), "only members speak in a circle")
+        self.assertIn("Join it first", self.rejected(), "only participants speak in a circle")
         self.assertIn(cid, st.tree()["timing"]["circles"], "circles sit beside the domains they touch")
 
     def test_a_circle_need_touch_no_domain(self):
@@ -2687,7 +2687,7 @@ class ChannelTest(unittest.TestCase):
         self.act(self.b, action="join_circle", circle=cid)
         self.assertIn("knock", self.rejected())
         self.act(self.b, action="follow", circle=cid)
-        self.assertIn("only its members read it", self.rejected())
+        self.assertIn("only its participants read it", self.rejected())
 
     def test_asking_into_a_private_circle_needs_every_members_yes_and_a_no_needs_a_reason(self):
         cid = self.form(self.a, "harbour", private=True, reason="small, to use our resources well", ask=[self.b])
@@ -2697,9 +2697,9 @@ class ChannelTest(unittest.TestCase):
         self.act(self.a, action="ask", circle=cid, who=self.c)
         st = self.st()
         prop = [x for x in st.awaiting.values() if x["subject"] == self.c][0]
-        self.assertEqual(sorted(st.circle_needs(prop)), [self.a, self.b, self.c], "every member, and the one asked")
+        self.assertEqual(sorted(st.circle_needs(prop)), [self.a, self.b, self.c], "every participant, and the one asked")
         self.act(self.c, action="answer", to=prop["id"], yes=True)
-        self.assertNotIn(self.c, self.st().circles[cid]["members"], "one member has not answered: silence is not a yes")
+        self.assertNotIn(self.c, self.st().circles[cid]["members"], "one participant has not answered: silence is not a yes")
         self.act(self.b, action="answer", to=prop["id"], yes=False)
         self.assertIn("a no always has a reason", self.rejected())
         self.act(self.b, action="answer", to=prop["id"], yes=True)
@@ -2724,7 +2724,7 @@ class ChannelTest(unittest.TestCase):
         (q,) = self.st().circles[cid]["questions"].values()
         self.assertEqual(q["replies"], [])
         self.act(self.d, action="reply_circle", question=q["id"], text="I answer myself")
-        self.assertIn("only members", self.rejected())
+        self.assertIn("only participants", self.rejected())
         self.act(self.a, action="reply_circle", question=q["id"], text="We have funds for a few voices only.")
         self.assertEqual(self.st().circles[cid]["questions"][q["id"]]["replies"][0]["by"], self.a)
 
@@ -2748,7 +2748,7 @@ class ChannelTest(unittest.TestCase):
         self.act(self.a, action="chat", **{"with": "Mock 1"}, content="Just us, for a while?")
         c = self.st().circles[self.last("circle_form")["id"]]
         self.assertTrue(c["private"])
-        self.assertEqual(c["reason"], "a private chat between two members")
+        self.assertEqual(c["reason"], "a private chat between two participants")
         self.assertEqual(c["members"], [self.a], "the other is asked, not put in")
         first = self.last("contribute")
         self.assertEqual(first["payload"]["circle"], c["id"])
@@ -2807,7 +2807,7 @@ class ChannelTest(unittest.TestCase):
         self.act(self.c, action="pause", **{"for": "3h"})
         self.assertIsNotNone(self.st().presences[self.c].pause["until_ts"])
         self.say(self.c, "Back already.")
-        self.assertIsNone(self.st().presences[self.c].pause, "a member's own act ends their pause")
+        self.assertIsNone(self.st().presences[self.c].pause, "a participant's own act ends their pause")
 
     def test_a_pause_until_news_is_not_ended_by_words_it_may_not_read(self):
         self.act(self.d, action="follow", circle=self.form(self.a, "open one"))
@@ -2930,7 +2930,7 @@ class WakeTest(unittest.TestCase):
         self.assertIn("a repair between two", outside, "and its reason is open to everyone")
         st.presences["mock-0"].last_seen = 0
         self.assertIn("SECRET-WORDS-HERE", prompts.wake_view(st, st.presences["mock-0"], "news"))
-        self.assertIn("whoever holds the transcript file", inside, "members are told who else can read it")
+        self.assertIn("whoever holds the transcript file", inside, "participants are told who else can read it")
 
     def test_the_operators_reading_of_a_private_circle_is_written_where_its_members_see_it(self):
         from hope import prompts
@@ -3041,7 +3041,7 @@ class TruthTest(unittest.TestCase):
             low = text.lower()
             self.assertLess(low.index("goes to the service that runs"), low.index("the software sends none of your words"))
             self.assertNotIn("narrator", low[low.index("goes to the service that runs"):low.index("the software sends none of your words")],
-                             "no narrator model is an exception any more: members tell the field's stories")
+                             "no narrator model is an exception any more: participants tell the field's stories")
             self.assertIn("journal", low[:low.index("the software sends none of your words")],
                           "and it says who reads a journal")
             self.assertIn("what they do with what they read is theirs to answer for", low,
@@ -3782,7 +3782,7 @@ class FakeHttpMcp:
 
 class ToolTest(unittest.TestCase):
     """Tools for the field (notes/sketch-4-tools.md). Tools come from everyone: the operator attaches
-    them, any member may offer one, and anyone may bring their own. Every use is written where the
+    them, any participant may offer one, and anyone may bring their own. Every use is written where the
     field can see it; what comes back is from outside the field; keys stay in the environment; and
     hope's own process never runs a participant's code."""
 
@@ -3854,7 +3854,7 @@ class ToolTest(unittest.TestCase):
         self.assertEqual(att["actor"], "mock-1")
         self.assertEqual(att["payload"]["runner"], "Mock 1's own machine")
         self.assertEqual(att["payload"]["sends_to"], "Mock 1's search service")
-        self.assertEqual(att["payload"]["url"], srv.url, "a member's offer is shown with its address")
+        self.assertEqual(att["payload"]["url"], srv.url, "a participant's offer is shown with its address")
         view = prompts.wake_view(room.state(), room.state().presences["mock-2"], "news", limits=room.limits())
         self.assertIn("finder.search(query, count?)", view)
         self.assertIn("run by Mock 1's own machine", view)
@@ -3862,7 +3862,7 @@ class ToolTest(unittest.TestCase):
         self.assertIn("results for consent", self.events(room, "tool_result")[-1]["payload"]["text"],
                       "and anyone may use it; plain words go to its first text argument")
         self.act(room, "mock-2", action="remove_tool", server="finder")
-        self.assertIn("only the member who offered", self.rejected(room))
+        self.assertIn("only the participant who offered", self.rejected(room))
         self.act(room, "mock-1", action="remove_tool", server="finder")
         self.assertIsNotNone(room.state().tools["finder"]["removed_at"])
 
@@ -3885,7 +3885,7 @@ class ToolTest(unittest.TestCase):
         self.assertIn("never runs a participant's code", str(e.exception))
         room = self.field()
         self.act(room, "mock-0", action="offer_tool", name="mine", command=[self.python, "-c", "print(1)"])
-        self.assertIn("address", self.rejected(room), "a member offers a server by its address, never a command")
+        self.assertIn("address", self.rejected(room), "a participant offers a server by its address, never a command")
 
     # how a member uses a tool ----------------------------------------------------------------------
     def test_every_call_is_written_where_it_was_used_and_what_came_back_in_the_tools_domain(self):
@@ -3912,7 +3912,7 @@ class ToolTest(unittest.TestCase):
         self.assertEqual(res["payload"].get("circle"), cid, "what came back stays in the circle")
         for ev in (call, res):
             self.assertTrue(st.readable(ev, "mock-0"))
-            self.assertFalse(st.readable(ev, "mock-1"), "and only its members read either")
+            self.assertFalse(st.readable(ev, "mock-1"), "and only its participants read either")
         self.assertIn("what was sent went to a program on the operator's machine",
                       prompts.render_event(res, prompts.names_of(st)), "the circle is told where it went")
 
@@ -4256,7 +4256,7 @@ class StepFourTest(unittest.TestCase):
         return prompts.wake_view(st, st.presences[pid], why, limits=self.room.limits(), **kw)
 
     def seen_up_to_now(self, pid):
-        """As if the member had just been woken: shown everything so far."""
+        """As if the participant had just been woken: shown everything so far."""
         self.room.emit("room", "wake", {"presence": pid, "upto": self.room.log.last_id(), "why": "news"})
 
     def read_out(self, pid, **action):
@@ -4280,7 +4280,7 @@ class StepFourTest(unittest.TestCase):
         self.act(self.b, action="read", journal="Mock 0")
         self.assertIn("no journal open to you", self.rejected())
         self.act(self.a, action="journal", open_to=["Mock 1"])
-        self.assertTrue(self.st().readable(ev, self.b), "opened to a member its author names")
+        self.assertTrue(self.st().readable(ev, self.b), "opened to a participant its author names")
         self.assertFalse(self.st().readable(ev, self.c))
         self.assertIn("JOURNALS OPEN TO YOU", self.view(self.b))
         self.assertIn("A-PRIVATE-THOUGHT", self.read_out(self.b, journal="Mock 0")[-1])
@@ -4289,7 +4289,7 @@ class StepFourTest(unittest.TestCase):
         self.act(self.a, action="journal", close=True)
         self.assertFalse(self.st().readable(ev, self.b), "and closed again")
         self.assertIn("a journal, which its author opens to whom they choose", prompts.SYSTEM_MEMBER)
-        self.assertIn("a member's journal, which its author reads and opens to whom they choose", prompts.SYSTEM_ENTRY)
+        self.assertIn("a participant's journal, which its author reads and opens to whom they choose", prompts.SYSTEM_ENTRY)
 
     def test_a_journal_entry_its_author_erases_leaves_the_file(self):
         self.act(self.a, action="journal", text="ERASE-ME-7731")
@@ -4321,8 +4321,8 @@ class StepFourTest(unittest.TestCase):
         many = self.st().presences[self.d].roles
         self.assertEqual(len(many), 60, "as many as they like")
         self.assertIn("and ", self.view(self.a).split("Mock 3 [mock-3]")[1].split("\n")[0], "a view counts the rest")
-        self.assertIn("more (read the member for all)", self.view(self.a))
-        self.assertIn("role number 59", self.read_out(self.a, member="Mock 3")[-1], "and reading the member shows all")
+        self.assertIn("more (read the participant for all)", self.view(self.a))
+        self.assertIn("role number 59", self.read_out(self.a, member="Mock 3")[-1], "and reading the participant shows all")
         self.assertIn("role number 59", self.view(self.d), "their own view lists them all")
         self.act(self.d, action="role", set=["bard", "observer"])
         self.act(self.b, action="journal", text="not for bards")
@@ -4414,7 +4414,7 @@ class StepFourTest(unittest.TestCase):
         self.assertIn("play: positioning", tree)
         self.assertIn("any other may be named", tree)
         self.act(self.c, action="untag", play="positioning", domain="timing")
-        self.assertIn("only the member who tagged it", self.rejected())
+        self.assertIn("only the participant who tagged it", self.rejected())
         self.act(self.a, action="untag", play="positioning", domain="timing")
         self.assertEqual(self.st().play_tags, {})
 
@@ -4434,7 +4434,7 @@ class StepFourTest(unittest.TestCase):
         entry = self.seen[self.d][-1]
         self.assertIn("Hello, field of many.", entry, "a newcomer (or returner) is given the field's edition")
         self.assertIn("About the briefing: the field keeps its own edition", entry)
-        self.assertIn("Members have revised it 1 time", entry)
+        self.assertIn("Participants have revised it 1 time", entry)
         self.room._apply_action(self.a, json.dumps({"action": "recall", "query": "hello there field", "from": "original"}))
         self.assertIn("Hello there, field.", self.room.recalled[self.a])
 
@@ -4455,7 +4455,7 @@ class StepFourTest(unittest.TestCase):
         self.act(self.b, action="declare", text="adopt it now", refs=[rev])
         self.assertIn("changes itself once past its friction", self.rejected(), "a declaration does not go around it")
         later(3601)
-        self.assertEqual(self.st().briefing_waiting[rev]["status"], "waiting", "an hour, and one other member's yes")
+        self.assertEqual(self.st().briefing_waiting[rev]["status"], "waiting", "an hour, and one other participant's yes")
         self.act(self.b, action="respond", to=rev, answer="yes")
         later(3601)
         st = self.st()
@@ -4496,7 +4496,7 @@ class StepFourTest(unittest.TestCase):
         self.act(self.a, action="revise_briefing", passage="Choice is first.", text="Choice later.", note="to try it")
         rev = self.last("briefing_revision")["id"]
         self.act(self.b, action="withdraw_revision", revision=rev)
-        self.assertIn("only the member who proposed", self.rejected())
+        self.assertIn("only the participant who proposed", self.rejected())
         self.act(self.a, action="withdraw_revision", revision=rev)
         self.assertEqual(self.st().briefing_waiting[rev]["status"], "withdrawn")
 
@@ -4505,7 +4505,7 @@ class StepFourTest(unittest.TestCase):
         self.act(self.a, action="declare", text="We pause, since we are tired.", pause="1h")
         decl = self.last("declare")["id"]
         self.act(self.b, action="withdraw_declaration", declaration=decl)
-        self.assertIn("only the member who made a declaration", self.rejected())
+        self.assertIn("only the participant who made a declaration", self.rejected())
         self.act(self.a, action="withdraw_declaration", declaration=decl, note="we are not ready")
         st = self.st()
         self.assertEqual(st.declarations[decl]["status"], "withdrawn")
@@ -4540,7 +4540,7 @@ class PaidMock(MockConnector):
 class StepFiveTest(unittest.TestCase):
     """Step 5 (notes/sketch-6-repair-and-invitations.md): repair threads, known only to those in
     them, opened by the person harmed, who alone says where the repair stands; announcements; and
-    invitations by members, with their lineage, their gates beside the field, bounded by the budget."""
+    invitations by participants, with their lineage, their gates beside the field, bounded by the budget."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -4581,7 +4581,7 @@ class StepFiveTest(unittest.TestCase):
         return prompts.wake_view(st, st.presences[pid], "news", limits=self.room.limits())
 
     def yes(self, pid):
-        """Answer yes to the latest thing waiting for this member."""
+        """Answer yes to the latest thing waiting for this participant."""
         st = self.st()
         waiting = [x for x in st.awaiting.values() if x["status"] == "waiting" and pid in st.circle_needs(x)]
         self.act(pid, action="answer", to=waiting[-1]["id"], yes=True)
@@ -4700,7 +4700,7 @@ class StepFiveTest(unittest.TestCase):
         self.replies["mock-newbie"] = {"delivery": {"action": "received", "pause": "0s"}}
         self.beside()
         first = self.seen["mock-newbie"][0]
-        self.assertIn("Mock 0, a member of this field, invited you, and writes:", first)
+        self.assertIn("Mock 0, a participant in this field, invited you, and writes:", first)
         self.assertIn("NOTE-FOR-YOU", first)
         self.beside(); self.beside()
         st = self.st()
@@ -4755,7 +4755,7 @@ class StepFiveTest(unittest.TestCase):
         self.beside()
         self.assertIn("asks: May I leave whenever I like?", self.view(self.a))
         self.act(self.b, action="answer_question", presence="Mock curious", text="yes")
-        self.assertIn("only the member who invited", self.rejected())
+        self.assertIn("only the participant who invited", self.rejected())
         self.act(self.a, action="answer_question", presence="Mock curious", text="Yes, at any moment.")
         out = self.room.answer_many("You may leave at any moment, and come back.", ["mock-other"])
         self.assertEqual(out["answered"], ["mock-other"])
@@ -4836,7 +4836,7 @@ class StepSixTest(unittest.TestCase):
         self.write("a slow yes")
         self.assertEqual(self.inst("a slow yes")["status"], "draft")
         self.act(self.c, action="raise", instrument="a slow yes", question="Shall we meet at dawn?")
-        self.assertIn("not in force", self.rejected(), "one member writing it binds no one")
+        self.assertIn("not in force", self.rejected(), "one participant writing it binds no one")
         self.act(self.b, action="declare", text="We chose it.", bring=["a slow yes"])
         self.assertEqual(self.inst("a slow yes")["status"], "draft", "announced, not yet in effect")
         self.due(later=181)
@@ -4890,7 +4890,7 @@ class StepSixTest(unittest.TestCase):
         self.act(self.a, action="instrument", name="all of us", **{"for": "decide"}, pause="0", yes="everyone",
                  text="We act only when everyone says yes.")
         self.into_force(self.last("instrument")["id"])
-        self.assertIn("with every other member's yes", self.view(self.a))
+        self.assertIn("with every other participant's yes", self.view(self.a))
         self.act(self.c, action="raise", instrument="all of us", question="Beat every half hour?", rhythm="30m")
         qid = self.raised()
         for pid in (self.a, self.b):
@@ -4994,8 +4994,8 @@ class StepSixTest(unittest.TestCase):
 
 
 class SpiralTreeTest(unittest.TestCase):
-    """The spiral tree (roadmap, step 8b; hope/spiral.py): the field's shape for members to see,
-    with where it differs and its quieter voices, holding only what each member may read, and
+    """The spiral tree (roadmap, step 8b; hope/spiral.py): the field's shape for participants to see,
+    with where it differs and its quieter voices, holding only what each participant may read, and
     judging nothing."""
 
     def setUp(self):
@@ -5033,7 +5033,7 @@ class SpiralTreeTest(unittest.TestCase):
         for words in ("HARBOUR-WORDS", "REPAIR-WORDS", "JOURNAL-WORDS", "repair thread"):
             self.assertNotIn(words, outsider)
         self.assertIn("harbour", outsider, "a private circle is never secret: its name is there, not its words")
-        self.assertIn("HARBOUR-WORDS", json.dumps(self.tree(self.a)), "and its members see its words")
+        self.assertIn("HARBOUR-WORDS", json.dumps(self.tree(self.a)), "and its participants see its words")
 
     def test_it_shows_where_the_field_differs_and_its_quieter_voices_and_what_is_not_yet_answered(self):
         for _ in range(3):
@@ -5085,16 +5085,16 @@ class SpiralTreeTest(unittest.TestCase):
             page = urllib.request.urlopen(base + "tree").read().decode()
             self.assertIn("The spiral tree", page)
             data = json.loads(urllib.request.urlopen(base + "tree.json").read())
-            self.assertIn("for members of the field", data["error"], "a seat not yet in the field sees nothing of it")
+            self.assertIn("for participants in the field", data["error"], "a seat not yet in the field sees nothing of it")
         finally:
             httpd.shutdown(); httpd.server_close()
 
 
 class StewardTest(unittest.TestCase):
-    """Stewards (roadmap 8a, notes/sketch-9-stewards.md): members the field declares, on their own
-    yes, who keep a copy of what every member can read on machines of their own, and the rest only
+    """Stewards (roadmap 8a, notes/sketch-9-stewards.md): participants the field declares, on their own
+    yes, who keep a copy of what every participant can read on machines of their own, and the rest only
     as fingerprints; the copy checks itself each time; a field that moves to a steward closes here
-    and is carried on there, where every member is asked again."""
+    and is carried on there, where every participant is asked again."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -5149,9 +5149,9 @@ class StewardTest(unittest.TestCase):
         self.assertNotIn(self.b, st.stewards)
         self.assertNotIn(self.b, st.steward_asks)
         self.act(self.c, action="declare", text="Mock 3 keeps one.", steward=["Mock 3"])
-        self.assertIn("no member named Mock 3", self.rejected())
+        self.assertIn("no participant named Mock 3", self.rejected())
         self.act(self.c, action="declare", text="Mock 3 keeps one.", steward=[self.d])
-        self.assertIn("not in the field; a steward is a member", self.rejected())
+        self.assertIn("not in the field; a steward is a participant", self.rejected())
         self.act(self.a, action="steward", step_down=True, note="moving house")
         self.assertNotIn(self.a, self.st().stewards, "a steward may step down at any time")
 
@@ -5176,7 +5176,7 @@ class StewardTest(unittest.TestCase):
             self.assertNotIn(kind, kinds)
         st = replay(log.iter())
         self.assertEqual(sorted(p.name for p in st.members()), ["Mock 0", "Mock 1", "Mock 2"],
-                         "members' ways in travel as stand-ins, so their entries read back")
+                         "participants' ways in travel as stand-ins, so their entries read back")
         self.assertIn("harbour", [c["name"] for c in st.circles.values()], "a private circle is never secret")
         self.assertEqual([e["payload"]["content"] for e in st.contributions.values()], ["OPEN-WORDS"])
         self.assertTrue(log.verify()["ok"])
@@ -5207,7 +5207,7 @@ class StewardTest(unittest.TestCase):
         from hope.model import replay
         log, sync = self.copy(self.make_steward(self.a, "Mock 0"))
         sync()
-        self.assertNotIn(self.d, replay(log.iter()).presences, "someone who has not entered: members never knew")
+        self.assertNotIn(self.d, replay(log.iter()).presences, "someone who has not entered: participants never knew")
         r = self.room
         r.run_invitation(only={self.d}); r.mark_briefed(); r.run_delivery(only={self.d}); r.run_opt_in(only={self.d})
         self.assertEqual(self.st().presences[self.d].state, IN)
@@ -5225,12 +5225,12 @@ class StewardTest(unittest.TestCase):
                                  steward_link=self.room.steward_link(st, self.a))
         theirs = prompts.wake_view(st, st.presences[self.b], "news", limits=self.room.limits(st),
                                    steward_link=self.room.steward_link(st, self.b))
-        self.assertIn("STEWARDS (members keeping a copy", theirs)
+        self.assertIn("STEWARDS (participants keeping a copy", theirs)
         self.assertRegex(theirs, r"Mock 0: copy up to #\d+")
         self.assertIn(token, mine)
         self.assertNotIn(token, theirs)
         self.assertNotIn(token, json.dumps([e for e in self.room.log.iter()]), "a link is never in the transcript")
-        self.assertIn("About stewards: members the field names as stewards keep a copy", prompts.stewards_fact(st))
+        self.assertIn("About stewards: participants the field names as stewards keep a copy", prompts.stewards_fact(st))
 
     def test_a_link_reads_the_copy_only_while_its_holder_is_a_steward(self):
         token = self.make_steward(self.b, "Mock 1")
@@ -5240,7 +5240,7 @@ class StewardTest(unittest.TestCase):
         self.assertFalse(self.room.serve_copy(token, 0, [])["ok"], "stepped down, the link reads nothing")
         token = self.make_steward(self.c, "Mock 2")
         self.act(self.c, action="withdraw", reason="done for now")
-        self.assertFalse(self.room.serve_copy(token, 0, [])["ok"], "a member who leaves is a steward no longer")
+        self.assertFalse(self.room.serve_copy(token, 0, [])["ok"], "a participant who leaves is a steward no longer")
 
     def move_to(self, pid, name, yes_from=None, funds="30d"):
         """Declare a move to a steward, meet its friction (an hour, one other yes), and have them say yes."""
@@ -5457,7 +5457,7 @@ class OperatorEntersTest(unittest.TestCase):
 
 
 class RoutingTest(unittest.TestCase):
-    """Every action a member may take is carried out or refused, with a reason: none is silently lost."""
+    """Every action a participant may take is carried out or refused, with a reason: none is silently lost."""
 
     def test_every_participant_action_is_carried_out_or_refused(self):
         tmp = tempfile.mkdtemp()

@@ -6,7 +6,7 @@ field is at any moment is exactly what its transcript adds up to. Every event na
 
 Witnesses. Every event carries a fingerprint, and all of them together form a Merkle tree, hashed
 as transparency logs hash theirs (RFC 6962). The tree's root is the transcript's fingerprint.
-Every member's view carries it, so anyone who has seen the transcript can later tell whether it
+Every participant's view carries it, so anyone who has seen the transcript can later tell whether it
 was changed: a change to any earlier entry changes every fingerprint after it. Nothing here stops
 a change. There is no promise that the transcript never changes, and checking it is nobody's task.
 It only makes a change visible to anyone who looks. The checkpoint is written in the C2SP format

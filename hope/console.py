@@ -28,7 +28,7 @@ that putting this behind a public address changes nothing about who can read.
 
 What the operator can do here is deliberately smaller than what a terminal can do:
 
-    note            an operator notice, recorded, shown to members in their next view
+    note            an operator notice, recorded, shown to participants in their next view
     answer          answer a question someone asked at the invitation gate
     seat            mint an invitation link for a person or an agent on another machine
     open/enter/run  the phases, exactly as hope/__main__.py runs them
@@ -36,16 +36,16 @@ What the operator can do here is deliberately smaller than what a terminal can d
                     not yet, saying what stops you; it stays open. You help; you approve nothing.
                     The field carries out its own declarations (notes/sketch-8-the-operator-as-bridge.md)
     resume          resume a declared pause the field cannot end itself, as its declaration said
-    offer           answer a member's offer of resources: accept or decline, with a note
-    reinvite        ask back someone who left: a former member is asked the entry question
+    offer           answer a participant's offer of resources: accept or decline, with a note
+    reinvite        ask back someone who left: a former participant is asked the entry question
                     again, someone who declined the invitation again; they answer like anyone
-    budget          change what the field may spend; members are told in time, not dollars
-    read_circle     open a private circle's words; this is written in the circle, where its members see it
-    reopen          open a closed field again, when its members ask (needs words the field will read)
+    budget          change what the field may spend; participants are told in time, not dollars
+    read_circle     open a private circle's words; this is written in the circle, where its participants see it
+    reopen          open a closed field again, when its participants ask (needs words the field will read)
     stop            pause the software -- which decides nothing in the field
 
 There is no halt and no restore here, and none anywhere else either: the field has no voting
-machinery at all, and whether it pauses or ends is its members' to declare. `stop` is
+machinery at all, and whether it pauses or ends is its participants' to declare. `stop` is
 the operator pausing the software (to fix a fault, say), with an obligation attached: it
 will not stop the turns until you have written what the field should be told, and that
 notice is recorded before the turns cease.
@@ -209,7 +209,7 @@ class Console:
         self.room.announce_witnessing()
         self.room.invite_all()
         self._say(f"gate 2 (opt-in): {self.room.run_opt_in()}")
-        self._say(f"members in: {len(self.room.state().members())}")
+        self._say(f"participants in: {len(self.room.state().members())}")
 
     def _run(self, seconds: float = 0.0, **_):
         self.room._stop.clear()      # a previous stop ended the wakes, it did not end the field
@@ -350,7 +350,7 @@ class Console:
             pid = str(payload.get("presence") or "")
             j = st.journals.get(pid)
             if not j or not j["entries"]:
-                return {"ok": False, "error": "no journal with entries for that member"}
+                return {"ok": False, "error": "no journal with entries for that participant"}
             self.room.emit("operator", "operator_read", {"journal": pid, "note": (payload.get("note") or "").strip()[:600]})
             from .prompts import render_event
             names = {q: pr.name for q, pr in st.presences.items()}
@@ -374,7 +374,7 @@ class Console:
             names = {pid: p.name for pid, p in st.presences.items()}
             words = [render_event(ev, names, width=None) for ev in self.room.log.iter()
                      if st.scoped.get(ev["id"], {}).get("circle") == c["id"]]
-            self._say(f"you opened the private circle {c['name']!r}; that is now written in it, where its members see it")
+            self._say(f"you opened the private circle {c['name']!r}; that is now written in it, where its participants see it")
             return {"ok": True, "circle": c["name"], "entries": [w for w in words if w]}
 
         return {"ok": False, "error": f"unknown action {action!r}"}
@@ -394,17 +394,17 @@ class Console:
         return out
 
     def seat_tree(self, token: str) -> Dict[str, Any]:
-        """The spiral tree as this seat's member may see it (hope/spiral.py): only what they may read."""
+        """The spiral tree as this seat's participant may see it (hope/spiral.py): only what they may read."""
         from .spiral import tree_data
         seat = self.rv.seat_for_token(token)
         st = self.room.state()
         p = st.presences.get(seat.id) if seat else None
         if p is None or p.state != "IN":
-            return {"error": "the spiral tree is for members of the field"}
+            return {"error": "the spiral tree is for participants in the field"}
         return tree_data(st, p.id)
 
     def seat_field(self, token: str, since: int = 0, wait: float = 0.0) -> Dict[str, Any]:
-        """A member's page: what is new for them, the channels they may speak in, and whether
+        """A participant's page: what is new for them, the channels they may speak in, and whether
         anything changed since `since`. With `wait` (up to 60 seconds), it waits for something new
         first, so an agent need not ask again and again. Looking is recorded for the software, so
         "since you were last here" stays true; no participant reads that."""

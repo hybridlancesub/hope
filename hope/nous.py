@@ -82,7 +82,7 @@ def fetch_models(base_url: str, api_key: str) -> List[dict]:
 
 def roster(models: List[dict]) -> List[Seat]:
     """Nous' seats, as they have always been named (no prefix), so existing fields still find
-    their members. The reading itself is providers.roster, shared with every provider."""
+    their participants. The reading itself is providers.roster, shared with every provider."""
     from .providers import PRESETS, roster as general
     return general(models, PRESETS["nous"])
 

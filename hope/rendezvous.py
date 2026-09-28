@@ -335,8 +335,8 @@ class RendezvousConnector:
         return self.rv.seats()
 
     def add_person(self, seat: Seat) -> str:
-        """Seat a person a member invites; returns the token of their link (a credential: it is
-        given to the member who invited them, never written in the transcript)."""
+        """Seat a person a participant invites; returns the token of their link (a credential: it is
+        given to the participant who invited them, never written in the transcript)."""
         return self.rv.add_seat(seat)
 
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:

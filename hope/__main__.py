@@ -19,15 +19,15 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope log    --db FIELD.db [--since ID] [--kind KIND] [--actor ID]
   python3 -m hope cost   --db FIELD.db
   python3 -m hope input  --db FIELD.db --source NAME --text TEXT     (passes moderation boundary)
-  python3 -m hope note   --db FIELD.db --text TEXT                   (operator notice, shown to members)
+  python3 -m hope note   --db FIELD.db --text TEXT                   (operator notice, shown to participants)
   python3 -m hope bridge --db FIELD.db --id N (--done | --not-yet) [--note TEXT]
                                                                     answer what the field asked your help with:
                                                                     done, or not yet (needs --note: what stops you)
   python3 -m hope resume --db FIELD.db --note TEXT                   resume a declared pause the field cannot end itself
   python3 -m hope reinvite --db FIELD.db --presence ID [--note TEXT]  ask back someone who left
   python3 -m hope offer  --db FIELD.db --id N (--accept | --decline) [--note TEXT]
-                                                                    answer a member's offer of resources
-  python3 -m hope reopen --db FIELD.db --note TEXT                   open a closed field again, when its members ask
+                                                                    answer a participant's offer of resources
+  python3 -m hope reopen --db FIELD.db --note TEXT                   open a closed field again, when its participants ask
   python3 -m hope steward --db COPY.db --from LINK [--every 10m]     a steward keeps their copy of the field's record in
                                                                     step, checking it each time (notes/sketch-9-stewards.md)
   python3 -m hope carry-on --db COPY.db --note TEXT                  once the field declares it moves to you, carry it on
@@ -38,7 +38,7 @@ participant unless seated through the gates. Brief, open, run, inspect.
 
   Tools (notes/sketch-4-tools.md), on open, enter, run and console: --tools FILE (the operator's MCP tool
   servers; see tools.example.json), --no-fetch, --tool-steps N, --tool-view CHARS, --skills DIR (skills for
-  the field to take up, such as skills/), --tools-allow-local (members' offers at local addresses, for testing).
+  the field to take up, such as skills/), --tools-allow-local (participants' offers at local addresses, for testing).
 """
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ def _providers(args):
 
 def _narrator(args):
     """--narrator mechanical: the software also writes a plain account every so many contributions
-    (free; nothing leaves the field). Members tell the field's stories themselves; the outside
+    (free; nothing leaves the field). Participants tell the field's stories themselves; the outside
     narrator model is retired (roadmap, step 4d)."""
     spec = getattr(args, "narrator", None)
     if not spec or spec == "none":
@@ -125,7 +125,7 @@ def _narrator(args):
     if spec == "mechanical":
         return MechanicalNarrator()
     sys.exit("--narrator takes \"mechanical\" (the software's own plain account) or \"none\". The outside narrator model "
-             "is retired: members tell the field's stories themselves, so no model that is not a participant reads the "
+             "is retired: participants tell the field's stories themselves, so no model that is not a participant reads the "
              "field for tellings.")
 
 
@@ -250,7 +250,7 @@ def cmd_enter(args):
     c3 = room.run_opt_in()
     print(f"gate 2 (opt-in): {c3}")
     st = room.state()
-    print(f"members IN: {len(st.members())}   spend so far: ${room.log.total_cost():.4f}")
+    print(f"participants IN: {len(st.members())}   spend so far: ${room.log.total_cost():.4f}")
 
 
 def cmd_run(args):
@@ -265,13 +265,13 @@ def cmd_run(args):
         print("note: no --budget is recorded, so the field will not be warned before its funding runs out.", file=sys.stderr)
     missing = [p.id for p in st.members() if p.id not in room.seat_of]
     if missing:
-        print(f"warning: {len(missing)} members have no seat under the current connectors and will be skipped", file=sys.stderr)
+        print(f"warning: {len(missing)} participants have no seat under the current connectors and will be skipped", file=sys.stderr)
         for m in missing:
             room.emit(m, "connector_error", {"phase": "run", "error": "no connector seat"})
 
     def on_sig(*_):
         _print_alert("operator interrupt: stopping the process; an answer already on its way is still kept (this decides nothing about the field; "
-                     "if members should know why, say so with `note`)")
+                     "if participants should know why, say so with `note`)")
         room.request_stop()
     signal.signal(signal.SIGINT, on_sig)
     signal.signal(signal.SIGTERM, on_sig)
@@ -292,7 +292,7 @@ def cmd_close(args):
 def cmd_note(args):
     room = _room(args)
     room.emit("operator", "operator_note", {"content": args.text})
-    print("operator notice recorded; members see it in their next view.")
+    print("operator notice recorded; participants see it in their next view.")
 
 
 def cmd_bridge(args):
@@ -402,7 +402,7 @@ def cmd_status(args):
     if st.budget:
         print(f"budget: ${st.budget:.2f}" + (f"   runway notice: {st.runway}" if st.runway else ""))
     if st.closed_at is not None:
-        print(f"CLOSED at #{st.closed_at}, by the field's own declaration. Nothing runs; if its members ask, `reopen`.")
+        print(f"CLOSED at #{st.closed_at}, by the field's own declaration. Nothing runs; if its participants ask, `reopen`.")
     fp = st.paused_now(time.time())
     if fp:
         print(f"PAUSING by the field's own declaration (#{fp['from']})"
@@ -469,7 +469,7 @@ def cmd_steward(args):
         now = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
         if out["ok"]:
             print(f"{now}: your copy holds the field's record up to #{out['upto']} ({out['size']} entries: "
-                  f"{out['held_as_fingerprints']} only as fingerprints, {out['stand_ins']} members' ways in as stand-ins; "
+                  f"{out['held_as_fingerprints']} only as fingerprints, {out['stand_ins']} participants' ways in as stand-ins; "
                   f"{out['added']} new, {out['filled']} filled in). Its fingerprint is {out['fingerprint']}, the field's own.")
             if out.get("moved_to_you"):
                 print(f"THE FIELD HAS MOVED TO YOU (#{out['moved']['at']}, declared at #{out['moved']['from']}). To carry "
@@ -550,7 +550,7 @@ def cmd_export(args):
 
 
 def cmd_map(args):
-    """A sitting retold, by the software's own plain account. Members' words go to no model for it."""
+    """A sitting retold, by the software's own plain account. Participants' words go to no model for it."""
     from .map import digest, render_html, publish_story
     from .narrator import MechanicalNarrator
     log = EventLog(args.db)
@@ -669,13 +669,13 @@ def cmd_skills(args):
 
 def cmd_briefing(args):
     """Write the field's edition of the briefing to a file: the operator's text, with every revision
-    members made to it (and those to its pinned sections, once past their friction)."""
+    participants made to it (and those to its pinned sections, once past their friction)."""
     st = replay(EventLog(args.db).iter())
     if not st.briefing:
         sys.exit("this field has no briefing")
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         f.write(st.briefing)
-    print(f"the field's edition ({len(st.briefing_history)} revision(s) by members) written to {args.out}", file=sys.stderr)
+    print(f"the field's edition ({len(st.briefing_history)} revision(s) by participants) written to {args.out}", file=sys.stderr)
 
 
 def cmd_tools(args):
@@ -725,15 +725,15 @@ def main(argv=None):
     ap.add_argument("--runway-notice", type=float, default=60.0,
                     help="minutes: tell the field when about this much funding time remains at the rate of the last five "
                          "minutes; from then on every view counts down")
-    ap.add_argument("--recent", type=int, default=20, help="transcript entries shown in each member's view")
+    ap.add_argument("--recent", type=int, default=20, help="transcript entries shown in each participant's view")
     ap.add_argument("--headlines", type=int, default=180,
                     help="entries before the recent ones, shown as one line each in their author's own title (0 = none)")
     ap.add_argument("--narrator", default=None,
                     help="'mechanical': the software also writes a plain account every --tell-every contributions (free; "
-                         "nothing leaves the field). Members tell the field's stories themselves; the outside narrator "
+                         "nothing leaves the field). Participants tell the field's stories themselves; the outside narrator "
                          "model is retired")
     ap.add_argument("--tell-every", type=int, default=20,
-                    help="a stretch this many contributions long, untold, wakes members who asked (and, with --narrator "
+                    help="a stretch this many contributions long, untold, wakes participants who asked (and, with --narrator "
                          "mechanical, is told by the software)")
     ap.add_argument("--linger", type=int, default=200,
                     help="a person's latest words in a channel stay in full in models' views until this many more entries "
@@ -756,7 +756,7 @@ def main(argv=None):
     ap.add_argument("--tool-view", type=int, default=20000,
                     help="characters of what came back that one step shows (a cost; results are kept whole and read on in parts)")
     ap.add_argument("--tools-allow-local", action="store_true",
-                    help="let members offer tool servers at local or private addresses (for testing on one machine)")
+                    help="let participants offer tool servers at local or private addresses (for testing on one machine)")
     ap.add_argument("--skills", default=None, help="a folder of skills (<name>/SKILL.md) for the field to take up, such as skills/")
     ap.add_argument("--mock", type=int, default=0)
     ap.add_argument("--provider", action="append", default=None,
@@ -801,10 +801,10 @@ def main(argv=None):
     s = sub.add_parser("reinvite", help="ask back someone who left; they answer again like anyone")
     s.add_argument("--presence", required=True); s.add_argument("--note", default=None, help="a note they will read")
     s.set_defaults(fn=cmd_reinvite)
-    s = sub.add_parser("offer", help="answer a member's offer of resources")
+    s = sub.add_parser("offer", help="answer a participant's offer of resources")
     s.add_argument("--id", type=int, required=True); s.add_argument("--accept", action="store_true")
     s.add_argument("--decline", action="store_true"); s.add_argument("--note", default=None); s.set_defaults(fn=cmd_offer)
-    s = sub.add_parser("reopen", help="open a closed field again, when its members ask (or a fault closed it)")
+    s = sub.add_parser("reopen", help="open a closed field again, when its participants ask (or a fault closed it)")
     s.add_argument("--note", required=True); s.set_defaults(fn=cmd_reopen)
     s = sub.add_parser("log"); s.add_argument("--since", type=int, default=0); s.add_argument("--kind"); s.add_argument("--actor"); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("cost"); s.set_defaults(fn=cmd_cost)

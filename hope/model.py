@@ -13,18 +13,18 @@ defaults are the author's, and loose.
 
 What IS here, and why:
   - the consent gates (invitation, briefing, entry) and withdrawal;
-  - the covenant page: one shared text any member may revise, every revision attributed;
-  - memories: a few sentences any member may add for the field to carry forward, shared with
+  - the covenant page: one shared text any participant may revise, every revision attributed;
+  - memories: a few sentences any participant may add for the field to carry forward, shared with
     everyone, which only their author may let go of (Atlas Sec. 22);
-  - rest: a member may step out for some rounds and come back;
-  - return: a member who withdrew, or someone who declined, may be asked back. They go through
-    the gates again (a former member, the entry question); nothing puts anyone back in the field
+  - rest: a participant may step out for some rounds and come back;
+  - return: a participant who withdrew, or someone who declined, may be asked back. They go through
+    the gates again (a former participant, the entry question); nothing puts anyone back in the field
     without their own yes;
   - two clocks: the models' clock (how soon a round follows the last, how long a model has to
     answer) and the people's clock (how soon a person is asked again, how long they have to
-    answer). The members who keep time by a clock set it, within the limits below;
+    answer). The participants who keep time by a clock set it, within the limits below;
   - declarations (notes/sketch-8-the-operator-as-bridge.md): announcements before agency is
-    actualized. A member says what the field will do, why, how and when; everyone sees it; after
+    actualized. A participant says what the field will do, why, how and when; everyone sees it; after
     its notice the software carries out what it can itself (pausing the field's wakes, resuming,
     closing, bringing instruments into force or putting them down, pinning a section of the
     briefing, changing the field's rhythm or its friction). What the software cannot reach is
@@ -36,35 +36,35 @@ What IS here, and why:
     sections. The field changes it by declaring it;
   - the field's heartbeat: a rhythm on which every model not pausing is woken, with nothing
     expected, which the field sets by declaring it;
-  - stewards (notes/sketch-9-stewards.md): members the field declares, on their own yes, who
-    keep a copy of what every member can read on machines of their own (the rest only as
+  - stewards (notes/sketch-9-stewards.md): participants the field declares, on their own yes, who
+    keep a copy of what every participant can read on machines of their own (the rest only as
     fingerprints), and how far each copy has caught up. A move asks a steward to host the field;
     on their yes its wakes pause here while private things may go with it (each with the yes of
     those it belongs to); it closes here once the steward's machine has taken it all on, and is
     carried on there, where everyone is asked again;
   - which participant runs the software: the operator enters through the same gates;
-  - offers: a member putting resources (funds, or a way to raise them) before the operator
+  - offers: a participant putting resources (funds, or a way to raise them) before the operator
     and everyone. The software never moves money;
   - rounds, and the budget's runway, so the field is told before its funding runs out;
   - tellings: short accounts of each stretch, for the people who follow at a slower pace. They
     are written by a narrator the operator chose, and the entry question says which kind;
   - tools (notes/sketch-4-tools.md): what anyone attached, who runs each and where what is sent
-    goes, the flags members put on them, and every use. A use is two entries: the call, in the
+    goes, the flags participants put on them, and every use. A use is two entries: the call, in the
     channel where it was made, and what came back, in the domain "tools / <tool>" (inside a
     private circle, both stay in the circle). What came back is from outside the field;
   - skills: instructions the field writes for itself, in the open SKILL.md form, every revision
     attributed;
-  - journals, roles, play, members' tellings, and the field's own edition of the briefing
+  - journals, roles, play, participants' tellings, and the field's own edition of the briefing
     (notes/sketch-5-small-pieces.md);
   - repair threads (circles known only to those in them, opened by the person harmed, who alone
-    says where the repair stands), announcements, and invitations by members, with their
+    says where the repair stands), announcements, and invitations by participants, with their
     lineage (notes/sketch-6-repair-and-invitations.md);
   - the field's own instruments (notes/sketch-7-instruments.md): written in the field's words,
     brought into force by a declaration (or by a question under an instrument for adopting), and
     questions raised under them, which gather answers, hold a pause, and settle by the
     instrument's own rule, carried out by the software: unless it says otherwise, after its pause,
     unless an objection stands. What a question does (bring another instrument into force, put
-    one down, separate a member from a circle, or what a declaration could do) happens then.
+    one down, separate a participant from a circle, or what a declaration could do) happens then.
 """
 from __future__ import annotations
 
@@ -171,7 +171,7 @@ def friction_words(f: Dict[str, Any]) -> str:
     bits = [f"a notice of {duration(f['notice'])}" if f.get("notice") else "no notice"]
     y = int(f.get("yes") or 0)
     if y >= EVERYONE:
-        bits.append("every other member's yes")
+        bits.append("every other participant's yes")
     elif y:
         bits.append(f"{y} yes{'es' if y != 1 else ''} besides its author's")
     bits.append("an objection holds it until its author withdraws it" if f.get("hold") else "an objection is heard, and holds nothing")
@@ -211,7 +211,7 @@ def effects_words(fx: Dict[str, Any], names: Optional[Dict[str, str]] = None, ve
     for f in fx.get("friction") or []:
         new = ", ".join(x for x in (
             (f"a notice of {duration(f['notice'])}" if f.get("notice") else "no notice") if "notice" in f else "",
-            ("every other member's yes" if int(f["yes"]) >= EVERYONE else f"{int(f['yes'])} yes{'es' if int(f['yes']) != 1 else ''}")
+            ("every other participant's yes" if int(f["yes"]) >= EVERYONE else f"{int(f['yes'])} yes{'es' if int(f['yes']) != 1 else ''}")
             if "yes" in f else "",
             ("objections hold" if f["hold"] else "objections hold nothing") if "hold" in f else "",
             f"a settling period of {duration(f['settle'])}" if f.get("settle") else "") if x)
@@ -380,16 +380,16 @@ class RoomState:
         return [p for p in self.presences.values() if p.state == IN]
 
     def reachable_members(self) -> List[Presence]:
-        """Members who can still be asked at all: not unreachable, allowance not spent."""
+        """Participants who can still be asked at all: not unreachable, allowance not spent."""
         return [p for p in self.members() if not p.unreachable and not p.exhausted]
 
     def resting(self, p: Presence, round_n: Optional[int] = None) -> bool:
-        """Resting through round `rest_until`. A member who never rested (rest_until 0) is not
+        """Resting through round `rest_until`. A participant who never rested (rest_until 0) is not
         resting, including before the first round, when the round number is also 0."""
         return p.rest_until > 0 and p.rest_until >= (self.round if round_n is None else round_n)
 
     def askable(self, round_n: int) -> List[Presence]:
-        """Who is asked in round `round_n`: reachable members who are not resting."""
+        """Who is asked in round `round_n`: reachable participants who are not resting."""
         return [p for p in self.reachable_members() if not self.resting(p, round_n)]
 
     def waiting_on_operator(self) -> List[Dict[str, Any]]:
@@ -441,9 +441,9 @@ class RoomState:
 
     def standing(self, item: Dict[str, Any], among=None) -> Dict[str, Any]:
         """Where an announcement (a declaration, a revision to a pinned section, a question under an
-        instrument) stands against its friction: the yeses of members other than its author, how many
+        instrument) stands against its friction: the yeses of participants other than its author, how many
         it needs (never more than there are), and the objections standing, while their authors are
-        members. `met` is whether it may take effect, once its time has come."""
+        participants. `met` is whether it may take effect, once its time has come."""
         members = {m.id for m in self.members()}
         pool = (members if among is None else set(among) & members) - {item["by"]}
         answers = {x: r for x, r in (item.get("answers") or {}).items() if x in pool}
@@ -590,10 +590,10 @@ class RoomState:
         return [t for t in self.tellings if t.get("circle") is None]
 
     def readable(self, ev: Dict[str, Any], pid: Optional[str]) -> bool:
-        """Whether a participant may read an entry. Everything is readable by every member, except
-        what was written inside a private circle: that is read by its members, by former members
+        """Whether a participant may read an entry. Everything is readable by every participant, except
+        what was written inside a private circle: that is read by its participants, by former participants
         up to when they left, and by whoever an ask or a knock there concerns. (The operator holds
-        the file, and a model's view goes to its provider; the circle tells its members so.)"""
+        the file, and a model's view goes to its provider; the circle tells its participants so.)"""
         s = self.scoped.get(ev["id"])
         if s is None:
             return True
@@ -614,7 +614,7 @@ class RoomState:
         return any(leave is not None and ev["id"] < leave for _, leave in c["spans"].get(pid, []))
 
     def follows(self, p: Presence, ev: Dict[str, Any]) -> bool:
-        """Whether an entry is in something a member follows, by choice or by having written there."""
+        """Whether an entry is in something a participant follows, by choice or by having written there."""
         keys = list(p.follows) + (list(p.written_in) if p.wake.get("written", True) else [])
         return any(self.in_channel(ev, k) for k in keys)
 
@@ -629,7 +629,7 @@ class RoomState:
         return [f for f in s["flags"].values() if f["tool"] in (tool, s["server"])]
 
     def domain_display(self, pth: str) -> str:
-        """A domain path as members wrote it: "Timing / Clocks"."""
+        """A domain path as participants wrote it: "Timing / Clocks"."""
         parts = [x for x in (pth or "").split("/") if x]
         return " / ".join(self.domain_names.get("/".join(parts[:i + 1]), parts[i]) for i in range(len(parts)))
 
@@ -655,7 +655,7 @@ class RoomState:
         return [c for c in self.live_circles() if not self.secret(c)]
 
     def circle_needs(self, prop: Dict[str, Any]) -> List[str]:
-        """Whose yes something awaiting needs: every current member of its circle, and, for an admission,
+        """Whose yes something awaiting needs: every current participant in its circle, and, for an admission,
         the one being admitted. For an open circle's admission, only theirs."""
         c = self.circles.get(prop["circle"])
         members = list(c["members"]) if c else []
@@ -1513,7 +1513,7 @@ class RoomState:
 
     def _end_pauses(self, ev: Dict[str, Any]) -> None:
         """New words end the pauses that were waiting for them: being addressed or replied to, or
-        news in what the paused member follows. Only words they may read count."""
+        news in what the paused participant follows. Only words they may read count."""
         p = ev["payload"]
         to = set(p.get("to") or [])
         target = self.contributions.get(p.get("target")) if p.get("target") is not None else None

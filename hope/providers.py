@@ -26,7 +26,7 @@ counts as nothing, and hope says so when it starts.
 
 Seat ids: a provider's seats are named "<provider>__<model>", so the same model through two
 providers is two seats, each asked separately. Nous seats keep the unprefixed ids they have
-always had, so fields that began with them still find their members.
+always had, so fields that began with them still find their participants.
 """
 from __future__ import annotations
 

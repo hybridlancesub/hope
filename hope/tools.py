@@ -2,12 +2,12 @@
 """Tools for the field (notes/sketch-4-tools.md).
 
 Tools reach the field from everyone. Participants bring their own. The operator attaches tool
-servers in a tools file (a command run on the operator's machine, or an address). Any member
+servers in a tools file (a command run on the operator's machine, or an address). Any participant
 offers one by its address: a server they run on a machine they lend, or one they know of. The
 door is MCP, the one Hermes and OpenClaw use, so the same servers serve here.
 
 What this holds to:
-  - hope's own process never runs a participant's code. A member offers a server by its address
+  - hope's own process never runs a participant's code. A participant offers a server by its address
     only, and it must be a public HTTPS address: nothing on loopback, a private network, or
     link-local addresses, so no one can point the field at the operator's own machine or
     network. The built-in fetch refuses those too. The operator may attach local servers of
@@ -50,10 +50,10 @@ class ToolError(Exception):
 
 # -- where a member may point the field -------------------------------------------------------------
 def public_https(url: str) -> Optional[str]:
-    """Why a member may not offer this address, or None if it is a public HTTPS address."""
+    """Why a participant may not offer this address, or None if it is a public HTTPS address."""
     u = urlparse(url or "")
     if u.scheme != "https" or not u.hostname:
-        return "a tool server offered by a member must be at an https:// address"
+        return "a tool server offered by a participant must be at an https:// address"
     try:
         infos = socket.getaddrinfo(u.hostname, u.port or 443, proto=socket.IPPROTO_TCP)
     except OSError as e:
@@ -61,7 +61,7 @@ def public_https(url: str) -> Optional[str]:
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if not ip.is_global or ip.is_multicast:
-            return (f"{u.hostname} is at {ip}, which is not a public address; a member cannot point the field at "
+            return (f"{u.hostname} is at {ip}, which is not a public address; a participant cannot point the field at "
                     f"the operator's machine or a private network")
     return None
 
@@ -374,7 +374,7 @@ class Server:
 
 
 class ToolHub:
-    """Every tool the field has: the built-in fetch, the operator's servers, and members' offers."""
+    """Every tool the field has: the built-in fetch, the operator's servers, and participants' offers."""
 
     def __init__(self, builtin_fetch: bool = True, allow_local: bool = False, builtin_sandbox: bool = False):
         self.allow_local = allow_local
@@ -446,7 +446,7 @@ class ToolHub:
             raise ToolError(f"a tool's kind is one of {', '.join(KINDS)}")
         if spec.get("command"):
             if source != "operator":
-                raise ToolError("a member offers a tool server by its address; hope never runs a participant's code")
+                raise ToolError("a participant offers a tool server by its address; hope never runs a participant's code")
             env = child_env(spec.get("env"), spec.get("env_pass"), spec.get("env_from"))
             client = StdioServer(list(spec["command"]), env=env)
             where = spec.get("sends_to") or "a program on the operator's machine"

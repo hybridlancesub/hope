@@ -5,7 +5,7 @@ Serves the replayed state as JSON on localhost. It writes nothing, accepts nothi
 not a participant-facing surface: participants never see it, and nothing here can reach the
 field. It is the operator reading their own field, in a form a renderer can use.
 
-    GET /state.json          domains, members, contributions (with reply threads), the covenant
+    GET /state.json          domains, participants, contributions (with reply threads), the covenant
                              page and its revisions, memories, declarations and offers, admission
                              (who is at which gate), spend (what it costs, how long it lasts)
     GET /event/<id>.json     one event in full
@@ -33,7 +33,7 @@ GATE_ORDER = ["INVITED", "ACCEPTED", "BRIEFED", "RECEIVED", "IN", "OUT"]
 
 def admission_json(st) -> List[Dict[str, Any]]:
     """Every presence the field knows of, at whatever gate it has reached -- including the ones
-    that never became members. One row per seat, in the order the gates are walked."""
+    that never became participants. One row per seat, in the order the gates are walked."""
     rows = []
     for p in st.presences.values():
         rows.append({
@@ -76,7 +76,7 @@ def spend_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
 def record_text(log: EventLog, everything: bool = False) -> str:
     """The transcript as plain text, in order, nothing summarized. The raw stream, for reading.
     Words written in a private circle are never here: the console opens a private circle only on
-    purpose (read_circle), and records that in the circle, where its members see it."""
+    purpose (read_circle), and records that in the circle, where its participants see it."""
     st = replay(log.iter())
     names = {pid: p.name for pid, p in st.presences.items()}
     out: List[str] = []
@@ -84,7 +84,7 @@ def record_text(log: EventLog, everything: bool = False) -> str:
         k, p, who = ev["kind"], ev["payload"], names.get(ev["actor"], ev["actor"])
         if ev["id"] in st.scoped:
             if st.scoped[ev["id"]].get("journal") is not None:
-                out.append(f"#{ev['id']} (in a member's journal; not shown here. Opening it from the console is "
+                out.append(f"#{ev['id']} (in a participant's journal; not shown here. Opening it from the console is "
                            f"recorded in the journal)\n")
             else:
                 out.append(f"#{ev['id']} (written in a private circle; not shown here. Opening it from the console is "

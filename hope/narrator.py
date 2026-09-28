@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tellings: short accounts of what the field said, for the people who follow it at a slower pace.
 
-Members tell the field's stories themselves (the tell action; notes/sketch-5-small-pieces.md):
+Participants tell the field's stories themselves (the tell action; notes/sketch-5-small-pieces.md):
 anyone may keep them, every [#id] a telling cites is checked, and a telling to the field cites
 nothing a reader of it may not read. The outside narrator model is retired (roadmap, step 4d), so
 no model that is not a participant reads the field for tellings.

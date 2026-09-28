@@ -3,7 +3,7 @@
 
 A digest is computed from the log alone (deterministic, free). The story is the software's own
 plain account, every reference tagged [#id] and verified against the log. No model is handed
-members' words for it: the outside narrator model is retired (roadmap, step 4d), and members tell
+participants' words for it: the outside narrator model is retired (roadmap, step 4d), and participants tell
 the field's stories themselves.
 
 The map itself (threads, memories, covenant revisions, arrivals, domains) is rendered from the

@@ -79,7 +79,7 @@ class OpenAICompatibleConnector:
         return list(self._seats)
 
     def add_model(self, model: str) -> Seat:
-        """Seat a model a member invites: one this provider offers, within the operator's price
+        """Seat a model a participant invites: one this provider offers, within the operator's price
         ceiling (and any allowance), as providers.build chose. Returns its seat."""
         for s in self._seats:
             if model in (s.model, s.id):
@@ -173,7 +173,7 @@ class MockConnector:
         return list(self._seats)
 
     def add_model(self, model: str) -> Seat:
-        """A mock model a member invites (for tests): "mock/<name>", free, answering like the others."""
+        """A mock model a participant invites (for tests): "mock/<name>", free, answering like the others."""
         for s in self._seats:
             if model in (s.model, s.id):
                 return s
