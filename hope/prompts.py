@@ -85,7 +85,7 @@ def invitation_user(invitation: str, p: Presence, exchange=None, faq: Optional[s
         note = (p.invite or {}).get("note") or ""
         s += (f"{one_line(inviter)}, a participant in this field, invited you"
               + (f", and writes:\n{quoted(note, '  ')}\n" if note else ".\n")
-              + f"(What follows is the invitation every participant receives. A question you ask is put to "
+              + f"(What follows is the invitation every invitee receives. A question you ask is put to "
                 f"{one_line(inviter)} and to the operator, and either may answer.)\n\n")
     s += (f"If you proceed, your presence would be recorded as:\n"
          f"  name: {p.name}\n  hails from: {p.hails_from}\n  people/lineage: {p.people}\n\n"
