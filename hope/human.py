@@ -69,6 +69,13 @@ The format is plain text, translated to the same JSON actions models send:
     announce: <text> [/ naming <names>]   tell the field you were approached or preyed upon
     invite person <name> [: note] | invite model <id> [: note] | invite agent <address> [: note]
     answer invitee <name>: <text>   answer a question from someone you invited
+    instrument <name>: <its words> [/ for decide|adopt|separate] [/ asks circle <name> | / asks <names>] [/ pause 3d]
+                                    write down one of the field's instruments (in force only once declared)
+    raise <instrument>: <question> [/ about <member>] [/ adopt <instrument>] [/ put down <instrument>]
+                                    [/ decision pause|close|other]
+    answer #12 yes | answer #12 stand aside | answer #12 object <why>
+                                    answer a question under an instrument (silence is never a yes)
+    withdraw question #12           withdraw a question you raised
     read journal <name>             a journal opened to you
     withdraw [reason] [/ when it would be fair to ask you back]
     question <text>                 (invitation gate only)
@@ -377,6 +384,38 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     m = re.match(r"answer\s+invitee\s+([^:]+):\s*(.*)$", s, re.I | re.S)
     if m:
         return {"action": "answer_question", "presence": m.group(1).strip(), "text": m.group(2).strip()}
+    m = re.match(r"instrument\s+([^:]+):\s*(.*)$", s, re.I | re.S)
+    if m:
+        parts = [x.strip() for x in m.group(2).split(" / ")]
+        d = {"action": "instrument", "name": m.group(1).strip(), "text": parts[0]}
+        for extra in parts[1:]:
+            low_ = extra.lower()
+            if low_.startswith("for "):
+                d["for"] = extra[4:].strip()
+            elif low_.startswith("asks circle "):
+                d["circle"] = extra[12:].strip()
+            elif low_.startswith("asks ") and low_[5:].strip() not in ("field", "the field", "everyone"):
+                d["named"] = [x.strip() for x in extra[5:].split(",") if x.strip()]
+            elif low_.startswith("pause "):
+                d["pause"] = extra[6:].strip()
+        return d
+    m = re.match(r"raise\s+([^:]+):\s*(.*)$", s, re.I | re.S)
+    if m:
+        parts = [x.strip() for x in m.group(2).split(" / ")]
+        d = {"action": "raise", "instrument": m.group(1).strip(), "question": parts[0]}
+        for extra in parts[1:]:
+            low_ = extra.lower()
+            for key, word in (("about", "about "), ("adopt", "adopt "), ("put_down", "put down "), ("decision", "decision ")):
+                if low_.startswith(word):
+                    d[key] = extra[len(word):].strip()
+        return d
+    m = re.match(r"answer\s+#?(\d+)\s+(yes|stand\s+aside|object)\b\s*(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "respond", "question": int(m.group(1)), "answer": " ".join(m.group(2).lower().split()),
+                "reason": m.group(3).strip()}
+    m = re.match(r"withdraw\s+question\s+#?(\d+)\s*(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "withdraw_question", "question": int(m.group(1)), "note": m.group(2).strip()}
     m = re.match(r"withdraw\s+declaration\s+#?(\d+)\s*(.*)$", s, re.I | re.S)
     if m:                          # before withdrawing from the field: this takes back a declaration, nothing more
         return {"action": "withdraw_declaration", "declaration": int(m.group(1)), "note": m.group(2).strip()}

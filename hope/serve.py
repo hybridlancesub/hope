@@ -226,6 +226,16 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
         "circles": [{"id": c["id"], "name": c["name"], "private": c["private"], "members": len(c["members"]),
                      "domains": c["domains"], "dispersed": c["dispersed_at"] is not None,
                      "reason": c["reason"] if c["private"] else ""} for c in st.circles.values() if not st.secret(c)],
+        # the field's instruments, and the questions under them (what the operator carries out)
+        "instruments": [{"name": i["name"], "status": i["status"], "purpose": i["purpose"], "scope": i["scope"],
+                         "pause": i["pause"], "current": i.get("current"), "latest": i.get("latest"),
+                         "text": i["text"]} for i in st.instruments.values()],
+        "instrument_questions": [{**{k: q[k] for k in ("id", "status", "purpose", "question", "decision", "refs",
+                                                       "adopt", "put_down", "circle", "pause", "ts", "instrument_name")},
+                                  "who": names.get(q["by"], q["by"]),
+                                  "subject": names.get(q.get("subject"), q.get("subject")) if q.get("subject") else None,
+                                  "answers": [{"who": names.get(x, x), **r} for x, r in q["answers"].items()]}
+                                 for q in st.iquestions.values() if q["id"] not in st.scoped],
         # repair threads, for the operator only: how many people, and where each stands; never who, never words
         "repair_threads": [{"id": c["id"], "people": len(c["members"]), "status": c["repair"]["status"]}
                            for c in st.circles.values() if st.secret(c) and c["dispersed_at"] is None],

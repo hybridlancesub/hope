@@ -30,6 +30,9 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope tools  --db FIELD.db [--remove NAME --note TEXT]   the field's tools, flags and uses; remove one
   python3 -m hope skills --db FIELD.db [--out DIR]                   write the field's skills as DIR/<name>/SKILL.md
   python3 -m hope briefing --db FIELD.db --out FILE                  write the field's own edition of the briefing
+  python3 -m hope question --db FIELD.db --id N (--carry-out | --note TEXT)
+                                                                    carry out a question under one of the field's
+                                                                    instruments, once its pause is over, or reply
 
   Tools (notes/sketch-4-tools.md), on open, enter, run and console: --tools FILE (the operator's MCP tool
   servers; see tools.example.json), --no-fetch, --tool-steps N, --tool-view CHARS, --skills DIR (skills for
@@ -569,6 +572,18 @@ def cmd_skills(args):
     print(f"{len(paths)} skill(s) written to {out}; commit them to publish", file=sys.stderr)
 
 
+def cmd_question(args):
+    """Carry out a question under one of the field's instruments, once its pause is over, or reply."""
+    room = _room(args, [])
+    if args.carry_out:
+        out = room.carry_out_question(args.id, args.note or "")
+    elif args.note:
+        out = room.reply_question(args.id, args.note)
+    else:
+        sys.exit("--carry-out, or --note TEXT to reply (it stays open)")
+    print(out)
+
+
 def cmd_briefing(args):
     """Write the field's edition of the briefing to a file: the operator's text, with every revision
     members made to it (and every one the field decided on, for its firmer sections)."""
@@ -717,6 +732,9 @@ def main(argv=None):
     s = sub.add_parser("export"); s.add_argument("--out", default=None); s.add_argument("--everything", action="store_true", help="include connector events and full texts"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("skills", help="write the field's skills as <name>/SKILL.md, to commit to the repository")
     s.add_argument("--out", default=None, help="the folder (default: skills/ in the repository)"); s.set_defaults(fn=cmd_skills)
+    s = sub.add_parser("question", help="carry out a question under one of the field's instruments, or reply to it")
+    s.add_argument("--id", type=int, required=True); s.add_argument("--carry-out", action="store_true")
+    s.add_argument("--note", default=None); s.set_defaults(fn=cmd_question)
     s = sub.add_parser("briefing", help="write the field's own edition of the briefing to a file")
     s.add_argument("--out", required=True); s.set_defaults(fn=cmd_briefing)
     s = sub.add_parser("tools", help="the field's tools, who runs each, their flags and uses; --remove one")

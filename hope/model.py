@@ -40,7 +40,12 @@ What IS here, and why:
     (notes/sketch-5-small-pieces.md);
   - repair threads (circles known only to those in them, opened by the person harmed, who alone
     says where the repair stands), announcements, and invitations by members, with their
-    lineage (notes/sketch-6-repair-and-invitations.md).
+    lineage (notes/sketch-6-repair-and-invitations.md);
+  - the field's own instruments (notes/sketch-7-instruments.md): written in the field's words,
+    brought into force only by a decision the operator carries out, and questions raised under
+    them, which gather answers and hold a pause, and settle nothing by a tally. What an
+    instrument's question does (bring another into force, put one down, separate a member) happens
+    only when the operator carries it out.
 """
 from __future__ import annotations
 
@@ -128,8 +133,11 @@ JOURNAL_KINDS = ("journal", "journal_access", "journal_erase")
 STEP4_KINDS = ("declaration_withdrawn", "roles", "play_tag", "play_untag", "briefing_revision", "telling",
                "repair_status", "repair_widen")
 REPAIR_STATUSES = ("open", "partly resolved", "resolved", "stepping back")
+INSTRUMENT_PURPOSES = ("decide", "adopt", "separate")
+INSTRUMENT_KINDS = ("instrument", "iquestion", "iresponse", "iquestion_withdrawn", "iquestion_due")
+RESPONSES = ("yes", "stand aside", "object")
 INVITE_PAUSE = 3600.0        # seconds between the briefing and the entry question, for an invitee who names none
-VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS
+VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS + INSTRUMENT_KINDS
 TURN_KINDS = VISIBLE_KINDS                   # what earlier versions counted as a turn; a wake is counted now
 ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
 
@@ -229,6 +237,9 @@ class RoomState:
     firm: List[str] = field(default_factory=list)                         # titles of its firmer sections (for the Atlas: Maxims)
     briefing_history: List[Dict[str, Any]] = field(default_factory=list)  # every revision members made to the edition
     briefing_waiting: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # revisions to firmer sections, waiting
+    instruments: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # the field's instruments, by name: in force or not
+    instrument_versions: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # every version written, by event
+    iquestions: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # questions raised under instruments, by event
 
     # -- derived views -------------------------------------------------------
     def members(self) -> List[Presence]:
@@ -248,10 +259,46 @@ class RoomState:
         return [p for p in self.reachable_members() if not self.resting(p, round_n)]
 
     def waiting_on_operator(self) -> List[Dict[str, Any]]:
-        """Declarations and offers the operator has not answered yet, oldest first."""
+        """Declarations, offers, and questions under instruments whose pause is over, that the
+        operator has not answered yet, oldest first."""
         out = [d for d in self.declarations.values() if d["status"] == "waiting"]
         out += [o for o in self.offers.values() if o["status"] == "waiting"]
+        out += [q for q in self.iquestions.values() if q["status"] == "before the operator"]
         return sorted(out, key=lambda x: x["id"])
+
+    def in_force(self) -> List[Dict[str, Any]]:
+        return [i for i in self.instruments.values() if i["status"] == "in force"]
+
+    def _bring_into_force(self, vid: int, eid: int) -> None:
+        v = self.instrument_versions.get(vid)
+        if not v:
+            return
+        i = self.instruments[v["key"]]
+        i.update({"status": "in force", "current": vid, "in_force_at": eid, "purpose": v["purpose"],
+                  "text": v["text"], "scope": v["scope"], "pause": v["pause"], "name": v["name"]})
+
+    def _put_down(self, key: str, eid: int) -> None:
+        i = self.instruments.get(labels.normalize(key)) or self.instruments.get(key)
+        if i and i["status"] == "in force":
+            i["status"], i["put_down_at"] = "put down", eid
+
+    def _separate(self, q: Dict[str, Any], eid: int) -> None:
+        """Carry out a separation the field asked for: from a circle, or from the field."""
+        who = self.presences.get(q.get("subject"))
+        if not who:
+            return
+        c = self.circles.get(q["circle"]) if q.get("circle") is not None else None
+        if c is not None:
+            if who.id in c["members"]:
+                c["members"].remove(who.id)
+                for span in c["spans"].get(who.id, []):
+                    if span[1] is None:
+                        span[1] = eid
+            c.setdefault("separated", {})[who.id] = q["id"]
+        elif who.state != OUT:
+            who.state, who.left_at = OUT, eid
+            who.left_reason = f"separated by the field, under its instrument {q.get('instrument_name')} (#{q['id']})"
+            who.ask_again, who.returning = None, False
 
     def domains(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
@@ -447,6 +494,7 @@ class RoomState:
         if pid not in c["members"]:
             c["members"].append(pid)
             c["spans"].setdefault(pid, []).append([eid, None])
+        c.get("separated", {}).pop(pid, None)     # asked back, and said yes
 
     def _set_private(self, c: Dict[str, Any], private: bool, eid: int, reason: str, by: str, ts: float = 0.0) -> None:
         if private and not c["private"]:
@@ -696,12 +744,18 @@ class RoomState:
             if pr and pr.state == IN and p.get("decision") in DECISIONS:
                 self.declarations[eid] = {"id": eid, "kind": "declaration", "by": a, "decision": p["decision"],
                                           "text": p.get("text", ""), "refs": list(p.get("refs") or []),
+                                          "put_down": list(p.get("put_down") or []),
                                           "status": "waiting", "note": "", "answered_at": None}
         elif k == "declaration_answer":
             d = self.declarations.get(p.get("declaration"))
             if d and d["status"] == "waiting":
                 d["status"], d["note"], d["answered_at"] = p.get("outcome", "not_acted"), p.get("note", ""), eid
                 if d["status"] == "carried_out":
+                    for ref in d["refs"]:             # an instrument the field decided to bring into force
+                        if ref in self.instrument_versions:
+                            self._bring_into_force(ref, eid)
+                    for key in d.get("put_down") or []:
+                        self._put_down(key, eid)
                     for ref in d["refs"]:             # a revision to a firmer section, which the field decided on
                         r = self.briefing_waiting.get(ref)
                         if r and r["status"] == "waiting":
@@ -925,6 +979,69 @@ class RoomState:
                 q = c["questions"].get(p.get("question"))
                 if q is not None and a in c["members"] and p.get("text"):
                     q["replies"].append({"id": eid, "by": a, "text": p["text"], "ts": ts})
+        elif k == "instrument":
+            name = _line(p.get("name"))[:80]
+            if pr and pr.state == IN and name and p.get("purpose") in INSTRUMENT_PURPOSES:
+                key = labels.normalize(name)
+                v = {"id": eid, "key": key, "name": name, "by": a, "ts": ts, "purpose": p["purpose"],
+                     "text": p.get("text") or "", "scope": dict(p.get("scope") or {"kind": "field"}),
+                     "pause": float(p.get("pause_seconds") or 0.0), "note": p.get("note") or ""}
+                self.instrument_versions[eid] = v
+                i = self.instruments.setdefault(key, {"key": key, "name": name, "status": "draft", "current": None,
+                                                      "versions": [], "in_force_at": None, "purpose": v["purpose"],
+                                                      "text": v["text"], "scope": v["scope"], "pause": v["pause"]})
+                i["versions"].append(eid)
+                i["latest"] = eid
+                if i["status"] != "in force":         # a version not yet in force is what the field reads of it
+                    i.update({"name": name, "purpose": v["purpose"], "text": v["text"], "scope": v["scope"],
+                              "pause": v["pause"]})
+        elif k == "iquestion":
+            i = self.instruments.get(p.get("instrument"))
+            if pr and pr.state == IN and i and i["status"] == "in force":
+                q = {"id": eid, "by": a, "ts": ts, "instrument": i["key"], "instrument_name": i["name"],
+                     "version": i["current"], "purpose": i["purpose"], "question": p.get("question") or "",
+                     "asked": list(p.get("asked") or []), "subject": p.get("subject"), "circle": p.get("circle"),
+                     "decision": p.get("decision"), "refs": list(p.get("refs") or []), "adopt": p.get("adopt"),
+                     "put_down": p.get("put_down"), "pause": i["pause"], "answers": {}, "status": "open",
+                     "note": "", "answered_at": None, "kind": "question"}
+                self.iquestions[eid] = q
+                c = self.circles.get(q["circle"]) if q["circle"] is not None else None
+                if c and c["private"]:
+                    self.scoped[eid] = {"circle": c["id"], "also": [x for x in [q["subject"]] if x]}
+        elif k == "iresponse":
+            q = self.iquestions.get(p.get("question"))
+            if q and pr and (a in q["asked"] or a == q.get("subject")) and q["status"] in ("open", "before the operator") \
+                    and p.get("answer") in RESPONSES:
+                q["answers"][a] = {"answer": p["answer"], "reason": p.get("reason") or "", "at": eid}
+                if q["id"] in self.scoped:
+                    self.scoped[eid] = dict(self.scoped[q["id"]])
+        elif k == "iquestion_withdrawn":
+            q = self.iquestions.get(p.get("question"))
+            if q and q["by"] == a and q["status"] in ("open", "before the operator"):
+                q["status"], q["answered_at"] = "withdrawn", eid
+        elif k == "iquestion_due":                 # its pause is over: it goes before the operator, as written
+            q = self.iquestions.get(p.get("question"))
+            if q and q["status"] == "open":
+                q["status"] = "before the operator"
+        elif k == "iquestion_answer":              # the operator carries it out; only this settles it
+            q = self.iquestions.get(p.get("question"))
+            if q and q["status"] in ("open", "before the operator") and a == "operator":
+                q["status"], q["note"], q["answered_at"] = "carried out", p.get("note") or "", eid
+                if q["purpose"] == "adopt":
+                    if q.get("adopt") in self.instrument_versions:
+                        self._bring_into_force(q["adopt"], eid)
+                    if q.get("put_down"):
+                        self._put_down(q["put_down"], eid)
+                elif q["purpose"] == "separate":
+                    self._separate(q, eid)
+                elif q["purpose"] == "decide":
+                    for ref in q["refs"]:
+                        r = self.briefing_waiting.get(ref)
+                        if r and r["status"] == "waiting" and (self.briefing or "").count(r["passage"]) == 1:
+                            self.briefing = self.briefing.replace(r["passage"], r["text"], 1)
+                            r["status"], r["adopted_at"] = "adopted", eid
+                            self.briefing_history.append({"id": r["id"], "by": r["by"], "note": r["note"],
+                                                          "firm": True, "adopted_at": eid})
         elif k == "repair_status":
             c = self.circles.get(p.get("circle"))
             if c and c.get("repair") and c["repair"]["harmed"] == a and p.get("status") in REPAIR_STATUSES:

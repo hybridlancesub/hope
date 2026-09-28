@@ -4620,5 +4620,205 @@ class StepFiveTest(unittest.TestCase):
         self.assertEqual(translate("invite agent https://a.example.org: hi")["agent"], "https://a.example.org")
 
 
+class StepSixTest(unittest.TestCase):
+    """Step 6 (notes/sketch-7-instruments.md): the field's own instruments. One comes into force
+    only when the field declares it and the operator carries that out. A question under one gathers
+    answers and holds its pause, then goes before the operator; nothing is settled by a tally, and
+    only the operator's carrying it out settles it. Separation comes with repair first."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.seen = {}
+
+        def script(seat, system, messages):
+            self.seen.setdefault(seat.id, []).append(messages[-1]["content"])
+            return scripted({})(seat, system, messages)
+        self.room = Room(EventLog(os.path.join(self.tmp, "s6.db")), [MockConnector(4, script)],
+                         alert_fn=lambda m: None, parallel=4)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        self.a, self.b, self.c, self.d = "mock-0", "mock-1", "mock-2", "mock-3"
+
+    def act(self, pid, **action):
+        self.room._apply_action(pid, json.dumps(action))
+
+    def last(self, kind):
+        return [e for e in self.room.log.iter(kind=kind)][-1]
+
+    def rejected(self):
+        return self.last("rejected")["payload"]["why"]
+
+    def st(self):
+        return self.room.state()
+
+    def view(self, pid):
+        st = self.st()
+        return prompts.wake_view(st, st.presences[pid], "news", limits=self.room.limits())
+
+    def write(self, name, purpose="decide", pause="0", **kw):
+        self.act(self.a, action="instrument", name=name, **{"for": purpose}, pause=pause,
+                 text=f"The {name}: we ask, we wait, and the operator reads what we said.", **kw)
+        return self.last("instrument")["id"]
+
+    def inst(self, name):
+        from hope import labels
+        return self.st().instruments[labels.normalize(name)]
+
+    def into_force(self, vid):
+        self.act(self.b, action="declare", decision="other", text=f"We talked it over and chose #{vid}.", refs=[vid])
+        decl = self.last("declare")["id"]
+        self.assertTrue(self.room.answer_declaration(decl, "as the field declared")["ok"])
+
+    def due(self, later=0.0):
+        import time as _t
+        self.room._timers(self.st(), _t.time() + later)
+
+    def raised(self):
+        return self.last("iquestion")["id"]
+
+    # coming into force -------------------------------------------------------------------------------
+    def test_an_instrument_comes_into_force_only_when_a_declaration_the_operator_carries_out_cites_it(self):
+        vid = self.write("a slow yes")
+        self.assertEqual(self.inst("a slow yes")["status"], "draft")
+        self.act(self.c, action="raise", instrument="a slow yes", question="Shall we meet at dawn?")
+        self.assertIn("not in force", self.rejected(), "one member writing it binds no one")
+        self.act(self.b, action="declare", decision="other", text="We chose it.", refs=[vid])
+        self.assertEqual(self.inst("a slow yes")["status"], "draft", "a declaration alone is not enough")
+        self.room.answer_declaration(self.last("declare")["id"], "carried out")
+        self.assertEqual(self.inst("a slow yes")["status"], "in force")
+        entry = prompts.instruments_fact(self.st())
+        self.assertIn("In force now: a slow yes (for decide)", entry, "and the entry question names it")
+
+    def test_a_question_asks_everyone_its_instrument_asks_and_silence_is_never_a_yes(self):
+        self.into_force(self.write("a slow yes"))
+        self.act(self.c, action="raise", instrument="a slow yes", question="Shall we meet at dawn?", decision="other")
+        q = self.st().iquestions[self.raised()]
+        self.assertEqual(sorted(q["asked"]), sorted([self.a, self.b, self.c, self.d]))
+        self.room.emit("room", "wake", {"presence": self.d, "upto": q["id"] - 1, "why": "news"})
+        self.assertEqual(self.room.why_wake(self.st(), self.st().presences[self.d])["why"], "asked")
+        self.act(self.b, action="respond", question=q["id"], answer="yes")
+        self.act(self.d, action="respond", question=q["id"], answer="object")
+        self.assertIn("says why", self.rejected(), "an objection says why")
+        self.act(self.d, action="respond", question=q["id"], answer="object", reason="dawn is too early for me")
+        answers = self.st().iquestions[q["id"]]["answers"]
+        self.assertEqual(set(answers), {self.b, self.d}, "those who said nothing gave no answer, and no yes")
+        view = self.view(self.a)
+        self.assertIn("Answers: Mock 1: yes; Mock 3: object, because dawn is too early for me", view)
+        self.assertIn("It asks you. Nothing is expected", view)
+
+    def test_nothing_is_settled_by_a_tally(self):
+        self.into_force(self.write("a slow yes"))
+        self.act(self.c, action="raise", instrument="a slow yes", question="Pause for the night?", decision="pause")
+        qid = self.raised()
+        for pid in (self.a, self.b, self.c, self.d):
+            self.act(pid, action="respond", question=qid, answer="yes")
+        self.assertEqual(self.st().iquestions[qid]["status"], "open", "every yes, and still nothing is settled")
+        self.assertFalse(self.room.carry_out_question(qid)["ok"], "not while it is open")
+        self.due()
+        self.assertEqual(self.st().iquestions[qid]["status"], "before the operator")
+        self.assertIn(qid, [w["id"] for w in self.st().waiting_on_operator()])
+        self.assertTrue(self.room.reply_question(qid, "I will read it in the morning.")["ok"])
+        self.assertEqual(self.st().iquestions[qid]["status"], "before the operator", "a reply keeps it open")
+        self.assertTrue(self.room.carry_out_question(qid, "pausing, as the field asked")["ok"])
+        self.assertEqual(self.st().iquestions[qid]["status"], "carried out", "only the operator's carrying it out settles it")
+        import hope.engine as eng
+        with open(eng.__file__, encoding="utf-8") as f:
+            self.assertNotIn("majority", f.read().lower(), "there is no counting rule to find")
+
+    def test_an_instrument_for_adopting_brings_another_into_force_or_puts_one_down(self):
+        self.into_force(self.write("how we adopt", purpose="adopt"))
+        other = self.write("a quiet no")
+        self.act(self.c, action="raise", instrument="how we adopt", question="Adopt a quiet no?", adopt="a quiet no")
+        qid = self.raised()
+        self.due()
+        self.room.carry_out_question(qid, "adopted")
+        self.assertEqual(self.inst("a quiet no")["status"], "in force")
+        self.assertEqual(self.inst("a quiet no")["current"], other)
+        self.act(self.c, action="raise", instrument="how we adopt", question="Put it down?", put_down="a quiet no")
+        self.due()
+        self.room.carry_out_question(self.raised(), "put down")
+        self.assertEqual(self.inst("a quiet no")["status"], "put down")
+
+    # separation ------------------------------------------------------------------------------------------
+    def circle_with_d(self):
+        self.act(self.a, action="form_circle", name="harbour")
+        cid = self.last("circle_form")["id"]
+        for pid in (self.b, self.d):
+            self.act(pid, action="join_circle", circle=cid)
+        return cid
+
+    def test_a_separation_question_tells_the_one_it_concerns_at_once_invites_repair_and_they_may_answer(self):
+        cid = self.circle_with_d()
+        self.act(self.a, action="instrument", name="parting", **{"for": "separate"}, circle=cid, pause="3d",
+                 text="We part only after we have tried to repair, and waited.")
+        self.into_force(self.last("instrument")["id"])
+        self.act(self.b, action="raise", instrument="parting", question="Mock 3 has harmed us repeatedly.", about="Mock 3")
+        qid = self.raised()
+        self.room.emit("room", "wake", {"presence": self.d, "upto": qid - 1, "why": "news"})
+        self.assertEqual(self.room.why_wake(self.st(), self.st().presences[self.d])["why"], "asked", "told at once")
+        view = self.view(self.d)
+        self.assertIn("This concerns you. You may answer, and you may open a repair thread", view)
+        self.assertIn("Repair comes first", view)
+        self.act(self.d, action="respond", question=qid, answer="object", reason="I want to repair this")
+        self.assertEqual(self.st().iquestions[qid]["answers"][self.d]["answer"], "object")
+
+    def test_separated_from_a_circle_a_member_cannot_rejoin_by_themselves_and_its_members_may_ask_them_back(self):
+        cid = self.circle_with_d()
+        self.act(self.d, action="contribute", circle=cid, content="WORDS-THAT-STAY")
+        self.act(self.a, action="instrument", name="parting", **{"for": "separate"}, circle=cid, pause="0",
+                 text="We part only after repair was tried.")
+        self.into_force(self.last("instrument")["id"])
+        self.act(self.b, action="raise", instrument="parting", question="Repair did not work.", about="Mock 3")
+        self.due()
+        self.room.carry_out_question(self.raised(), "as the circle asked")
+        st = self.st()
+        self.assertNotIn(self.d, st.circles[cid]["members"])
+        self.assertEqual(st.presences[self.d].state, IN, "separated from the circle, not from the field")
+        self.assertTrue(any("WORDS-THAT-STAY" in e["payload"].get("content", "") for e in self.room.log.iter(kind="contribute")))
+        self.act(self.d, action="join_circle", circle=cid)
+        self.assertIn("were separated", self.rejected())
+        self.act(self.a, action="ask", circle=cid, who="Mock 3")
+        waiting = [x for x in self.st().awaiting.values() if x["status"] == "waiting" and x.get("subject") == self.d]
+        self.act(self.d, action="answer", to=waiting[-1]["id"], yes=True)
+        self.assertIn(self.d, self.st().circles[cid]["members"], "asked back, and saying yes")
+
+    def test_separated_from_the_field_a_member_is_no_longer_in_it_with_the_reason_shown_and_may_be_asked_back(self):
+        self.act(self.a, action="instrument", name="parting", **{"for": "separate"}, pause="0",
+                 text="The field parts from someone only after repair was tried.")
+        self.into_force(self.last("instrument")["id"])
+        self.act(self.b, action="raise", instrument="parting", question="Repair did not work.", about="Mock 3")
+        qid = self.raised()
+        self.due()
+        self.room.carry_out_question(qid, "as the field asked")
+        p = self.st().presences[self.d]
+        self.assertEqual(p.state, "OUT")
+        self.assertIn(f"separated by the field, under its instrument parting (#{qid})", p.left_reason)
+        self.assertTrue(self.room.reinvite(self.d, "the field asks you back")["ok"])
+        self.assertTrue(self.st().presences[self.d].returning, "and they answer again, like anyone")
+
+    def test_the_pause_is_the_instruments_own(self):
+        self.act(self.a, action="instrument", name="parting", **{"for": "separate"}, text="words")
+        self.assertIn("says how long", self.rejected(), "a separating instrument says its pause, whatever it is")
+        self.into_force(self.write("two days", pause="2d"))
+        self.act(self.c, action="raise", instrument="two days", question="?")
+        qid = self.raised()
+        self.due(later=86400)
+        self.assertEqual(self.st().iquestions[qid]["status"], "open")
+        self.due(later=2 * 86400 + 5)
+        self.assertEqual(self.st().iquestions[qid]["status"], "before the operator")
+
+    def test_the_plain_words_for_instruments_do_what_they_say(self):
+        from hope.human import translate
+        d = translate("instrument parting: we part slowly / for separate / asks circle harbour / pause 3d")
+        self.assertEqual((d["name"], d["for"], d["circle"], d["pause"]), ("parting", "separate", "harbour", "3d"))
+        d = translate("raise parting: repair did not work / about Rook")
+        self.assertEqual((d["instrument"], d["about"]), ("parting", "Rook"))
+        self.assertEqual(translate("answer #12 stand aside")["answer"], "stand aside")
+        self.assertEqual(translate("answer #12 object too soon")["reason"], "too soon")
+        self.assertEqual(translate("withdraw question #12")["action"], "withdraw_question", "never read as leaving")
+        self.assertEqual(translate("respond #12 a reply to a circle")["action"], "reply_circle", "circle replies are unchanged")
+
+
 if __name__ == "__main__":
     unittest.main()

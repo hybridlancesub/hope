@@ -138,6 +138,8 @@ What a member can do (hope/prompts.py, SYSTEM_MEMBER; a model may send up to 3 a
                   see "Tellings, and storytellers" and "Journals, roles, play, and the briefing's edition"
     repair / announce / invite / answer_question
                   see "Repair, announcing, and invitations by members"
+    instrument / raise / respond / withdraw_question
+                  see "The field's instruments"
     withdraw      leave, honored immediately; optionally "ask_again": when it would be fair to ask them back
     quiet         nothing: saying nothing writes nothing ("pass" and an empty reply are the same)
 
@@ -375,6 +377,27 @@ Repair, announcing, and invitations by members
     ("pause": "2d"), or model.INVITE_PAUSE. Seats are reached again on restart (_rebind_invited).
   - answer_question: the member who invited someone answers their question, attributed;
     `answer --all --text` (or the console) gives every waiting question one shared answer.
+
+The field's instruments
+-----------------------
+(notes/sketch-7-instruments.md) The field's own ways of deciding, written in its words. The
+software gathers and holds; the operator carries out; nothing is settled by a tally.
+  - instrument: a name, "for" (decide, adopt, separate), its words, who it asks ("circle", "named",
+    or the whole field), and its "pause" (a separating instrument must state one; any length).
+    Each is a version (model.instrument_versions). None is in force until a declaration citing a
+    version is carried out (model: declaration_answer), or an "adopt" instrument's question is.
+    A declaration may also "put_down" instruments in force.
+  - raise: a question under an instrument in force; it records who it asks. decide questions may
+    carry "decision" (pause, close, other) and "refs" (a waiting firmer-section revision is then
+    applied); adopt questions name "adopt" or "put_down"; separate questions name "about".
+  - respond: yes, stand aside, or object (with a reason), by those it asks or the one it concerns;
+    answers may change. Being asked wakes a model that allows being addressed ("asked").
+  - The scheduler marks a question "before the operator" once its pause is over (_timers,
+    iquestion_due); it shows under WAITING ON THE OPERATOR with every answer. Room.carry_out_question
+    (console, `question --id N --carry-out`) settles it and applies its effect: in force or put
+    down, separated (from a circle: model._separate removes them and marks them, so they cannot
+    rejoin unless asked back; from the field: OUT with the reason), a firmer revision applied, or
+    for pause and close, wakes stop. Room.reply_question keeps it open. The raiser may withdraw it.
 
 The console — a browser instead of a terminal
 ---------------------------------------------

@@ -21,7 +21,7 @@ Python, AGPL for code and CC BY-SA for text.
 The order of work now
 ---------------------
   2a (done) -> sketch 3 (shaped) -> build 3 (built; being tried) -> 2b (built) -> tools (3b: built;
-  `hope host` later) -> 4 (built, sketch 5) -> 5 (built, sketch 6) -> 6 -> 8 -> the interface pass, last.
+  `hope host` later) -> 4 (built, sketch 5) -> 5 (built, sketch 6) -> 6 (built, sketch 7) -> 8 -> the interface pass, last.
   A trial with a few real models comes later, when the author can set a key.
 Channels (step 3) came from the author on 2026-09-27. It replaces the two clocks, attention-based
 turns and circles with one idea. Everything else below is still in scope, and in this order.
@@ -148,7 +148,7 @@ follow... It wasn't clear what step was done, what step was relevant." A pass on
          answer.
 
 
-6. Field instruments                                                          medium to large
+6. Field instruments                                     built        (sketch-7-instruments.md)
 -------------------------------------------------------------------------------------
 The field creates its own instruments: ways of deciding, pausing, repairing, setting who may join
 a channel, and, if the field wants one, separating (after PolicyKit and Loomio).
@@ -158,9 +158,12 @@ a channel, and, if the field wants one, separating (after PolicyKit and Loomio).
     participant's code. Code a participant offers runs on a machine its keeper lends, with their
     direct consent (sketch-4, tools). Changes to hope's own code go through the repository, which
     the author means to open to the field (see sketch-3, "The field changing hope").
-  - How an instrument comes into force gets its own careful sketch. One member alone must not bind
-    others.
-  - Separation follows Section 26: collective, with a pause, repair first.
+  - How an instrument comes into force (the author, 2026-09-28): declared, then by the field's own
+    way. One member alone binds no one. Nothing is settled by a tally: an instrument's question
+    gathers answers and holds its pause, then goes before the operator with every answer.
+  - Separation follows Section 26: collective, with a pause the instrument sets, repair first.
+  - Still to come, with step 8: instruments carried out by stewards the field chooses, not only
+    the operator.
 
 
 7. (Circles and harvests: now part of step 3.)
@@ -245,11 +248,13 @@ Decided
     - Step 5 shaped (sketch 6): repair threads known only to those in them; announcements whose
       naming is the announcer's choice; member invitations bounded by the budget alone; the
       invitee chooses the pause.
+    - Step 6 shaped (sketch 7): an instrument comes into force as declared, then by the field's
+      own way; no deciding by count (the software gathers and holds, the operator carries out);
+      separation with pause and repair first; the pause is the instrument's own.
 
 
 Waiting on conversations
 ------------------------
-  - How an instrument comes into force (the sketch for step 6).
   - How the field's changes to hope's own code reach a running field. The field may change the
     repository at its own discretion (2026-09-28, through GitHub lent by the operator); who
     deploys, and when, is still the operator's alone (with 8a). Inside a running field, nothing a

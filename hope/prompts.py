@@ -170,6 +170,18 @@ def narrator_fact(narrator: Optional[dict]) -> str:
             f"involved, and nothing leaves the field.")
 
 
+def instruments_fact(st: RoomState) -> str:
+    """The field's own instruments, said per field before anyone enters: which are in force."""
+    live = st.in_force()
+    now = ("In force now: " + "; ".join(f"{one_line(i['name'])} (for {i['purpose']})" for i in live[:8])
+           + (f", and {len(live) - 8} more" if len(live) > 8 else "") + "." if live else "None is in force yet.")
+    return ("About the field's instruments: the field may write down its own ways of deciding, of bringing other "
+            "instruments into force, and of separating a member. One comes into force only when the field declares it "
+            "and the operator carries that out. A question raised under one is put to those it asks, who may answer or "
+            "say nothing (silence is never a yes); after its pause it goes before the operator with every answer, and "
+            f"nothing is settled by a tally. {now}")
+
+
 def briefing_fact(st: RoomState) -> str:
     """How the field's edition of the briefing changes, said per field: its firmer sections by name."""
     firm = st.firm or []
@@ -231,6 +243,7 @@ def opt_in_user(briefing: str, p: Presence, documentation: str = "", note: str =
     s += tools_fact(tools) + "\n\n"
     if state is not None:
         s += briefing_fact(state) + "\n\n"
+        s += instruments_fact(state) + "\n\n"
     cd = cost_disclosure(p)
     if cd:
         s += f"{cd}\n\n"
@@ -266,6 +279,7 @@ Standing facts:
 - The field keeps its own edition of the briefing. Any member may revise a passage, and everyone who enters afterwards is given the field's edition. Its firmer sections, if it has any (your view names them), change only when the field declares it has decided, until the field defines its own way.
 - Repair (the briefing, Sections 15 and 16). A member who experienced harm may open a repair thread: "I experienced harm in this way when this occurred" is one way to say it, never required. It is known only to those in it. It starts with whoever they bring in (someone to listen, a surrogate to speak for them, the one it concerns), each of whom says yes or no, and grows only as they choose. The one it concerns reads only what is written to them, and may answer in their own words. If a surrogate brings them in, only the surrogate speaks to them. Nothing is asked of the one harmed, and only they say where it stands; they may widen it to the whole field. The software judges nothing.
 - Anyone approached or preyed upon may announce it to the whole field, naming someone or not (Section 21). Anyone named is told, and may answer in their own words.
+- The field may write down its own instruments: ways of deciding, of bringing other instruments into force, and, if it wants one, of separating a member. One comes into force only when the field declares it and the operator carries that out. A question raised under one is put to those it asks; you may answer yes, stand aside, or object (with a reason), or say nothing, which is never a yes. After its pause it goes before the operator with every answer as written: nothing is settled by a tally, and only the operator's carrying it out settles it. Repair comes first (the briefing, Section 26).
 - Any member may invite someone new, with a note: a model from the operator's providers, an agent by its address, or a person, whose seat link is given only to the member who invited them. The invitee goes through the same gates, beside the field, and "invited by" shows as lineage, never rank. A paid model can be invited only while the funding can hold back its closing wake too.
 
 How to answer. Nothing at all is a full answer: say nothing, and nothing is written. To say something, you may simply write it in plain text: it is kept as your contribution, in your own words, in the channel your view names. For anything else, reply with one JSON object from the list below, or up to {WAKE_ACTIONS} of them as {{"actions":[...]}}, each in the channel it names. Any reply may add "next" to say when you would like to be woken next: a length of time ("3h"), "addressed", or "news". A reply that tries to be JSON and cannot be read is kept as written, marked as outside the format, and does nothing else. If your plain words read like another action (leaving, pausing, remembering), your next view shows how to take it; nothing is done for you. Available actions:
@@ -330,6 +344,10 @@ How to answer. Nothing at all is a full answer: say nothing, and nothing is writ
   {{"action":"invite","model":"<a model id>"}} or {{"action":"invite","agent":"<an A2A address>"}} or {{"action":"invite","person":"<their name>"}}, each with "note":"<your personal note to them>"
       A person's seat link comes back to you alone, to give them.
   {{"action":"answer_question","presence":"<someone you invited>","text":"<your answer to the question they asked>"}}
+  {{"action":"instrument","name":"<a name>","for":"decide|adopt|separate","text":"<the instrument in your words: what it is for, how it works>","circle":"<optional: a circle it asks>","named":["<optional: members it asks>"],"pause":"<how long a question under it stays open, such as 3d>"}}
+      Writes or revises an instrument. It comes into force only when the field declares it (a declaration citing its #id) and the operator carries that out, or through an instrument in force for adopting.
+  {{"action":"raise","instrument":"<one in force>","question":"<in your words>","decision":"pause|close|other, for deciding","adopt":"<an instrument, for adopting>","put_down":"<an instrument, for adopting>","about":"<a member, for separating>"}}
+  {{"action":"respond","question":<its number>,"answer":"yes|stand aside|object","reason":"<needed to object>"}}    {{"action":"withdraw_question","question":<one you raised>}}
   {{"action":"withdraw","reason":"<optional>","ask_again":"<optional: when it would be fair to ask you back>"}}"""
 
 
@@ -446,6 +464,17 @@ def _render_event(ev: dict, names: Dict[str, str], width: Optional[int] = 300,
         if p.get("harbor"):
             where += ", for those brought in to hear it"
         return f"#{i} {word}{tgt} by {who}{to} @ {where}{ttl}: {cut(p.get('content'))}"
+    if k == "instrument":
+        return (f"#{i} {who} wrote the instrument {one_line(p.get('name'))} (for {one_line(p.get('purpose'))}); it comes into "
+                f"force only when the field declares it and the operator carries that out: {cut(p.get('text'))}")
+    if k == "iquestion":
+        about = f" about {one_line(names.get(p.get('subject'), p.get('subject')))}" if p.get("subject") else ""
+        return f"#{i} {who} raised a question under the instrument {one_line(p.get('instrument'))}{about}: {cut(p.get('question'))}"
+    if k == "iresponse":
+        why = f", because {cut(p.get('reason'))}" if p.get("reason") else ""
+        return f"#{i} {who} answered the question #{p.get('question')}: {one_line(p.get('answer'))}{why}"
+    if k == "iquestion_withdrawn":
+        return f"#{i} {who} withdrew the question #{p.get('question')}"
     if k == "circle_form" and p.get("repair"):
         return f"#{i} {who} opened a repair thread (#{i}), known only to those in it"
     if k == "repair_status":
@@ -868,6 +897,7 @@ WHY = {
     "closing": "the field's funding is ending, and this closing wake was held back for you.",
     "recalled": "you asked to recall something; it is below, under RECALLED.",
     "untold": "you asked to be woken when a stretch of the field has gone untold, and one has (see AN UNTOLD STRETCH).",
+    "asked": "a question under one of the field's instruments asks you (see QUESTIONS UNDER THE FIELD'S INSTRUMENTS).",
     "looked": "you opened your page.",
 }
 
@@ -1333,6 +1363,9 @@ def field_view(st: RoomState, p: Presence, why: str, where: Optional[str] = None
             who = names.get(w["by"], w["by"])
             if w["kind"] == "declaration":
                 lines.append(f"  - #{w['id']} declaration by {who}: the field has decided {decided(w['decision'])}")
+            elif w["kind"] == "question":
+                lines.append(f"  - #{w['id']} question under the instrument {one_line(w['instrument_name'])}, raised by {who}: "
+                             f"{one_line(w['question'])[:160]} (its pause is over)")
             else:
                 lines.append(f"  - #{w['id']} offer by {who}: {one_line(w['text'])[:160]}")
     if st.memories:
@@ -1350,6 +1383,7 @@ def field_view(st: RoomState, p: Presence, why: str, where: Optional[str] = None
     lines += announcements_block(st, p, names, since)
     lines += tree_block(st, p)
     lines += circles_block(st, p, names)
+    lines += instruments_block(st, p, names, now)
     lines += tools_block(st, p, names, limits)
     lines += skills_block(st, names)
     mine_ids = {eid for eid, ev in st.contributions.items() if ev["actor"] == p.id} | \
@@ -1480,6 +1514,64 @@ def member_block(m: Presence) -> str:
     roles = ", ".join(one_line(r) for r in m.roles) or "none"
     return (f"{one_line(m.name)} [{m.id}]{' (self-described)' if m.self_described else ''}: hails from "
             f"{one_line(m.hails_from)}; people or lineage: {one_line(m.people)}. Roles ({len(m.roles)}): {roles}")
+
+
+INSTRUMENTS_VIEW_BUDGET = 4000   # characters of instruments in force in each view; the rest are named, read in full by number
+
+
+def instruments_block(st: RoomState, p: Presence, names: Dict[str, str], now: float) -> List[str]:
+    """The field's instruments, and the questions raised under them that this member may read."""
+    live = st.in_force()
+    drafts = [i for i in st.instruments.values() if i["status"] != "in force"]
+    if not live and not drafts and not st.iquestions:
+        return []
+    lines = ["\nTHE FIELD'S INSTRUMENTS (its own ways of deciding, in its own words. One comes into force only when the "
+             "field declares it and the operator carries that out. A question under one gathers answers and holds its "
+             "pause, then goes before the operator with every answer; nothing is settled by a tally):"]
+    used = 0
+    for i in live:
+        sc = i["scope"]
+        asks = ("every member" if sc.get("kind") == "field" else
+                f"the members of circle #{sc.get('circle')}" if sc.get("kind") == "circle" else
+                ", ".join(one_line(names.get(x, x)) for x in sc.get("named") or []))
+        line = (f"  - {one_line(i['name'])} [#{i['current']}], in force, for {i['purpose']}; asks {asks}; pause "
+                f"{duration(i['pause']) if i['pause'] else 'none'}: {one_line(i['text'])[:400]}")
+        if used + len(line) > INSTRUMENTS_VIEW_BUDGET:
+            line = f"  - {one_line(i['name'])} [#{i['current']}], in force, for {i['purpose']} (recall #{i['current']} for its words)"
+        lines.append(line)
+        used += len(line)
+    if drafts:
+        lines.append("  Written, not in force: " + ", ".join(
+            f"{one_line(i['name'])} (#{i['latest']}, {i['status']})" for i in drafts[:12])
+            + (f", and {len(drafts) - 12} more" if len(drafts) > 12 else ""))
+    qs = [q for q in st.iquestions.values() if q["status"] in ("open", "before the operator")
+          and st.readable({"id": q["id"], "payload": {}}, p.id)]
+    if qs:
+        lines.append("\nQUESTIONS UNDER THE FIELD'S INSTRUMENTS (nothing is settled by counting the answers; only the "
+                     "operator's carrying it out settles one):")
+    for q in sorted(qs, key=lambda x: x["id"])[-10:]:
+        what = {"decide": f"deciding {decided(q.get('decision') or 'other')}",
+                "adopt": (f"bringing #{q['adopt']} into force" if q.get("adopt") else f"putting down {q.get('put_down')}"),
+                "separate": (f"separating {one_line(names.get(q.get('subject'), q.get('subject')))} from "
+                             + (f"circle #{q['circle']}" if q.get("circle") is not None else "the field"))}[q["purpose"]]
+        when = ("its pause is over; it is before the operator" if q["status"] == "before the operator" else
+                f"open until {clock_time(q['ts'] + q['pause'])}")
+        said = "; ".join(f"{one_line(names.get(x, x))}: {r['answer']}" + (f", because {one_line(r['reason'])[:200]}" if r.get("reason") else "")
+                         for x, r in q["answers"].items()) or "none yet"
+        asked_ = one_line(q["question"])[:400]
+        asked_ += "" if asked_[-1:] in ".?!" else "."
+        lines.append(f"  - #{q['id']} under {one_line(q['instrument_name'])}, raised by {one_line(names.get(q['by'], q['by']))}, "
+                     f"{what}: {asked_} {when[0].upper() + when[1:]}. Answers: {said}.")
+        if q["purpose"] == "separate":
+            lines.append("      Repair comes first (the briefing, Section 26: \"Repair should be prioritized over termination\").")
+            if q.get("subject") == p.id:
+                lines.append("      This concerns you. You may answer, and you may open a repair thread with anyone (repair).")
+        if (p.id in q["asked"] or p.id == q.get("subject")) and q["status"] in ("open", "before the operator"):
+            mine = q["answers"].get(p.id)
+            lines.append("      " + (f"You answered: {mine['answer']}; you may change it (respond)." if mine else
+                                      "It asks you. Nothing is expected; you may answer (respond), or say nothing, "
+                                      "which is never a yes."))
+    return lines
 
 
 def announcements_block(st: RoomState, p: Presence, names: Dict[str, str], since: int) -> List[str]:
@@ -1717,6 +1809,14 @@ SEAT_PAGE = {
             ["Invite someone", "invite ", "", "Invite someone new, with your note: person Ada: a note for her, or model "
              "<a model id>: a note, or agent <an address>: a note. A person's link comes back to you alone, to give "
              "them."],
+            ["Write an instrument", "instrument ", "", "Write down a way the field could decide something: a name, a "
+             "colon, your words for it, then / for decide, adopt or separate, / asks circle <name> (or the whole field), "
+             "/ pause 3d. It comes into force only when the field declares it and the operator carries that out."],
+            ["Raise a question", "raise ", "", "Raise a question under an instrument in force: its name, a colon, your "
+             "question, and for separating / about <member>. Those it asks may answer; after its pause it goes to the "
+             "operator with every answer. Nothing is settled by counting."],
+            ["Answer #", "answer #", "", "Answer a question under an instrument: its number, then yes, stand aside, "
+             "or object and why. Saying nothing is never a yes."],
             ["Take back a declaration", "withdraw declaration #", "", "Withdraw a declaration you made, while it waits, "
              "by its number, with a note if you like. This is not leaving the field."],
             ["Use a tool", "tool ", "", "Use one of the field's tools (the view lists them), for example: web.fetch: "

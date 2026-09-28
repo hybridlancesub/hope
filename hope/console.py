@@ -330,6 +330,18 @@ class Console:
                 self._say(f"you removed the tool server {payload.get('server')!r}; the field is told, with your note")
             return out
 
+        if action == "question":
+            # A question under one of the field's instruments, once its pause is over: carry it out, or reply.
+            qid, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
+            if outcome == "reply":
+                return self.room.reply_question(qid, payload.get("note") or "")
+            if outcome != "carry_out":
+                return {"ok": False, "error": "outcome must be carry_out or reply"}
+            out = self.room.carry_out_question(qid, payload.get("note") or "")
+            if out.get("ok"):
+                self._say(f"question #{qid}: carried out")
+            return out
+
         if action == "answer_many":
             # Many waiting invitation questions answered at once, labelled so: a shared answer.
             return self.room.answer_many(payload.get("text") or "", payload.get("presences"))

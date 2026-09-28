@@ -461,8 +461,32 @@ function renderCovenant(s){
 /* ---------- what members have put before the operator ---------- */
 function waitingItems(s){
   return [...(s.declarations||[]).filter(d => d.status === "waiting").map(d => ({...d, kind:"declaration"})),
-          ...(s.offers||[]).filter(o => o.status === "waiting").map(o => ({...o, kind:"offer"}))]
+          ...(s.offers||[]).filter(o => o.status === "waiting").map(o => ({...o, kind:"offer"})),
+          ...(s.instrument_questions||[]).filter(q => q.status === "before the operator").map(q => ({...q, kind:"question"}))]
          .sort((a,b) => a.id - b.id);
+}
+function questionItem(w){
+  const what = w.purpose === "separate" ? `separating ${esc(w.subject || "")}${w.circle != null ? " from circle #" + w.circle : " from the field"}`
+             : w.purpose === "adopt" ? (w.adopt ? `bringing #${w.adopt} into force` : `putting down ${esc(w.put_down || "")}`)
+             : `deciding ${esc(w.decision || "other")}`;
+  const answers = (w.answers||[]).map(a => `${esc(a.who)}: ${esc(a.answer)}${a.reason ? " (" + esc(a.reason) + ")" : ""}`).join("<br>")
+                  || "No one answered.";
+  return `<div class="wait"><b style="font-weight:400">#${w.id} · a question under the field's instrument ${esc(w.instrument_name)}, raised by ${esc(w.who)}: ${what}</b>
+     <div class="what">${esc(w.question)}</div>
+     <div class="muted" style="margin:.4rem 0">Every answer, as written (the software counts nothing; read them against the instrument's own words):</div>
+     <div class="what">${answers}</div>
+     <textarea id="qnote-${w.id}" placeholder="A note for the field: what you are carrying out, or what the answers do not yet show."></textarea>
+     <div class="row">
+       <button class="b go" data-tip="Carry it out, as the instrument says. The field is told, with your note. For separating, the member is separated; for adopting, the instrument comes into force or is put down; to pause or close, wakes stop." onclick="answerQuestion(${w.id},'carry_out')">Carry it out</button>
+       <button class="b" data-tip="Reply in the field without carrying it out yet; it stays open. A reply needs words." onclick="answerQuestion(${w.id},'reply')">Reply</button>
+     </div></div>`;
+}
+async function answerQuestion(id, outcome){
+  const note = ($("qnote-" + id) || {}).value || "";
+  if (outcome === "carry_out" && !confirm("Carry out question #" + id + " now? The field is told.")) return;
+  const {data} = await api("/op/question", {id, outcome, note});
+  flash(data.ok ? (outcome === "reply" ? "Your reply is shown; it stays open." : "Carried out. The field is told.") : (data.error||"not recorded"), !!data.ok);
+  refresh();
 }
 function entryText(s, id){
   const c = (s.contributions||[]).find(x => x.id === id);
@@ -477,7 +501,7 @@ function entryText(s, id){
 }
 function renderWaiting(s){
   const items = waitingItems(s);
-  $("waitlist").innerHTML = items.map(w => w.kind === "declaration"
+  $("waitlist").innerHTML = items.map(w => w.kind === "question" ? questionItem(w) : w.kind === "declaration"
     ? `<div class="wait"><b style="font-weight:400">#${w.id} · ${esc(w.who)} declares the field has decided ${esc(w.decided || w.decision)}</b>
          <div class="what">${esc(w.text)}</div>
          <div class="row"><button class="b" onclick="showDecl(${w.id})">Read it and answer…</button></div></div>`

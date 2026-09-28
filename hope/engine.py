@@ -47,6 +47,7 @@ from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CONTRIBUTION_
 from .model import FLOOR, PRIVACY_EVERY, QUIET_HOURS, WAKE_ACTIONS, TOOL_ENTRY_KINDS
 from .model import FIRM_DEFAULT, PLAY_WORDS, ROLE_LENGTH, firm_ranges, touches_firm
 from .model import INVITE_PAUSE, REPAIR_STATUSES
+from .model import INSTRUMENT_PURPOSES, RESPONSES
 
 OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
@@ -64,6 +65,8 @@ PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall",
                        "journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
                        # step 5 (notes/sketch-6-repair-and-invitations.md)
                        "repair", "announce", "invite", "answer_question",
+                       # step 6 (notes/sketch-7-instruments.md)
+                       "instrument", "raise", "respond", "withdraw_question",
                        # earlier versions' words, still understood so an old client does not break:
                        "affirm", "challenge", "note", "move"}
 RECALL_SOURCES = ("briefing", "original", "transcript", "memory", "covenant", "prior")
@@ -311,10 +314,15 @@ class Room:
         if d["status"] != "waiting":
             return {"ok": False, "error": f"declaration #{decl_id} has already been answered"}
         note = (note or "").strip()[:1000]
+        st = self.state()
+        brings = [st.instrument_versions[r]["name"] for r in d["refs"] if r in st.instrument_versions]
+        downs = [st.instruments[k]["name"] for k in d.get("put_down") or [] if k in st.instruments]
         self.emit(OPERATOR, "declaration_answer", {"declaration": decl_id, "outcome": "carried_out", "note": note})
         self.emit(OPERATOR, "operator_note", {"content":
             f"The field declared at #{decl_id} that it has decided {decided(d['decision'])}. The operator is carrying that out"
-            + (f": {note}" if note else ".")})
+            + ((f": {note}" + ("" if note[-1:] in ".?!" else ".")) if note else ".")
+            + (f" This brings into force the field's instrument{'s' if len(brings) > 1 else ''} {', '.join(brings)}." if brings else "")
+            + (f" This puts down {', '.join(downs)}." if downs else "")})
         if d["decision"] == "close":
             self.emit(OPERATOR, "room_closed", {"declaration": decl_id})
         if d["decision"] in ("pause", "close"):
@@ -680,6 +688,11 @@ class Room:
                     and p.id in st.circle_needs(x) and p.id not in x["yes"] and p.id not in x["no"]]
             if asks:
                 return {"why": "awaiting", "where": f"c:{asks[-1]['circle']}"}
+        if p.wake.get("addressed", True):
+            asked = [q for q in st.iquestions.values() if q["status"] == "open" and q["id"] > p.last_seen
+                     and (p.id in q["asked"] or p.id == q.get("subject")) and p.id not in q["answers"]]
+            if asked:
+                return {"why": "asked", "where": None}
         hit = [ev for ev in news if st.follows(p, ev)]
         if hit:
             return {"why": "news", "where": st.channel_key(hit[-1])}
@@ -1159,7 +1172,13 @@ class Room:
             if len(body) > STATEMENT_LIMIT:
                 return reject(f"a declaration holds at most {STATEMENT_LIMIT} characters; this one has {len(body)}. Nothing was sent.")
             refs = [i for i in (_int(x) for x in (act.get("refs") or [])) if i is not None][:20]
-            ev = self.emit(pid, "declare", {"decision": decision, "text": body, "refs": refs})
+            down = [labels.normalize(x) for x in _as_list(act.get("put_down"))]
+            st_ = self.state()
+            unknown = [x for x in down if x not in st_.instruments or st_.instruments[x]["status"] != "in force"]
+            if unknown:
+                return reject(f"there is no instrument in force called {', '.join(unknown)} to put down")
+            ev = self.emit(pid, "declare", {"decision": decision, "text": body, "refs": refs,
+                                            **({"put_down": down} if down else {})})
             who = self.state().presences.get(pid)
             self.alert(f"DECLARATION #{ev['id']}: {who.name if who else pid} says the field has decided {decided(decision)}. "
                        f"Answer it in the console, or with the `declaration` command.")
@@ -1324,6 +1343,9 @@ class Room:
             if a == "join_circle":
                 if member:
                     return f"you are already in {c['name']!r}"
+                if pid in c.get("separated", {}):
+                    return (f"you were separated from {c['name']!r} (#{c['separated'][pid]}); its members may ask you back, "
+                            f"and you would answer then")
                 if c["private"]:
                     return f"{c['name']!r} is private: knock to ask its members to let you in"
                 self.emit(pid, "circle_join", {"circle": c["id"]})
@@ -1696,6 +1718,8 @@ class Room:
             if ev["id"] in self.state().briefing_waiting:
                 self.alert(f"REVISION #{ev['id']}: {names.get(pid, pid)} proposes a change to a firmer section of the "
                            f"briefing; it waits until the field declares it has decided (a declaration citing #{ev['id']}).")
+        elif a in ("instrument", "raise", "respond", "withdraw_question"):
+            return self._instrument_action(st, pid, a, act)
         elif a == "repair":
             return self._repair(st, pid, act)
         elif a == "announce":
@@ -1732,6 +1756,167 @@ class Room:
                 return f"#{d['id']} is no longer waiting ({d['status'].replace('_', ' ')})"
             self.emit(pid, "declaration_withdrawn", {"declaration": d["id"], "note": _clean(act.get("note"), 600)})
         return None
+
+    # -- the field's instruments (notes/sketch-7-instruments.md) ------------------------------------------
+    def _instrument_action(self, st: RoomState, pid: str, a: str, act: dict) -> Optional[str]:
+        """Write an instrument, raise a question under one in force, answer one, or withdraw one you
+        raised. Nothing here settles anything: a question gathers answers and holds its pause, then
+        goes before the operator, who carries it out or replies."""
+        names = prompts.names_of(st)
+        if a == "instrument":
+            name = _label(act.get("name"), 80)
+            if not name:
+                return "an instrument needs a name, as \"name\""
+            purpose = _clean(act.get("purpose", act.get("for")), 20).lower() or "decide"
+            if purpose not in INSTRUMENT_PURPOSES:
+                return f"an instrument is for one of: {', '.join(INSTRUMENT_PURPOSES)} (what the operator can carry out)"
+            text = str(act.get("text") or "").strip()
+            if not text:
+                return "an instrument needs its words, as \"text\": what it is for, and how the field means it to work"
+            if len(text) > INSTRUMENT_TEXT_LIMIT:
+                return f"an instrument holds at most {INSTRUMENT_TEXT_LIMIT} characters; this one has {len(text)}"
+            if act.get("circle") not in (None, ""):
+                c, why = _circle_ref(st, act["circle"], pid)
+                if c is None:
+                    return why
+                scope = {"kind": "circle", "circle": c["id"]}
+            elif act.get("named") not in (None, "", []):
+                who, unknown = _presences_ref(st, act["named"])
+                if unknown or not who:
+                    return f"no member named {', '.join(unknown) or 'anyone'}"
+                if purpose == "separate":
+                    return "an instrument for separating asks a whole circle, or the whole field: the Atlas asks that it happen 'with the collective'"
+                scope = {"kind": "named", "named": who}
+            else:
+                scope = {"kind": "field"}
+            pause = act.get("pause")
+            secs = _seconds(pause) if pause not in (None, "") else None
+            if pause not in (None, "") and secs is None:
+                return "\"pause\" is a length of time, such as 3d, 12h or 0"
+            if purpose == "separate" and secs is None:
+                return ("an instrument for separating says how long a question under it stays open before it goes to "
+                        "the operator, as \"pause\" (it may be any length; the Atlas: 'Termination must never be hasty')")
+            ev = self.emit(pid, "instrument", {"name": name, "purpose": purpose, "text": text, "scope": scope,
+                                               "pause_seconds": float(secs or 0.0), "note": _clean(act.get("note"), 600)})
+            self.alert(f"INSTRUMENT #{ev['id']}: {names.get(pid, pid)} wrote the instrument {name!r} ({purpose}). It comes "
+                       f"into force only when the field declares it and you carry that out (a declaration citing #{ev['id']}).")
+            return None
+        if a == "raise":
+            i = st.instruments.get(labels.normalize(str(act.get("instrument") or "")))
+            if not i:
+                return "there is no instrument by that name; your view lists the field's instruments"
+            if i["status"] != "in force":
+                return (f"{i['name']!r} is not in force; an instrument comes into force when the field declares it and "
+                        f"the operator carries that out")
+            question = _clean(act.get("question", act.get("text")), 2000)
+            if not question:
+                return "a question needs words, as \"question\""
+            sc = i["scope"]
+            if sc.get("kind") == "circle":
+                c = st.circles.get(sc.get("circle"))
+                if not c or c["dispersed_at"] is not None:
+                    return "the circle this instrument asks has dispersed"
+                if pid not in c["members"]:
+                    return f"only members of {c['name']!r} raise questions under its instrument"
+                asked = list(c["members"])
+            elif sc.get("kind") == "named":
+                asked = [x for x in sc.get("named") or [] if x in st.presences and st.presences[x].state == IN]
+            else:
+                asked = [m.id for m in st.members()]
+            payload = {"instrument": i["key"], "question": question, "asked": asked}
+            if i["purpose"] == "decide":
+                decision = _clean(act.get("decision"), 20).lower() or "other"
+                if decision not in DECISIONS:
+                    return f"a decision is one of: {', '.join(DECISIONS)}"
+                payload["decision"] = decision
+                payload["refs"] = [x for x in (_int(r) for r in _as_list(act.get("refs"))) if x is not None][:20]
+            elif i["purpose"] == "adopt":
+                if act.get("adopt") not in (None, ""):
+                    other = st.instruments.get(labels.normalize(str(act["adopt"])))
+                    if not other:
+                        return "there is no instrument by that name to bring into force"
+                    payload["adopt"] = other["latest"]
+                elif act.get("put_down") not in (None, ""):
+                    key = labels.normalize(str(act["put_down"]))
+                    if key not in st.instruments or st.instruments[key]["status"] != "in force":
+                        return "there is no instrument in force by that name to put down"
+                    payload["put_down"] = key
+                else:
+                    return "a question under an instrument for adopting names one to bring into force (\"adopt\") or to put down (\"put_down\")"
+            else:
+                subject, unknown = _presences_ref(st, act.get("about", act.get("subject")))
+                if not subject:
+                    return "a question about separating names the member it concerns, as \"about\""
+                if subject[0] == pid:
+                    return "to leave, withdraw; a question about separating concerns someone else"
+                if sc.get("kind") == "circle":
+                    if subject[0] not in st.circles[sc["circle"]]["members"]:
+                        return "they are not in that circle"
+                    payload["circle"] = sc["circle"]
+                payload["subject"] = subject[0]
+            ev = self.emit(pid, "iquestion", payload)
+            if i["purpose"] == "separate":
+                self.alert(f"QUESTION #{ev['id']}: under {i['name']!r}, {names.get(pid, pid)} raises separating "
+                           f"{names.get(payload['subject'], payload['subject'])}. It comes before you after its pause.")
+            return None
+        qid = _int(str(act.get("question", act.get("to", act.get("id"))) or "").lstrip("#"))
+        q = st.iquestions.get(qid or -1)
+        if not q or not st.readable({"id": q["id"], "payload": {}}, pid):
+            return "there is no question under an instrument with that number"
+        if q["status"] not in ("open", "before the operator"):
+            return f"#{q['id']} is no longer open ({q['status']})"
+        if a == "withdraw_question":
+            if q["by"] != pid:
+                return "only the member who raised a question withdraws it"
+            self.emit(pid, "iquestion_withdrawn", {"question": q["id"], "note": _clean(act.get("note"), 600)})
+            return None
+        if pid not in q["asked"] and pid != q.get("subject"):
+            return f"#{q['id']} does not ask you"
+        answer = " ".join(str(act.get("answer") or "").lower().replace("-", " ").split())
+        answer = {"agree": "yes", "abstain": "stand aside", "aside": "stand aside", "objection": "object",
+                  "no": "object"}.get(answer, answer)
+        if answer not in RESPONSES:
+            return "answer with \"yes\", \"stand aside\", or \"object\" (with a \"reason\")"
+        reason = _clean(act.get("reason"), REASON_LIMIT)
+        if answer == "object" and not reason:
+            return "an objection says why, as \"reason\""
+        self.emit(pid, "iresponse", {"question": q["id"], "answer": answer, "reason": reason})
+        return None
+
+    def carry_out_question(self, qid: int, note: str = "") -> Dict[str, Any]:
+        """The operator carries out a question under an instrument, once its pause is over, having read
+        its answers against the instrument's words. Only this settles it."""
+        st = self.state()
+        q = st.iquestions.get(qid)
+        if not q:
+            return {"ok": False, "error": f"no question #{qid} under an instrument"}
+        if q["status"] == "open":
+            return {"ok": False, "error": f"#{qid} is still in its pause; it comes before you when that is over"}
+        if q["status"] != "before the operator":
+            return {"ok": False, "error": f"#{qid} is {q['status']}"}
+        note = (note or "").strip()[:1000]
+        self.emit(OPERATOR, "iquestion_answer", {"question": qid, "outcome": "carried_out", "note": note})
+        self.emit(OPERATOR, "operator_note", {"content":
+            f"The question at #{qid}, under the field's instrument {q['instrument_name']}, is being carried out by the "
+            f"operator" + (f": {note}" if note else ".")})
+        if q["purpose"] == "decide" and q.get("decision") == "close":
+            self.emit(OPERATOR, "room_closed", {"question": qid})
+        if q["purpose"] == "decide" and q.get("decision") in ("pause", "close"):
+            self.request_stop()
+        return {"ok": True}
+
+    def reply_question(self, qid: int, note: str) -> Dict[str, Any]:
+        """Reply to a question before the operator without carrying it out yet: it stays open."""
+        st = self.state()
+        q = st.iquestions.get(qid)
+        if not q or q["status"] not in ("open", "before the operator"):
+            return {"ok": False, "error": f"no open question #{qid}"}
+        note = (note or "").strip()[:1000]
+        if not note:
+            return {"ok": False, "error": "a reply needs words: what the answers do not yet show"}
+        self.emit(OPERATOR, "operator_note", {"content":
+            f"The operator has read the question at #{qid} and replies: {note} It stays open until carried out."})
+        return {"ok": True}
 
     # -- repair (notes/sketch-6-repair-and-invitations.md) -------------------------------------------
     def _repair(self, st: RoomState, pid: str, act: dict) -> Optional[str]:
@@ -2120,6 +2305,9 @@ class Room:
         """The two things the software says of its own accord, each once per stretch: that a circle
         has been quiet for its quiet length, and, every PRIVACY_EVERY, asking a private circle to say
         again why it stays private. Neither wakes anyone; members see them when they next look."""
+        for q in st.iquestions.values():
+            if q["status"] == "open" and now - q["ts"] >= q["pause"]:
+                self.emit(ROOM, "iquestion_due", {"question": q["id"]})     # its pause is over: before the operator
         for c in st.public_circles():
             if c.get("repair"):
                 continue                              # nothing reminds anyone of a repair: no quiet notice, no question
@@ -2354,7 +2542,9 @@ CHANNEL_ACTIONS = {"chat", "follow", "unfollow", "pause", "wake", "form_circle",
                    "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
 TOOL_ACTIONS = {"use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill"}
 STEP4_ACTIONS = {"journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
-                 "repair", "announce", "invite", "answer_question"}
+                 "repair", "announce", "invite", "answer_question",
+                 "instrument", "raise", "respond", "withdraw_question"}
+INSTRUMENT_TEXT_LIMIT = 6000    # characters of an instrument's words, as long as a covenant page
 
 
 def _play_word(v: Any) -> str:
