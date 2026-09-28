@@ -212,7 +212,9 @@ removes one, with a notice in the field.
 The repository itself, for the field to change. Attach GitHub (tools.example.json) with a
 fine-grained token that reaches only hope's repository, and the field can open issues, branches
 and pull requests on it. What it changes reaches the running field only when the operator deploys
-it, and the operator says so in the field when that happens.
+it, and the operator says so in the field when that happens. The field asks for a deploy by
+declaring it, with "ask" (notes/sketch-8-the-operator-as-bridge.md): the operator helps, and
+says when it is done or what stops them; they approve nothing.
 
 Skills. The field writes its own, in the open SKILL.md form (agentskills.io):
 

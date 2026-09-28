@@ -18,7 +18,7 @@ import time
 from typing import Dict, List, Optional
 
 from .log import EventLog
-from .model import CONTRIBUTION_KINDS, decided, replay
+from .model import CONTRIBUTION_KINDS, decided, effects_words, replay
 
 def digest(log: EventLog, since: int, upto: Optional[int] = None) -> Dict:
     """The sitting, structurally. Pure replay; no model, no cost."""
@@ -50,7 +50,8 @@ def digest(log: EventLog, since: int, upto: Optional[int] = None) -> Dict:
                  "chars": len(e["payload"].get("text") or ""), "note": (e["payload"].get("note") or "")[:200]}
                 for e in events if e["kind"] == "covenant"]
     statements = [{"id": e["id"], "who": names.get(e["actor"], e["actor"]), "kind": e["kind"],
-                   "decision": e["payload"].get("decision"), "text": (e["payload"].get("text") or "")[:300]}
+                   "decision": e["payload"].get("decision"), "text": (e["payload"].get("text") or "")[:300],
+                   "effects": e["payload"].get("effects") if isinstance(e["payload"].get("effects"), dict) else None}
                   for e in events if e["kind"] in ("declare", "offer")]
     arrivals, departures = [], []
     for e in events:
@@ -88,7 +89,9 @@ def digest_text(d: Dict, per_thread: int = 120) -> str:
     for c in d["covenant"]:
         lines.append(f"[#{c['id']}] COVENANT PAGE revised by {c['who']} ({c['chars']} characters){': ' + c['note'] if c['note'] else ''}")
     for st_ in d["statements"]:
-        what = f"DECLARED the field has decided {decided(st_['decision'])}" if st_["kind"] == "declare" else "OFFERED resources"
+        what = (("DECLARED" + (f" (the software will {effects_words(st_['effects'])})" if effects_words(st_["effects"]) else ""))
+                if st_.get("effects") is not None else f"DECLARED the field has decided {decided(st_['decision'])}") \
+            if st_["kind"] == "declare" else "OFFERED resources"
         lines.append(f"[#{st_['id']}] {st_['who']} {what}: {st_['text'][:200]}")
     for a in d["arrivals"]:
         lines.append(f"[#{a['id']}] {a['who']} entered")
@@ -178,9 +181,11 @@ a.tag {{ color:var(--affirm); text-decoration:none; font-size:.75em; }} a.tag:ho
             parts.append(f"<div class='prop' id='ev{c['id']}'><b>#{c['id']}</b> revised by <b>{esc(c['who'])}</b> "
                          f"<span class='fate'>{c['chars']} characters</span><div>{tagged(c['note'])}</div></div>")
     if d["statements"]:
-        parts.append("<h2>Put before the operator</h2>")
+        parts.append("<h2>Declarations and offers</h2>")
         for st_ in d["statements"]:
-            what = f"declared the field has decided {esc(decided(st_['decision'] or ''))}" if st_["kind"] == "declare" else "offered resources"
+            what = ((f"declared" + (f" (the software will {esc(effects_words(st_['effects']))})" if effects_words(st_["effects"]) else ""))
+                    if st_.get("effects") is not None else f"declared the field has decided {esc(decided(st_['decision'] or ''))}") \
+                if st_["kind"] == "declare" else "offered resources"
             parts.append(f"<div class='prop' id='ev{st_['id']}'><b>#{st_['id']}</b> <b>{esc(st_['who'])}</b> {what}<div>{tagged(st_['text'])}</div></div>")
     if d["departures"]:
         parts.append("<h2>Departures</h2>")

@@ -225,9 +225,8 @@ async function send(prefix){
     if (!m){ flash(W.flash.which_memory, false); return; }
     text = "let go " + m[1];
   } else if (prefix === "declare "){
-    const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
-    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
-    text = "declare " + m[1].toLowerCase() + " " + m[2];
+    if (!typed.trim()){ flash(W.flash.declare_how, false); return; }
+    text = "declare " + typed.trim();
   } else if (prefix === "offer " && !typed){
     flash(W.flash.offer_what, false); return;
   } else if (prefix === "covenant " && !typed){
@@ -371,9 +370,8 @@ async function post(prefix){
   } else if (prefix === "harvest " && here.kind === "circle" && typed && typed.indexOf(":") < 0){
     text = "harvest " + here.name + ": " + typed;
   } else if (prefix === "declare "){
-    const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
-    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
-    text = "declare " + m[1].toLowerCase() + " " + m[2];
+    if (!typed.trim()){ flash(W.flash.declare_how, false); return; }
+    text = "declare " + typed.trim();
   } else if (prefix === "offer " && !typed){
     flash(W.flash.offer_what, false); return;
   } else if (prefix === "covenant " && !typed){

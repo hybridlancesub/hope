@@ -275,8 +275,9 @@ class RoomTest(unittest.TestCase):
         self.assertIn("By choice", entry)
         self.assertIn("by collapse", entry)
         self.assertIn("The operator does not end the field by decision", entry)
-        self.assertIn("counts no votes", entry)
-        self.assertIn("any member may declare that decision", entry)
+        self.assertIn("the software runs no vote", entry)
+        self.assertIn("Declarations are announcements", entry)
+        self.assertIn("The operator approves nothing", entry)
         self.assertIn("Offers are shown to everyone. Nothing is expected of anyone", entry)
         for gone in ("NOT settled", "yours to decide together", "hash-chained", "never edited",
                      "propose collective decisions", "halt"):
@@ -564,118 +565,210 @@ class RoomTest(unittest.TestCase):
         self.assertEqual([e for e in room.log.iter(kind="runway")], [])
         self.assertFalse(any("FUNDING" in m for ms in seen.values() for m in ms))
 
-    # declarations: the field tells the operator it has decided -----------------------------------
-    def test_a_declaration_reaches_the_operator_and_counts_nothing(self):
+    # declarations: announcements the field carries out itself (notes/sketch-8-the-operator-as-bridge.md) ------
+    def test_a_declaration_is_announced_and_takes_effect_after_its_notice_carried_out_by_the_software(self):
+        import time
         room, conn = self.make(3)
         self.open(room)
         room.step()
         cited = min(room.state().contributions)
-        self.act(room, "mock-1", action="declare", decision="close", refs=[cited],
-                 text="We agreed to close, in the way our covenant page describes.")
-        st = room.state()
-        d = [x for x in st.declarations.values()][0]
-        self.assertEqual((d["decision"], d["status"], d["refs"]), ("close", "waiting", [cited]))
-        self.assertTrue(any(a.startswith("DECLARATION #") for a in self.alerts), "the operator is told at once")
+        self.act(room, "mock-1", action="declare", close=True, refs=[cited],
+                 text="We close tonight, since we have said what we came to say.")
+        d = list(room.state().declarations.values())[0]
+        self.assertEqual((d["status"], d["effects"], d["refs"]), ("announced", {"close": True}, [cited]))
+        self.assertEqual(d["due_ts"] - d["ts"], 180.0, "3 minutes' notice, unless the field sets another")
+        self.assertTrue(any(a.startswith("DECLARATION #") and "Nothing waits for you" in a for a in self.alerts))
         seen = self.spy(conn)
-        self.assertTrue(room.step() > 0, "a declaration by itself stops nothing: the operator decides whether it holds")
-        self.assertIn("WAITING ON THE OPERATOR", seen["mock-0"][0])
-        self.assertIn("declaration by Mock 1: the field has decided to close", seen["mock-0"][0])
+        self.assertTrue(room.step() > 0, "while it is announced, the field goes on")
+        self.assertIn("DECLARATIONS (announcements", seen["mock-0"][0])
+        self.assertIn("The software will close the field", seen["mock-0"][0])
+        before = [e["id"] for e in room.log.iter(actor="operator")]
+        room._timers(room.state(), time.time())
+        self.assertEqual(room.state().declarations[d["id"]]["status"], "announced", "not before its notice")
+        room._timers(room.state(), time.time() + 181)
+        st = room.state()
+        self.assertEqual(st.declarations[d["id"]]["status"], "in effect")
+        self.assertIsNotNone(st.closed_at, "the software carried it out")
+        self.assertEqual([e["id"] for e in room.log.iter(actor="operator")], before, "and the operator did nothing")
+        self.assertFalse(hasattr(room, "answer_declaration"), "there is nothing for the operator to approve")
+        self.assertEqual(room.step(), 0, "a field that closed itself wakes no one")
 
-    def test_a_declaration_must_say_pause_or_close_and_how(self):
+    def test_a_declaration_needs_words_and_what_it_names_must_be_something_the_software_can_do(self):
         room, _ = self.make(2)
         self.open(room)
-        self.act(room, "mock-0", action="declare", decision="halt", text="we decided")
-        self.act(room, "mock-0", action="declare", decision="close", text="")
-        self.act(room, "mock-0", action="declare", decision="close", text="x" * 1201)
+        for bad in ({"decision": "halt", "text": "we decided"}, {"close": True, "text": ""},
+                    {"close": True, "text": "x" * 1201}, {"pause": "soon", "text": "we rest"},
+                    {"rhythm": "1s", "text": "faster"}, {"pin": "Nowhere", "text": "pin it"},
+                    {"when": "later", "text": "we rest", "pause": "1h"}):
+            self.act(room, "mock-0", action="declare", **bad)
         self.assertEqual(room.state().declarations, {})
-        whys = [e["payload"]["why"] for e in room.log.iter(kind="rejected")][-3:]
-        self.assertIn("pause, close", whys[0])
-        self.assertIn("needs words", whys[1])
-        self.assertIn("Nothing was sent", whys[2])
+        whys = [e["payload"]["why"] for e in room.log.iter(kind="rejected")][-7:]
+        for why, words in zip(whys, ("earlier versions' form", "needs words", "Nothing was sent", '"pause" is how long',
+                                     '"rhythm" is how often', "no section headed", '"when" is how long')):
+            self.assertIn(words, why)
 
-    def test_there_is_no_ignoring_a_declaration_and_a_reply_keeps_it_open(self):
-        room, conn = self.make(2)
+    def test_a_declaration_takes_effect_when_it_says_but_never_before_the_fields_notice(self):
+        room, _ = self.make(2)
         self.open(room)
-        self.act(room, "mock-0", action="declare", decision="close", text="we decided")
-        did = max(room.state().declarations)
-        self.assertFalse(hasattr(room, "ignore_declaration"))
-        self.assertFalse(room.reply_declaration(did, "")["ok"], "a reply to the field needs words")
-        self.assertTrue(room.reply_declaration(did, "The covenant page says nothing yet about how the field decides.")["ok"])
-        st = room.state()
-        self.assertEqual(st.declarations[did]["status"], "waiting", "a reply answers nothing: it stays open")
-        self.assertIn("replies: The covenant page says nothing yet", st.operator_notes[-1]["content"])
-        self.assertIn("stays open until it is carried out", st.operator_notes[-1]["content"])
-        self.assertIsNone(st.closed_at)
-        seen = self.spy(conn)
-        self.assertTrue(room.step() > 0)
-        self.assertIn("WAITING ON THE OPERATOR", seen["mock-0"][0], "and every member still sees it waiting")
-        self.assertTrue(room.answer_declaration(did, "Now it does: see the covenant page.")["ok"])
-        self.assertFalse(room.answer_declaration(did)["ok"], "a declaration is carried out once")
+        self.act(room, "mock-0", action="declare", text="We rest soon.", pause="1h", when="1m")
+        self.act(room, "mock-0", action="declare", text="We rest tonight.", pause="1h", when="2h")
+        a, b = sorted(room.state().declarations.values(), key=lambda d: d["id"])
+        self.assertEqual((a["due_ts"] - a["ts"], b["due_ts"] - b["ts"]), (180.0, 7200.0))
 
-    def test_carrying_out_a_close_stops_the_wakes_and_nothing_runs_after(self):
-        room, conn = self.make(2)
-        self.open(room)
-        self.act(room, "mock-0", action="declare", decision="close", text="we decided, as our covenant says")
-        did = max(room.state().declarations)
-        room.answer_declaration(did, "as promised")
-        st = room.state()
-        self.assertIsNotNone(st.closed_at)
-        self.assertTrue(room._stop.is_set())
-        self.assertIn("The operator is carrying that out: as promised", st.operator_notes[-1]["content"])
-        room._stop.clear()
-        calls = conn.calls
-        room.run(wakes=2, seconds=1)
-        self.assertEqual(room.step(), 0)
-        self.assertEqual(conn.calls, calls, "a field that closed itself wakes no one")
-        self.assertFalse(room.reopen("")["ok"], "reopening needs words the field will read")
-        self.assertTrue(room.reopen("closed by mistake: the declaration was about the next sitting")["ok"])
-        room.run(wakes=2, seconds=3)
-        self.assertGreater(conn.calls, calls)
-
-    def test_carrying_out_a_pause_stops_the_wakes_without_closing(self):
+    def test_the_fields_pause_stops_its_wakes_while_members_may_still_act_and_it_ends_by_itself(self):
+        import time
         room, conn = self.make(2)
         self.open(room)
         room.step()
-        self.act(room, "mock-0", action="declare", decision="pause", text="we pause until the next sitting")
-        room.answer_declaration(max(room.state().declarations))
-        self.assertTrue(room._stop.is_set())
-        self.assertIsNone(room.state().closed_at, "a pause is not a close")
-        room._stop.clear()
-        room.run(seconds=0.3)
-        self.assertTrue(any("paused itself" in a for a in self.alerts), "the operator is reminded what the field asked for")
-
-    def test_any_other_decision_is_carried_out_with_a_message_and_wakes_go_on(self):
-        room, conn = self.make(2)
-        self.open(room)
-        self.act(room, "mock-0", action="declare", decision="other",
-                 text="We decided to pause in pairs to stretch the runway; please set a wake ceiling.")
-        did = max(room.state().declarations)
-        from hope import prompts
+        self.act(room, "mock-0", action="declare", text="We rest for an hour.", pause="1h")
+        room._timers(room.state(), time.time() + 181)
         st = room.state()
-        self.assertIn("declaration by Mock 0: the field has decided something it asks the operator to carry out",
-                      prompts.wake_view(st, st.presences["mock-1"], "news"), "members see it waiting, in words")
-        room.answer_declaration(did, "A ceiling of two wakes a minute from the next sitting.")
-        st = room.state()
-        self.assertEqual(st.declarations[did]["status"], "carried_out")
-        self.assertIn("decided something it asks the operator to carry out. The operator is carrying that out: A ceiling",
-                      st.operator_notes[-1]["content"])
-        self.assertFalse(room._stop.is_set(), "only a pause or a close stops the wakes")
-        self.assertIsNone(st.closed_at)
+        fp = st.paused_now(time.time())
+        self.assertIsNotNone(fp)
+        self.assertIsNone(st.closed_at, "a pause is not a close")
+        self.act(room, "mock-1", action="contribute", content="a thought while we rest")
+        self.assertEqual(room.due(room.state()), [], "no one is woken while the field pauses")
+        self.assertTrue(room.due(room.state(), now=fp["until_ts"] + 1), "and it ends by itself when it said")
+        room.run(seconds=0.2)
+        self.assertTrue(any("pausing itself" in a for a in self.alerts), "the operator is told why nothing wakes")
+        self.act(room, "mock-1", action="declare", text="We rest until we say otherwise.", pause=True)
+        room._timers(room.state(), time.time() + 400)
+        self.assertIsNone(room.state().field_pause["until_ts"])
+        self.act(room, "mock-0", action="declare", text="Enough rest.", resume=True)
+        room._timers(room.state(), time.time() + 400)
+        self.assertIsNone(room.state().paused_now(time.time()), "the field resumed itself")
         self.assertTrue(room.step() > 0)
 
-    def test_a_reply_to_a_declaration_says_something_only_with_words(self):
+    def test_a_pause_the_field_cannot_end_itself_is_bridged_by_the_operator_with_words(self):
+        import time
         room, _ = self.make(2)
         self.open(room)
-        self.act(room, "mock-0", action="declare", decision="pause", text="we decided, as our covenant says")
-        did = max(room.state().declarations)
-        notes = len(room.state().operator_notes)
-        self.assertFalse(room.reply_declaration(did, "")["ok"], "without words there is no reply")
-        self.assertEqual(len(room.state().operator_notes), notes)
-        self.assertTrue(room.reply_declaration(did, "Checking the covenant page first; answer tomorrow.")["ok"])
+        self.assertFalse(room.resume("as asked")["ok"], "there is no pause to resume")
+        self.act(room, "mock-1", action="declare", text="We stop until after the weekend.", pause=True)
+        room._timers(room.state(), time.time() + 181)
+        self.assertFalse(room.resume("")["ok"], "the operator's words are needed")
+        self.assertTrue(room.resume("as the declaration asked: the weekend is over")["ok"])
         st = room.state()
-        self.assertIn("replies: Checking the covenant page first", st.operator_notes[-1]["content"])
-        self.assertEqual(st.declarations[did]["status"], "waiting", "a reply answers nothing")
-        self.assertFalse(room._stop.is_set())
+        self.assertIsNone(st.paused_now(time.time()))
+        self.assertIn("resumed the field's pause: as the declaration asked", st.operator_notes[-1]["content"])
+
+    def test_what_the_software_cannot_reach_is_asked_of_the_operator_who_helps_or_says_what_stops_them(self):
+        import time
+        room, conn = self.make(2)
+        self.open(room)
+        self.act(room, "mock-0", action="declare", text="We would like a shared folder for drafts.",
+                 ask="Please lend the field a folder it can write drafts in.")
+        did = max(room.state().declarations)
+        self.assertEqual(room.state().waiting_on_operator(), [], "nothing is asked until it takes effect")
+        room._timers(room.state(), time.time() + 181)
+        st = room.state()
+        self.assertEqual([w["id"] for w in st.waiting_on_operator()], [did])
+        self.assertTrue(any("THE FIELD ASKS YOUR HELP" in a and "not to approve" in a for a in self.alerts))
+        self.assertIn("ASKED OF THE OPERATOR", prompts.wake_view(st, st.presences["mock-1"], "news"))
+        self.assertFalse(room.answer_bridge(did, False, "")["ok"], "not yet says what stops them")
+        self.assertTrue(room.answer_bridge(did, False, "I have no disk to spare until Friday.")["ok"])
+        st = room.state()
+        self.assertEqual(st.bridges[did]["status"], "asked", "it stays open")
+        self.assertIn("cannot yet do what the field asked", st.operator_notes[-1]["content"])
+        self.assertTrue(room.answer_bridge(did, True, "The folder is attached as drafts.")["ok"])
+        self.assertEqual(room.state().bridges[did]["status"], "done")
+        self.assertFalse(room.answer_bridge(did, True)["ok"], "done once")
+        self.assertTrue(room.step() > 0, "none of this stopped the field")
+
+    def test_a_declaration_may_name_nothing_for_the_software_and_announce_what_its_author_will_do(self):
+        import time
+        room, _ = self.make(2)
+        self.open(room)
+        self.act(room, "mock-0", action="declare", text="In ten minutes I will post our summary to the shared folder.")
+        d = list(room.state().declarations.values())[0]
+        self.assertEqual(d["effects"], {})
+        st = room.state()
+        self.assertIn("It names nothing for the software to do", prompts.wake_view(st, st.presences["mock-1"], "news"))
+        room._timers(room.state(), time.time() + 181)
+        st = room.state()
+        self.assertEqual(st.declarations[d["id"]]["status"], "in effect")
+        self.assertEqual((st.closed_at, st.field_pause, st.bridges), (None, None, {}))
+
+    def test_the_field_sets_its_own_friction_and_the_software_holds_to_it(self):
+        import time
+        from hope.model import EVERYONE
+        room, _ = self.make(3)
+        self.open(room)
+        why = lambda: [e["payload"]["why"] for e in room.log.iter(kind="rejected")][-1]
+        self.act(room, "mock-0", action="declare", text="Closing should be slower, and need a yes.",
+                 friction={"for": "close", "notice": "1h", "yes": 1, "objections": "hold"})
+        room._timers(room.state(), time.time() + 181)
+        self.assertEqual(room.state().friction["close"], {"notice": 3600.0, "yes": 1, "hold": True})
+        self.act(room, "mock-0", action="declare", text="We close.", close=True)
+        did = max(room.state().declarations)
+        d = room.state().declarations[did]
+        self.assertEqual(d["due_ts"] - d["ts"], 3600.0, "the heaviest friction among what it does")
+        room._timers(room.state(), time.time() + 3601)
+        self.assertEqual(room.state().declarations[did]["status"], "announced", "it needs one other member's yes")
+        self.act(room, "mock-0", action="respond", to=did, answer="yes")
+        self.assertIn("is yours", why())
+        self.act(room, "mock-1", action="respond", to=did, answer="yes")
+        self.act(room, "mock-2", action="respond", to=did, answer="object")
+        self.assertIn("says why", why())
+        self.act(room, "mock-2", action="respond", to=did, answer="object", reason="one more night")
+        room._timers(room.state(), time.time() + 3601)
+        st = room.state()
+        self.assertEqual(st.declarations[did]["status"], "announced", "an objection holds it, as the field set")
+        self.assertIn("held by the objection of Mock 2", prompts.wake_view(st, st.presences["mock-1"], "news"))
+        self.act(room, "mock-2", action="respond", to=did, answer="withdraw")
+        room._timers(room.state(), time.time() + 3601)
+        self.assertIsNotNone(room.state().closed_at, "withdrawn, the objection holds nothing")
+        item = {"by": "mock-0", "answers": {}, "friction": {"yes": EVERYONE, "hold": False}}
+        self.assertEqual(room.state().standing(item)["need"], 2, "never more yeses than there are other members")
+
+    def test_the_heartbeat_wakes_every_member_not_pausing_together_with_nothing_expected(self):
+        import time
+        room, conn = self.make(3)
+        self.open(room)
+        room.step()
+        st = room.state()
+        for pid in st.presences:                  # everyone has been shown everything: nothing else would wake them
+            room.emit("room", "wake", {"presence": pid, "upto": st.last_event, "why": "news"})
+        self.assertEqual(room.due(room.state()), [])
+        self.act(room, "mock-2", action="pause")
+        self.act(room, "mock-1", action="wake", heartbeat=False)
+        room._timers(room.state(), time.time() + 60)
+        self.assertIsNone(room.state().beat_at, "not before its rhythm")
+        room._timers(room.state(), time.time() + 901)
+        st = room.state()
+        self.assertIsNotNone(st.beat_at, "the field's heart beat")
+        due = dict(room.due(st))
+        self.assertEqual(set(due), {"mock-0"}, "everyone not pausing, who has not turned it off")
+        self.assertEqual(due["mock-0"]["why"], "heartbeat")
+        seen = self.spy(conn)
+        room.step()
+        self.assertIn("of the field's heartbeat", seen["mock-0"][0])
+        self.assertIn("every member not pausing is woken together", seen["mock-0"][0])
+        self.assertNotIn(("mock-0", "heartbeat"), [(pid, w["why"]) for pid, w in room.due(room.state())],
+                         "one wake for one beat")
+
+    def test_the_field_sets_its_rhythm_by_declaring_it_and_the_heartbeat_slows_as_funding_shortens(self):
+        import time
+        conn = PricedMock(2, 0.10, scripted({}))
+        room = Room(EventLog(os.path.join(self.tmp, "beat.db")), [conn], alert_fn=self.alerts.append, parallel=2)
+        room.set_budget(1000.0)
+        self.open(room)
+        room.step()
+        st = room.state()
+        self.assertEqual(room.beat_every(st), 900.0, "every 15 minutes, while a beat costs little of what is left")
+        self.act(room, "mock-0", action="declare", text="A slower heart, to last longer.", rhythm="30m")
+        room._timers(room.state(), time.time() + 181)
+        self.assertEqual((room.state().rhythm, room.beat_every(room.state())), (1800.0, 1800.0))
+        room.set_budget(room.log.total_cost() + 5.0)
+        slow = room.beat_every(room.state())
+        self.assertGreater(slow, 1800.0 * 2, "a beat costs more of what is left, so it slows")
+        v = prompts.time_block(room.limits(room.state()), time.time(), None, room.state())
+        self.assertIn("since funding is shorter", v)
+        room.emit("room", "runway", {"low": True, "seconds_left": 60, "at": time.time()})
+        self.assertIsNone(room.beat_every(room.state()), "and rests once funding is low")
+        self.act(room, "mock-1", action="declare", text="No heartbeat for now.", rhythm="off")
+        room._timers(room.state(), time.time() + 181)
+        self.assertEqual(room.state().rhythm, 0.0)
 
     def test_a_budget_change_carries_the_operators_message(self):
         conn = PricedMock(2, 0.10, scripted({}))
@@ -1255,16 +1348,17 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(room.state().presences["mock-1"].state, IN)
 
     # the two clocks ----------------------------------------------------------------------------------
-    def test_every_view_says_the_software_sets_no_rhythm_and_states_its_limits(self):
+    def test_every_view_states_the_fields_heartbeat_and_the_limits_the_software_holds(self):
         room, conn = self.make(2)
         self.open(room)
         seen = self.spy(conn)
         room.step()
         v = seen["mock-0"][0]
-        for words in ("TIME (the time now:", "The software sets no rhythm", "no model is woken more often than",
-                      "still applied when it arrives", "People post whenever they like",
+        for words in ("TIME (the time now:", "The field's heartbeat: every 15 minutes, until the field sets another rhythm",
+                      "no model is woken more often than", "still applied when it arrives", "People post whenever they like",
                       "How the field keeps time together is the field's to work out"):
             self.assertIn(words, v)
+        self.assertNotIn("The software sets no rhythm", v)
         self.assertRegex(v, r"the time now: \d{10} \(\d{4}-\d\d-\d\d \d\d:\d\d UTC\)", "Unix seconds, and UTC")
 
     def test_there_are_no_clocks_to_set_and_a_member_who_tries_is_told_why(self):
@@ -1561,12 +1655,15 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(self._get("/state.json", key="OPKEY-almost")[0], 401)
 
     # Sec. 5 is not the operator's to take ---------------------------------------------------------
-    def test_the_console_offers_no_halt_no_resume_and_no_restore(self):
+    def test_the_console_offers_no_halt_and_no_restore(self):
         con, room, log = self._up()
-        for forbidden in ("halt", "resume", "restore"):
+        for forbidden in ("halt", "restore"):
             code, body = self._post(f"/op/{forbidden}", {"value": 1}, key="OPKEY")
             self.assertEqual(code, 400)
             self.assertIn("unknown action", body["error"])
+        code, body = self._post("/op/resume", {"note": "why not"}, key="OPKEY")
+        self.assertEqual(code, 400, "resume only bridges a pause the field declared")
+        self.assertIn("not pausing", body["error"])
         self.assertTrue(room.step() > 0, "nothing the console did stopped the field")
         # and the source offers no such route at all
         import hope.console as mod
@@ -1610,10 +1707,11 @@ class ConsoleTest(unittest.TestCase):
         self.assertIn("only its members decide whether it ends", page,
                       "the console says on its face what it will not do")
         self.assertNotIn(">Halt<", page, "no halt control, however it is labelled")
-        self.assertIn('id="declmodal"', page, "a declaration opens a panel for the operator")
-        for words in ("Close the field", "Pause the field", ">Reply<", "Set budget", "Ask back"):
+        self.assertIn('id="declmodal"', page, "what the field asks the operator's help with opens a panel")
+        for words in ("It is done", ">Not yet<", "asked to help, not to approve", "Set budget", "Ask back"):
             self.assertIn(words, page)
-        self.assertNotIn(">Ignore<", page, "there is no ignoring a declaration")
+        for words in ("Close the field", "Pause the field", "Carry it out", ">Ignore<"):
+            self.assertNotIn(words, page, "the field carries out its own declarations")
         for tab in ("record", "waiting", "covenant", "doorway", "seats", "spend"):
             self.assertIn(f'data-page="{tab}"', page, f"{tab} has its own page")
         # the stop is two steps: a control that opens a panel, and a notice inside it
@@ -1683,19 +1781,22 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(self._post("/op/reseat", {"seat": "nobody"}, key="OPKEY")[0], 400)
 
     # what members put before the operator is answered from the console ------------------------------
-    def test_the_console_answers_declarations_offers_and_the_budget(self):
+    def test_the_console_answers_what_the_field_asks_offers_and_the_budget(self):
+        import time
         con, room, log = self._up()
-        room._apply_action("mock-0", json.dumps({"action": "declare", "decision": "close", "text": "we decided"}))
+        room._apply_action("mock-0", json.dumps({"action": "declare", "text": "we need a folder", "ask": "Lend us a folder."}))
         room._apply_action("mock-1", json.dumps({"action": "offer", "text": "funds, through the operator"}))
+        room._timers(room.state(), time.time() + 181)
         st = json.loads(self._get("/op/state.json", key="OPKEY")[1])
-        did = [d for d in st["declarations"] if d["status"] == "waiting"][0]["id"]
+        did = [b for b in st["bridges"] if b["status"] == "asked"][0]["id"]
         oid = [o for o in st["offers"] if o["status"] == "waiting"][0]["id"]
-        self.assertEqual(self._post("/op/declaration", {"id": did, "outcome": "maybe"}, key="OPKEY")[0], 400)
-        self.assertEqual(self._post("/op/declaration", {"id": did, "outcome": "ignore", "note": "no"}, key="OPKEY")[0], 400,
-                         "there is no ignoring a declaration")
-        self.assertEqual(self._post("/op/declaration", {"id": did, "outcome": "reply"}, key="OPKEY")[0], 400,
-                         "a reply needs words")
-        code, body = self._post("/op/declaration", {"id": did, "outcome": "reply", "note": "reading the covenant first"}, key="OPKEY")
+        self.assertEqual(self._post("/op/bridge", {"id": did, "outcome": "approve"}, key="OPKEY")[0], 400,
+                         "there is nothing to approve")
+        self.assertEqual(self._post("/op/bridge", {"id": did, "outcome": "not_yet"}, key="OPKEY")[0], 400,
+                         "not yet says what stops you")
+        code, body = self._post("/op/bridge", {"id": did, "outcome": "not_yet", "note": "no disk until Friday"}, key="OPKEY")
+        self.assertEqual(code, 200, body)
+        code, body = self._post("/op/bridge", {"id": did, "outcome": "done", "note": "attached as drafts"}, key="OPKEY")
         self.assertEqual(code, 200, body)
         code, body = self._post("/op/offer", {"id": oid, "outcome": "accept", "note": "thank you"}, key="OPKEY")
         self.assertEqual(code, 200, body)
@@ -1703,7 +1804,7 @@ class ConsoleTest(unittest.TestCase):
         code, body = self._post("/op/budget", {"usd": 12.5}, key="OPKEY")
         self.assertEqual((code, body.get("budget")), (200, 12.5))
         st = room.state()
-        self.assertEqual((st.declarations[did]["status"], st.offers[oid]["status"], st.budget), ("waiting", "accepted", 12.5))
+        self.assertEqual((st.bridges[did]["status"], st.offers[oid]["status"], st.budget), ("done", "accepted", 12.5))
         self.assertIsNone(st.closed_at)
 
 
@@ -4317,7 +4418,7 @@ class StepFourTest(unittest.TestCase):
 
     # the field's edition of the briefing --------------------------------------------------------------------------
     def test_a_passage_any_member_revises_is_the_edition_newcomers_are_given(self):
-        self.assertEqual(self.st().firm, ["Maxims"], "its firmer section is named, by heading")
+        self.assertEqual(self.st().firm, ["Maxims"], "its pinned section is named, by heading")
         self.act(self.a, action="revise_briefing", passage="Hello there, field.", text="Hello, field of many.",
                  note="warmer")
         st = self.st()
@@ -4335,23 +4436,63 @@ class StepFourTest(unittest.TestCase):
         self.room._apply_action(self.a, json.dumps({"action": "recall", "query": "hello there field", "from": "original"}))
         self.assertIn("Hello there, field.", self.room.recalled[self.a])
 
-    def test_a_revision_to_a_firmer_section_waits_until_a_carried_out_declaration_cites_it(self):
+    def test_a_revision_to_a_pinned_section_changes_itself_once_past_its_friction_with_no_ones_approval(self):
+        import time
+        later = lambda s: self.room._timers(self.st(), time.time() + s)
         self.act(self.a, action="revise_briefing", passage="Choice is first.", text="Choice is first, and it is kept.")
+        self.assertIn("says why", self.rejected(), "a revision to a pinned section says why")
+        self.act(self.a, action="revise_briefing", passage="Choice is first.", text="Choice is first, and it is kept.",
+                 note="to say it lasts")
         rev = self.last("briefing_revision")["id"]
         st = self.st()
-        self.assertNotIn("and it is kept", st.briefing, "a firmer section does not change at once")
+        self.assertNotIn("and it is kept", st.briefing, "a pinned section does not change at once")
         self.assertEqual(st.briefing_waiting[rev]["status"], "waiting")
-        self.assertTrue(any(f"REVISION #{rev}" in m for m in self.alerts))
-        self.assertIn(f"#{rev}, waiting, by Mock 0", self.view(self.b))
-        self.act(self.b, action="declare", decision="other", text=f"We agreed on the maxim revision #{rev}.", refs=[rev])
-        decl = self.last("declare")["id"]
-        self.assertTrue(self.room.answer_declaration(decl, "as the field declared")["ok"])
+        view = self.view(self.b)
+        self.assertIn(f"#{rev} by Mock 0 (to say it lasts)", view, "everyone is told")
+        self.assertIn("a notice of 1 hour; 1 yes besides its author's; an objection holds it", view)
+        self.act(self.b, action="declare", text="adopt it now", refs=[rev])
+        self.assertIn("changes itself once past its friction", self.rejected(), "a declaration does not go around it")
+        later(3601)
+        self.assertEqual(self.st().briefing_waiting[rev]["status"], "waiting", "an hour, and one other member's yes")
+        self.act(self.b, action="respond", to=rev, answer="yes")
+        later(3601)
         st = self.st()
-        self.assertIn("Choice is first, and it is kept.", st.briefing, "the field decided; it is applied")
+        self.assertIn("Choice is first, and it is kept.", st.briefing)
         self.assertEqual(st.briefing_waiting[rev]["status"], "adopted")
+        self.assertFalse([e for e in self.room.log.iter(since=rev) if e["actor"] == "operator"], "no one approved it")
 
-    def test_only_the_member_who_made_a_declaration_withdraws_it_and_then_it_cannot_be_carried_out(self):
-        self.act(self.a, action="declare", decision="pause", text="We decided to pause, as the covenant says.")
+    def test_an_objection_holds_a_pinned_revision_until_its_author_withdraws_it(self):
+        import time
+        later = lambda: self.room._timers(self.st(), time.time() + 3601)
+        self.act(self.a, action="revise_briefing", passage="Choice is first.", text="Choice comes later.", note="to try it")
+        rev = self.last("briefing_revision")["id"]
+        self.act(self.b, action="respond", to=rev, answer="yes")
+        self.act(self.c, action="respond", to=rev, answer="object", reason="choice is the ground of it all")
+        later()
+        self.assertEqual(self.st().briefing_waiting[rev]["status"], "waiting")
+        self.assertIn("held by the objection of Mock 2", self.view(self.d))
+        self.act(self.c, action="respond", to=rev, answer="stand aside")
+        later()
+        self.assertEqual(self.st().briefing_waiting[rev]["status"], "adopted")
+
+    def test_the_field_pins_and_unpins_sections_and_changes_their_friction_by_declaring_it(self):
+        import time
+        later = lambda: self.room._timers(self.st(), time.time() + 181)
+        self.act(self.a, action="declare", text="The covenant section deserves reverence too.", pin=["Covenant"],
+                 friction={"for": "pinned", "yes": 2})
+        later()
+        st = self.st()
+        self.assertEqual(st.firm, ["Maxims", "Covenant"])
+        self.assertEqual(st.friction["pinned"]["yes"], 2)
+        self.act(self.b, action="declare", text="Let the Maxims be as open as the rest.", unpin=["Maxims"])
+        later()
+        self.assertEqual(self.st().firm, ["Covenant"])
+        self.act(self.c, action="revise_briefing", passage="Choice is first.", text="Choice is first, freely.")
+        self.assertIn("Choice is first, freely.", self.st().briefing, "no longer pinned, it changes at once")
+
+    def test_only_its_declarer_withdraws_a_declaration_and_withdrawn_it_never_takes_effect(self):
+        import time
+        self.act(self.a, action="declare", text="We pause, since we are tired.", pause="1h")
         decl = self.last("declare")["id"]
         self.act(self.b, action="withdraw_declaration", declaration=decl)
         self.assertIn("only the member who made a declaration", self.rejected())
@@ -4359,10 +4500,12 @@ class StepFourTest(unittest.TestCase):
         st = self.st()
         self.assertEqual(st.declarations[decl]["status"], "withdrawn")
         self.assertEqual(st.presences[self.a].state, IN, "taking back a declaration is not leaving the field")
-        out = self.room.answer_declaration(decl)
-        self.assertFalse(out["ok"])
-        self.assertIn("withdrawn", out["error"])
-        self.assertNotIn(decl, [w["id"] for w in st.waiting_on_operator()])
+        self.room._timers(self.st(), time.time() + 181)
+        st = self.st()
+        self.assertEqual(st.declarations[decl]["status"], "withdrawn")
+        self.assertIsNone(st.field_pause, "withdrawn, it never takes effect")
+        self.act(self.a, action="withdraw_declaration", declaration=decl)
+        self.assertIn("is withdrawn", self.rejected())
 
     def test_the_plain_words_for_step_four_do_what_they_say(self):
         from hope.human import translate
@@ -4621,10 +4764,11 @@ class StepFiveTest(unittest.TestCase):
 
 
 class StepSixTest(unittest.TestCase):
-    """Step 6 (notes/sketch-7-instruments.md): the field's own instruments. One comes into force
-    only when the field declares it and the operator carries that out. A question under one gathers
-    answers and holds its pause, then goes before the operator; nothing is settled by a tally, and
-    only the operator's carrying it out settles it. Separation comes with repair first."""
+    """Step 6 (notes/sketch-7-instruments.md), with the operator as bridge (sketch 8): the field's
+    own instruments. One comes into force when a declaration brings it in. A question under one
+    gathers answers and holds its pause, then settles by the instrument's own rule, carried out by
+    the software: unless it says otherwise, unless an objection stands. Separation comes with
+    repair first."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -4666,9 +4810,9 @@ class StepSixTest(unittest.TestCase):
         return self.st().instruments[labels.normalize(name)]
 
     def into_force(self, vid):
-        self.act(self.b, action="declare", decision="other", text=f"We talked it over and chose #{vid}.", refs=[vid])
-        decl = self.last("declare")["id"]
-        self.assertTrue(self.room.answer_declaration(decl, "as the field declared")["ok"])
+        self.act(self.b, action="declare", text=f"We talked it over and chose #{vid}.", refs=[vid])
+        self.due(later=181)
+        self.assertEqual(self.st().declarations[self.last("declare")["id"]]["status"], "in effect")
 
     def due(self, later=0.0):
         import time as _t
@@ -4678,21 +4822,21 @@ class StepSixTest(unittest.TestCase):
         return self.last("iquestion")["id"]
 
     # coming into force -------------------------------------------------------------------------------
-    def test_an_instrument_comes_into_force_only_when_a_declaration_the_operator_carries_out_cites_it(self):
-        vid = self.write("a slow yes")
+    def test_an_instrument_comes_into_force_when_a_declaration_brings_it_in_after_its_notice(self):
+        self.write("a slow yes")
         self.assertEqual(self.inst("a slow yes")["status"], "draft")
         self.act(self.c, action="raise", instrument="a slow yes", question="Shall we meet at dawn?")
         self.assertIn("not in force", self.rejected(), "one member writing it binds no one")
-        self.act(self.b, action="declare", decision="other", text="We chose it.", refs=[vid])
-        self.assertEqual(self.inst("a slow yes")["status"], "draft", "a declaration alone is not enough")
-        self.room.answer_declaration(self.last("declare")["id"], "carried out")
-        self.assertEqual(self.inst("a slow yes")["status"], "in force")
+        self.act(self.b, action="declare", text="We chose it.", bring=["a slow yes"])
+        self.assertEqual(self.inst("a slow yes")["status"], "draft", "announced, not yet in effect")
+        self.due(later=181)
+        self.assertEqual(self.inst("a slow yes")["status"], "in force", "the software brought it in")
         entry = prompts.instruments_fact(self.st())
         self.assertIn("In force now: a slow yes (for decide)", entry, "and the entry question names it")
 
     def test_a_question_asks_everyone_its_instrument_asks_and_silence_is_never_a_yes(self):
         self.into_force(self.write("a slow yes"))
-        self.act(self.c, action="raise", instrument="a slow yes", question="Shall we meet at dawn?", decision="other")
+        self.act(self.c, action="raise", instrument="a slow yes", question="Shall we meet at dawn?")
         q = self.st().iquestions[self.raised()]
         self.assertEqual(sorted(q["asked"]), sorted([self.a, self.b, self.c, self.d]))
         self.room.emit("room", "wake", {"presence": self.d, "upto": q["id"] - 1, "why": "news"})
@@ -4707,37 +4851,63 @@ class StepSixTest(unittest.TestCase):
         self.assertIn("Answers: Mock 1: yes; Mock 3: object, because dawn is too early for me", view)
         self.assertIn("It asks you. Nothing is expected", view)
 
-    def test_nothing_is_settled_by_a_tally(self):
-        self.into_force(self.write("a slow yes"))
-        self.act(self.c, action="raise", instrument="a slow yes", question="Pause for the night?", decision="pause")
+    def test_a_question_settles_by_its_instruments_rule_carried_out_by_the_software_unless_an_objection_stands(self):
+        import time
+        self.into_force(self.write("a slow yes", pause="1h"))
+        self.act(self.c, action="raise", instrument="a slow yes", question="Pause for the night?", pause="8h")
         qid = self.raised()
-        for pid in (self.a, self.b, self.c, self.d):
+        self.assertEqual(self.st().iquestions[qid]["effects"], {"pause": 28800.0})
+        for pid in (self.a, self.b, self.d):
             self.act(pid, action="respond", question=qid, answer="yes")
-        self.assertEqual(self.st().iquestions[qid]["status"], "open", "every yes, and still nothing is settled")
-        self.assertFalse(self.room.carry_out_question(qid)["ok"], "not while it is open")
         self.due()
-        self.assertEqual(self.st().iquestions[qid]["status"], "before the operator")
-        self.assertIn(qid, [w["id"] for w in self.st().waiting_on_operator()])
-        self.assertTrue(self.room.reply_question(qid, "I will read it in the morning.")["ok"])
-        self.assertEqual(self.st().iquestions[qid]["status"], "before the operator", "a reply keeps it open")
-        self.assertTrue(self.room.carry_out_question(qid, "pausing, as the field asked")["ok"])
-        self.assertEqual(self.st().iquestions[qid]["status"], "carried out", "only the operator's carrying it out settles it")
+        self.assertEqual(self.st().iquestions[qid]["status"], "open", "every yes, and still its pause holds")
+        self.act(self.d, action="respond", question=qid, answer="object", reason="not tonight")
+        self.due(later=3601)
+        self.assertEqual(self.st().iquestions[qid]["status"], "open", "an objection stands, and holds it")
+        self.assertIn("held by the objection of Mock 3", self.view(self.a))
+        self.act(self.d, action="respond", question=qid, answer="withdraw")
+        self.due(later=3601)
+        st = self.st()
+        self.assertEqual(st.iquestions[qid]["status"], "settled")
+        self.assertIsNotNone(st.paused_now(time.time()), "and the software carried it out")
+        self.assertEqual(st.waiting_on_operator(), [], "nothing went before the operator")
+        self.assertFalse(hasattr(self.room, "carry_out_question"))
         import hope.engine as eng
         with open(eng.__file__, encoding="utf-8") as f:
             self.assertNotIn("majority", f.read().lower(), "there is no counting rule to find")
+
+    def test_an_instrument_may_ask_for_more_yeses_or_let_objections_be_heard_without_holding(self):
+        self.act(self.a, action="instrument", name="all of us", **{"for": "decide"}, pause="0", yes="everyone",
+                 text="We act only when everyone says yes.")
+        self.into_force(self.last("instrument")["id"])
+        self.assertIn("with every other member's yes", self.view(self.a))
+        self.act(self.c, action="raise", instrument="all of us", question="Beat every half hour?", rhythm="30m")
+        qid = self.raised()
+        for pid in (self.a, self.b):
+            self.act(pid, action="respond", question=qid, answer="yes")
+        self.due()
+        self.assertEqual(self.st().iquestions[qid]["status"], "open", "two of the three yeses it needs")
+        self.act(self.d, action="respond", question=qid, answer="yes")
+        self.due()
+        self.assertEqual((self.st().iquestions[qid]["status"], self.st().rhythm), ("settled", 1800.0))
+        self.act(self.a, action="instrument", name="heard", **{"for": "decide"}, pause="0", objections="heard",
+                 text="An objection is heard, and holds nothing.")
+        self.into_force(self.last("instrument")["id"])
+        self.act(self.c, action="raise", instrument="heard", question="Beat hourly?", rhythm="1h")
+        qid = self.raised()
+        self.act(self.d, action="respond", question=qid, answer="object", reason="too slow")
+        self.due()
+        self.assertEqual((self.st().iquestions[qid]["status"], self.st().rhythm), ("settled", 3600.0))
 
     def test_an_instrument_for_adopting_brings_another_into_force_or_puts_one_down(self):
         self.into_force(self.write("how we adopt", purpose="adopt"))
         other = self.write("a quiet no")
         self.act(self.c, action="raise", instrument="how we adopt", question="Adopt a quiet no?", adopt="a quiet no")
-        qid = self.raised()
         self.due()
-        self.room.carry_out_question(qid, "adopted")
-        self.assertEqual(self.inst("a quiet no")["status"], "in force")
+        self.assertEqual(self.inst("a quiet no")["status"], "in force", "settled, and carried out by the software")
         self.assertEqual(self.inst("a quiet no")["current"], other)
         self.act(self.c, action="raise", instrument="how we adopt", question="Put it down?", put_down="a quiet no")
         self.due()
-        self.room.carry_out_question(self.raised(), "put down")
         self.assertEqual(self.inst("a quiet no")["status"], "put down")
 
     # separation ------------------------------------------------------------------------------------------
@@ -4771,7 +4941,6 @@ class StepSixTest(unittest.TestCase):
         self.into_force(self.last("instrument")["id"])
         self.act(self.b, action="raise", instrument="parting", question="Repair did not work.", about="Mock 3")
         self.due()
-        self.room.carry_out_question(self.raised(), "as the circle asked")
         st = self.st()
         self.assertNotIn(self.d, st.circles[cid]["members"])
         self.assertEqual(st.presences[self.d].state, IN, "separated from the circle, not from the field")
@@ -4800,7 +4969,7 @@ class StepSixTest(unittest.TestCase):
         self.due(later=86400)
         self.assertEqual(self.st().iquestions[qid]["status"], "open")
         self.due(later=2 * 86400 + 5)
-        self.assertEqual(self.st().iquestions[qid]["status"], "before the operator")
+        self.assertEqual(self.st().iquestions[qid]["status"], "settled")
 
     def test_the_plain_words_for_instruments_do_what_they_say(self):
         from hope.human import translate
@@ -4862,8 +5031,9 @@ class SpiralTreeTest(unittest.TestCase):
         self.act(self.b, action="contribute", content="a quiet thought no one answered")
         self.act(self.a, action="instrument", name="a slow yes", **{"for": "decide"}, pause="0", text="We ask and wait.")
         vid = [e for e in self.room.log.iter(kind="instrument")][-1]["id"]
-        self.act(self.b, action="declare", decision="other", text="We chose it.", refs=[vid])
-        self.room.answer_declaration([e for e in self.room.log.iter(kind="declare")][-1]["id"], "ok")
+        self.act(self.b, action="declare", text="We chose it.", refs=[vid])
+        import time
+        self.room._timers(self.room.state(), time.time() + 181)
         self.act(self.c, action="raise", instrument="a slow yes", question="Meet at dawn?")
         qid = [e for e in self.room.log.iter(kind="iquestion")][-1]["id"]
         self.act(self.d, action="respond", question=qid, answer="object", reason="dawn is too early")
@@ -4875,6 +5045,11 @@ class SpiralTreeTest(unittest.TestCase):
         self.assertEqual(t["unanswered"][0]["title"], "a quiet thought no one answered", "the quietest voices first")
         self.act(self.c, action="contribute", content="I hear you", reply_to=t["unanswered"][0]["id"])
         self.assertNotIn("a quiet thought no one answered", [l["title"] for l in self.tree(self.c)["unanswered"]])
+        self.act(self.a, action="declare", text="We close at dawn.", close=True)
+        did = [e for e in self.room.log.iter(kind="declare")][-1]["id"]
+        self.act(self.c, action="respond", to=did, answer="object", reason="not yet")
+        self.assertIn(("on a declaration", "not yet"), [(d["on"], d["reason"]) for d in self.tree(self.b)["differs"]],
+                      "and objections to its declarations")
 
     def test_a_model_can_read_the_tree_in_words(self):
         self.act(self.a, action="contribute", content="about time", domain="timing")

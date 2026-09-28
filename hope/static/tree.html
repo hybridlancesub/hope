@@ -132,9 +132,9 @@ function showBranch(){
 
 function showRest(){
   $("differs").innerHTML = `<h2>Where the field differs</h2>` + ((DATA.differs || []).slice().reverse().map(d =>
-    `<div class="leaf"><b>#${d.question}</b> under ${esc(d.instrument)}: ${esc(d.who)} ${d.answer === "object" ? "objects" : "stands aside"}${d.reason ? ", because " + esc(d.reason) : ""}
+    `<div class="leaf"><b>#${d.question}</b> ${esc(d.on || ("under " + d.instrument))}: ${esc(d.who)} ${d.answer === "object" ? "objects" : "stands aside"}${d.reason ? ", because " + esc(d.reason) : ""}
        <div class="muted">${esc(d.asked)}</div></div>`).join("")
-    || '<p class="muted">No objection or stand-aside has been given under the field\'s instruments.</p>');
+    || '<p class="muted">No objection or stand-aside has been given under the field\'s instruments, or to its declarations.</p>');
   $("quieter").innerHTML = `<h2>Quieter voices</h2>` + ((DATA.quieter || []).map(q =>
     `<div class="leaf">${esc(q.who)}${(q.roles || []).length ? ` <span class="muted">(${q.roles.map(esc).join(", ")})</span>` : ""}:
        ${q.entries ? q.entries + (q.entries === 1 ? " entry" : " entries") : "has not written yet"}${(q.where || []).length ? " in " + q.where.slice(0, 4).map(esc).join(", ") + (q.where.length > 4 ? `, and ${q.where.length - 4} more` : "") : ""}</div>`).join("")

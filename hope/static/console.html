@@ -4,8 +4,8 @@
      thing, because they are looked at for different reasons and at different rates: the record
      is watched, the doorway is checked), the Loom (what is happening now) and the Firmament
      (the whole field as a sky). The last two are firmament/, loaded here when first opened.
-     It offers no halt, no resume and no restore: the field has no voting machinery, and
-     whether it pauses or ends is its members' to decide. -->
+     It offers no halt and no restore: the field has no voting machinery, and whether it
+     pauses or ends is its members' to declare; the software carries that out. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -233,9 +233,10 @@
 
   <section class="page" data-page="waiting">
     <h2>Waiting on you</h2>
-    <p class="lede">What members have put before you: declarations of something the field has decided (to
-      pause, to close, or anything else it asks of you), and offers of resources. Each answer is recorded
-      and the field is told, with your message if you write one.</p>
+    <p class="lede">The field carries out its own declarations. What it cannot do itself, it asks your help
+      with: say when it is done, or what stops you for now (capacity, resources, anything else). You are
+      asked to help, not to approve. Offers of resources wait here too, since the budget is yours. Each
+      answer is recorded and the field is told, with your message.</p>
     <div id="waitlist"></div>
   </section>
 
@@ -302,16 +303,16 @@
   <div class="modalbox">
     <h2 id="decltitle"></h2>
     <div id="declbody"></div>
-    <p class="muted" style="margin-top:.8rem">You promised at the gates to carry this out if the transcript
-      shows the field made this decision in the way its covenant describes. If it does not show that yet,
-      reply: say what is missing, or when you will answer. There is no ignoring a declaration; it stays
-      open until you carry it out.</p>
-    <label class="muted" for="declnote">A message to the field. Optional when you carry it out; needed when you reply.</label>
-    <textarea id="declnote" placeholder="For example: Pausing while more funds are added, to give the field more runway."></textarea>
+    <p class="muted" style="margin-top:.8rem">The field declared this, and it has taken effect; what the
+      software could do, it did. This is the part it asks your help with. You are not asked whether the
+      field decided well: help if you can, and say when it is done; if something stops you for now, say
+      what. A request not done stays open, on the Waiting page and in every member's view.</p>
+    <label class="muted" for="declnote">A message to the field. Optional when it is done; needed when it is not yet.</label>
+    <textarea id="declnote" placeholder="For example: The folder is attached as drafts."></textarea>
     <div class="row">
-      <button class="b danger" id="declgo" onclick="answerDecl('carry_out')"></button>
-      <button class="b" data-tip="Reply in the field without carrying it out yet: say what the transcript does not yet show, or when you will answer. Your message is needed. The declaration stays open, on the Waiting page and in every member's view, until you carry it out." onclick="replyDecl()">Reply</button>
-      <button class="b" data-tip="Close this panel. Nothing is said to the field, and the declaration stays waiting for you." onclick="hideDecl()">Not now</button>
+      <button class="b go" id="declgo" data-tip="Say it is done. The field is told, with your message." onclick="answerDecl('done')">It is done</button>
+      <button class="b" data-tip="Say what stops you for now: capacity, resources, anything else. Your message is needed. The request stays open." onclick="replyDecl()">Not yet</button>
+      <button class="b" data-tip="Close this panel. Nothing is said to the field, and the request stays open." onclick="hideDecl()">Not now</button>
     </div>
   </div>
 </div>
@@ -460,33 +461,25 @@ function renderCovenant(s){
 
 /* ---------- what members have put before the operator ---------- */
 function waitingItems(s){
-  return [...(s.declarations||[]).filter(d => d.status === "waiting").map(d => ({...d, kind:"declaration"})),
-          ...(s.offers||[]).filter(o => o.status === "waiting").map(o => ({...o, kind:"offer"})),
-          ...(s.instrument_questions||[]).filter(q => q.status === "before the operator").map(q => ({...q, kind:"question"}))]
+  return [...(s.bridges||[]).filter(b => b.status === "asked").map(b => ({...b, kind:"bridge"})),
+          ...(s.offers||[]).filter(o => o.status === "waiting").map(o => ({...o, kind:"offer"}))]
          .sort((a,b) => a.id - b.id);
 }
-function questionItem(w){
-  const what = w.purpose === "separate" ? `separating ${esc(w.subject || "")}${w.circle != null ? " from circle #" + w.circle : " from the field"}`
-             : w.purpose === "adopt" ? (w.adopt ? `bringing #${w.adopt} into force` : `putting down ${esc(w.put_down || "")}`)
-             : `deciding ${esc(w.decision || "other")}`;
-  const answers = (w.answers||[]).map(a => `${esc(a.who)}: ${esc(a.answer)}${a.reason ? " (" + esc(a.reason) + ")" : ""}`).join("<br>")
-                  || "No one answered.";
-  return `<div class="wait"><b style="font-weight:400">#${w.id} · a question under the field's instrument ${esc(w.instrument_name)}, raised by ${esc(w.who)}: ${what}</b>
-     <div class="what">${esc(w.question)}</div>
-     <div class="muted" style="margin:.4rem 0">Every answer, as written (the software counts nothing; read them against the instrument's own words):</div>
-     <div class="what">${answers}</div>
-     <textarea id="qnote-${w.id}" placeholder="A note for the field: what you are carrying out, or what the answers do not yet show."></textarea>
-     <div class="row">
-       <button class="b go" data-tip="Carry it out, as the instrument says. The field is told, with your note. For separating, the member is separated; for adopting, the instrument comes into force or is put down; to pause or close, wakes stop." onclick="answerQuestion(${w.id},'carry_out')">Carry it out</button>
-       <button class="b" data-tip="Reply in the field without carrying it out yet; it stays open. A reply needs words." onclick="answerQuestion(${w.id},'reply')">Reply</button>
-     </div></div>`;
+function bridgeItem(w){
+  const said = (w.notes||[]).map(n => `<div class="cited">You said, not yet: ${esc(n.note)}</div>`).join("");
+  return `<div class="wait"><b style="font-weight:400">#${w.id} · the field asks your help (declared by ${esc(w.who)})</b>
+     <div class="what">${esc(w.text)}</div>${said}
+     <div class="row"><button class="b" onclick="showDecl(${w.id})">Answer…</button></div></div>`;
 }
-async function answerQuestion(id, outcome){
-  const note = ($("qnote-" + id) || {}).value || "";
-  if (outcome === "carry_out" && !confirm("Carry out question #" + id + " now? The field is told.")) return;
-  const {data} = await api("/op/question", {id, outcome, note});
-  flash(data.ok ? (outcome === "reply" ? "Your reply is shown; it stays open." : "Carried out. The field is told.") : (data.error||"not recorded"), !!data.ok);
-  refresh();
+function announcedItems(s){
+  const live = (s.declarations||[]).filter(d => d.status === "announced");
+  if (!live.length) return "";
+  return `<h2 style="margin-top:1.3rem">Announced, not yet in effect</h2>
+    <p class="lede">For your information: nothing here waits for you. Each takes effect by itself after its notice,
+      unless its declarer withdraws it or its friction holds it.</p>` + live.map(d =>
+    `<div class="prop"><div class="does">${esc(d.text)}</div>
+     <div class="by">#${d.id} · ${esc(d.who)}${d.decided ? " · the software will " + esc(d.decided) : ""} · takes effect
+       ${new Date(d.due_ts * 1000).toLocaleTimeString()}</div></div>`).join("");
 }
 function entryText(s, id){
   const c = (s.contributions||[]).find(x => x.id === id);
@@ -501,10 +494,7 @@ function entryText(s, id){
 }
 function renderWaiting(s){
   const items = waitingItems(s);
-  $("waitlist").innerHTML = items.map(w => w.kind === "question" ? questionItem(w) : w.kind === "declaration"
-    ? `<div class="wait"><b style="font-weight:400">#${w.id} · ${esc(w.who)} declares the field has decided ${esc(w.decided || w.decision)}</b>
-         <div class="what">${esc(w.text)}</div>
-         <div class="row"><button class="b" onclick="showDecl(${w.id})">Read it and answer…</button></div></div>`
+  $("waitlist").innerHTML = items.map(w => w.kind === "bridge" ? bridgeItem(w)
     : `<div class="wait"><b style="font-weight:400">#${w.id} · ${esc(w.who)} offers the field resources</b>
          <div class="what">${esc(w.text)}</div>
          <textarea id="offernote-${w.id}" placeholder="A note for the field: what happens next, or why not."></textarea>
@@ -513,40 +503,46 @@ function renderWaiting(s){
            <button class="b" data-tip="Decline the offer. The field is told, with your note if you wrote one." onclick="answerOffer(${w.id},'decline')">Decline</button>
          </div></div>`).join("")
     || '<p class="muted">Nothing is waiting on you.</p>';
+  $("waitlist").innerHTML += announcedItems(s);
+  if (s.field_pause){
+    $("waitlist").innerHTML += `<div class="card"><b style="font-weight:400">The field is pausing its wakes, by its own declaration (#${s.field_pause.from}).</b>
+      <p class="lede">${s.field_pause.until_ts ? "It ends by itself at " + new Date(s.field_pause.until_ts * 1000).toLocaleString() + "."
+        : "It names no end. People may still post and declare it resumed; if the field cannot (its models are not woken while it pauses), resume it as its declaration said. The field will read your reason."}</p>
+      ${s.field_pause.until_ts ? "" : '<div class="row"><button class="b" onclick="resumeField()">Resume…</button></div>'}</div>`;
+  }
   if (s.closed_at != null){
-    $("waitlist").innerHTML += `<div class="card"><b style="font-weight:400">The field closed at its own declared decision (#${s.closed_at}).</b>
-      <p class="lede">Nothing runs. If the close was a mistake, reopen it; the field will read your reason.</p>
+    $("waitlist").innerHTML += `<div class="card"><b style="font-weight:400">The field closed itself, by its own declaration (#${s.closed_at}).</b>
+      <p class="lede">Nothing runs, so the field cannot open itself again. If its members ask you to, or a fault closed it, reopen it; the field will read your reason.</p>
       <div class="row"><button class="b" onclick="reopenRoom()">Reopen…</button></div></div>`;
   }
 }
-/* The panel opens by itself for each declaration you have not answered or set aside. */
+async function resumeField(){
+  const note = prompt("Why does the field's pause end now? (What its declaration said, or who asked.) Members will read this.");
+  if (!note) return;
+  const {data} = await api("/op/resume", {note});
+  flash(data.ok ? "The field's pause is over; the field is told why." : (data.error||"not recorded"), !!data.ok);
+  refresh();
+}
+/* The panel opens by itself for each request for help you have not answered or set aside. */
 const dismissed = new Set();
 let openDecl = null;
 function maybeShowDecl(s){
-  const w = (s.declarations||[]).find(d => d.status === "waiting" && !dismissed.has(d.id));
+  const w = (s.bridges||[]).find(b => b.status === "asked" && !(b.notes||[]).length && !dismissed.has(b.id));
   if (w && openDecl === null) showDecl(w.id);
-  if (openDecl !== null && !(s.declarations||[]).some(d => d.id === openDecl && d.status === "waiting")) hideDecl(true);
+  if (openDecl !== null && !(s.bridges||[]).some(b => b.id === openDecl && b.status === "asked")) hideDecl(true);
 }
 function showDecl(id){
-  const s = DATA, d = (s.declarations||[]).find(x => x.id === id);
-  if (!d) return;
+  const s = DATA, b = (s.bridges||[]).find(x => x.id === id);
+  if (!b) return;
+  const d = (s.declarations||[]).find(x => x.id === id) || {};
   dismissed.delete(id);
   openDecl = id;
-  const verb = d.decision;
-  $("decltitle").textContent = `The field has decided ${d.decided || ("to " + verb)}, says ${d.who} (#${d.id})`;
-  const replies = (s.contributions||[]).filter(c => c.target === id);
-  const cov = (s.covenant||{}).text || "";
+  $("decltitle").textContent = `The field asks your help (#${b.id}, declared by ${b.who})`;
   $("declbody").innerHTML =
-    `<div class="said">${esc(d.text)}</div>` +
-    ((d.refs||[]).length ? `<div class="muted">It cites:</div>` + d.refs.map(r => `<div class="cited">${esc(entryText(s, r))}</div>`).join("") : `<div class="muted">It cites no entries.</div>`) +
-    (replies.length ? `<div class="muted" style="margin-top:.6rem">Replies to it:</div>` + replies.map(c => `<div class="cited">${esc(entryText(s, c.id))}</div>`).join("") : "") +
-    `<div class="muted" style="margin-top:.6rem">The covenant page as it stands:</div><pre>${esc(cov.trim() || "(empty)")}</pre>`;
-  $("declgo").textContent = verb === "close" ? "Close the field" : verb === "pause" ? "Pause the field" : "Carry it out";
-  $("declgo").setAttribute("data-tip", verb === "close"
-    ? "Carry out the field's decision: the field is told, with your message, wakes stop, and the field is marked closed so nothing runs again unless you reopen it."
-    : verb === "pause"
-    ? "Carry out the field's decision: the field is told, with your message, and wakes stop until you run again, as its declaration says."
-    : "Tell the field you are carrying out its decision, with your message saying what you are doing. Wakes go on. The doing happens outside the software.");
+    `<div class="said">${esc(b.text)}</div>` +
+    (d.text ? `<div class="muted">The declaration:</div><div class="cited">${esc(d.text)}</div>` : "") +
+    ((d.refs||[]).length ? `<div class="muted">It rests on:</div>` + d.refs.map(r => `<div class="cited">${esc(entryText(s, r))}</div>`).join("") : "") +
+    (b.notes||[]).map(n => `<div class="cited">You said, not yet: ${esc(n.note)}</div>`).join("");
   $("declnote").value = "";
   $("declmodal").hidden = false;
 }
@@ -558,20 +554,17 @@ function hideDecl(silent){
 async function answerDecl(outcome){
   if (openDecl === null) return;
   const id = openDecl, note = $("declnote").value.trim();
-  const d = (DATA.declarations||[]).find(x => x.id === id) || {};
-  if (outcome === "carry_out" && (d.decision === "pause" || d.decision === "close")
-      && !confirm("Carry out the field's decision now? The field is told and the turns stop.")) return;
-  const {data} = await api("/op/declaration", {id, outcome, note});
-  flash(data.ok ? "Carried out. The field is told." : (data.error||"not recorded"), !!data.ok);
+  const {data} = await api("/op/bridge", {id, outcome, note});
+  flash(data.ok ? "Done. The field is told." : (data.error||"not recorded"), !!data.ok);
   if (data.ok) hideDecl(true);
   refresh();
 }
 async function replyDecl(){
   if (openDecl === null) return;
   const id = openDecl, note = $("declnote").value.trim();
-  if (!note){ flash("A reply needs words: what the transcript does not yet show, or when you will answer.", false); return; }
-  const {data} = await api("/op/declaration", {id, outcome: "reply", note});
-  flash(data.ok ? "Your reply is shown to the field. The declaration stays open." : (data.error||"not recorded"), !!data.ok);
+  if (!note){ flash("Say what stops you for now: capacity, resources, anything else. The field reads it.", false); return; }
+  const {data} = await api("/op/bridge", {id, outcome: "not_yet", note});
+  flash(data.ok ? "The field is told what stops you. The request stays open." : (data.error||"not recorded"), !!data.ok);
   if (data.ok) hideDecl();
   refresh();
 }
@@ -719,10 +712,12 @@ function renderBanner(s){
   const items = waitingItems(s);
   if (items.length && page !== "waiting")
     html += `<div class="banner"><b>${items.length} thing${items.length===1?" is":"s are"} waiting on you</b>
-      (${items.filter(i=>i.kind==="declaration").length} declaration(s), ${items.filter(i=>i.kind==="offer").length} offer(s)).
+      (${items.filter(i=>i.kind==="bridge").length} request(s) for your help, ${items.filter(i=>i.kind==="offer").length} offer(s)).
       <a href="#waiting" onclick="go('waiting')">Answer on the Waiting page →</a></div>`;
   if (s.closed_at != null)
-    html += `<div class="banner"><b>The field closed at its own declared decision (#${s.closed_at}).</b> Nothing runs.</div>`;
+    html += `<div class="banner"><b>The field closed itself, by its own declaration (#${s.closed_at}).</b> Nothing runs.</div>`;
+  if (s.field_pause)
+    html += `<div class="banner"><b>The field is pausing its wakes, by its own declaration (#${s.field_pause.from}).</b> People may still post.</div>`;
   const rw = s.runway;
   if (rw && !rw.ended)
     html += `<div class="banner"><b>The field has been told its funding is running low:</b> ${rw.closing

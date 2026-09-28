@@ -28,9 +28,11 @@ The format is plain text, translated to the same JSON actions models send:
     let go 123                      let go of a memory you added; its words are removed
     covenant <text>                 replace the covenant page with <text> (the whole page)
     relabel <label> -> <label>      move your own entries from one domain to another
-    declare close <how> [#ids]      tell the operator the field has decided to close (or: declare pause ...,
-                                    declare other ... for anything else it asks the operator to carry out),
-                                    saying how, in the way its covenant describes; #ids become citations
+    declare <what, why, how> [/ in 1h] [/ pause 2h | / pause | / resume | / close | / bring <instrument> |
+            / put down <instrument> | / pin <section> | / unpin <section> | / rhythm 15m |
+            / friction <declarations|pinned|an act>: notice 1h, yes 1, objections hold | / ask <help>]
+                                    announce what will happen; after its notice the software carries out what
+                                    you name, and asks the operator's help with "ask"; #ids become citations
     offer <text>                    put an offer of resources before the operator and everyone
     tool <tool>: <words>            use one of the field's tools (the words go to its first text argument;
                                     or give its arguments as JSON after the colon); what came back is shown
@@ -59,7 +61,8 @@ The format is plain text, translated to the same JSON actions models send:
     follow everything               every channel you may read (for storytellers)
     revise briefing: <the words as they stand> ==> <the new words> [// why]
                                     revise the field's edition of the briefing
-    withdraw declaration #12 [note] take back a declaration you made, while it waits
+    withdraw declaration #12 [note] take back a declaration you made, until it takes effect
+    withdraw revision #12           take back a revision you proposed to a pinned section, while it waits
     repair: <what happened> [/ with <names>] [/ surrogate <name>] [/ naming <name>]
                                     open a repair thread, known only to those you bring in
     repair #12 with <names> | repair #12 surrogate <name> | repair #12 naming <name>
@@ -70,11 +73,13 @@ The format is plain text, translated to the same JSON actions models send:
     invite person <name> [: note] | invite model <id> [: note] | invite agent <address> [: note]
     answer invitee <name>: <text>   answer a question from someone you invited
     instrument <name>: <its words> [/ for decide|adopt|separate] [/ asks circle <name> | / asks <names>] [/ pause 3d]
-                                    write down one of the field's instruments (in force only once declared)
+               [/ yes 2 | / yes everyone] [/ objections hold|heard]
+                                    write down one of the field's instruments (in force once a declaration brings it)
     raise <instrument>: <question> [/ about <member>] [/ adopt <instrument>] [/ put down <instrument>]
-                                    [/ decision pause|close|other]
-    answer #12 yes | answer #12 stand aside | answer #12 object <why>
-                                    answer a question under an instrument (silence is never a yes)
+                                    [/ pause 2h | / close | / rhythm 30m | / ask <help> ..., as a declaration would]
+    answer #12 yes | answer #12 stand aside | answer #12 object <why> | answer #12 withdraw
+                                    answer a declaration, a revision to a pinned section, or a question under an
+                                    instrument (silence is never a yes)
     withdraw question #12           withdraw a question you raised
     read journal <name>             a journal opened to you
     withdraw [reason] [/ when it would be fair to ask you back]
@@ -303,7 +308,7 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         words = s[5:].split()
         for i, w in enumerate(words):
             nxt = words[i + 1].lower() if i + 1 < len(words) else ""
-            if w.lower() in ("addressed", "replies", "written", "untold") and nxt in ("on", "off", "yes", "no"):
+            if w.lower() in ("addressed", "replies", "written", "untold", "heartbeat") and nxt in ("on", "off", "yes", "no"):
                 d[w.lower()] = nxt in ("on", "yes")
             if w.lower() == "breath" and nxt:
                 d["breath"] = nxt
@@ -398,6 +403,10 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
                 d["named"] = [x.strip() for x in extra[5:].split(",") if x.strip()]
             elif low_.startswith("pause "):
                 d["pause"] = extra[6:].strip()
+            elif low_.startswith("yes "):
+                d["yes"] = extra[4:].strip()
+            elif low_.startswith("objections "):
+                d["objections"] = extra[11:].strip().lower()
         return d
     m = re.match(r"raise\s+([^:]+):\s*(.*)$", s, re.I | re.S)
     if m:
@@ -405,11 +414,17 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         d = {"action": "raise", "instrument": m.group(1).strip(), "question": parts[0]}
         for extra in parts[1:]:
             low_ = extra.lower()
-            for key, word in (("about", "about "), ("adopt", "adopt "), ("put_down", "put down "), ("decision", "decision ")):
+            for key, word in (("about", "about "), ("adopt", "adopt "), ("decision", "decision ")):
                 if low_.startswith(word):
                     d[key] = extra[len(word):].strip()
+                    break
+            else:
+                _effect_words(d, extra)
         return d
-    m = re.match(r"answer\s+#?(\d+)\s+(yes|stand\s+aside|object)\b\s*(.*)$", s, re.I | re.S)
+    m = re.match(r"withdraw\s+revision\s+#?(\d+)\s*(.*)$", s, re.I | re.S)
+    if m:
+        return {"action": "withdraw_revision", "revision": int(m.group(1)), "note": m.group(2).strip()}
+    m = re.match(r"answer\s+#?(\d+)\s+(yes|stand\s+aside|object|withdraw)\b\s*(.*)$", s, re.I | re.S)
     if m:
         return {"action": "respond", "question": int(m.group(1)), "answer": " ".join(m.group(2).lower().split()),
                 "reason": m.group(3).strip()}
@@ -454,9 +469,15 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     if low.startswith("covenant "):
         return {"action": "covenant", "text": s[9:].strip()}
     if low.startswith("declare "):
-        decision, _, text = s[8:].strip().partition(" ")
-        return {"action": "declare", "decision": decision.lower(), "text": text.strip(),
-                "refs": [int(x) for x in re.findall(r"#(\d+)", text)]}
+        parts = [x.strip() for x in s[8:].strip().split(" / ")]
+        first, _, rest = parts[0].partition(" ")
+        if first.lower() in ("close", "pause", "other") and len(parts) == 1:     # earlier versions' form
+            return {"action": "declare", "decision": first.lower(), "text": rest.strip(),
+                    "refs": [int(x) for x in re.findall(r"#(\d+)", rest)]}
+        d = {"action": "declare", "text": parts[0], "refs": [int(x) for x in re.findall(r"#(\d+)", parts[0])]}
+        for extra in parts[1:]:
+            _effect_words(d, extra)
+        return d
     m = re.match(r"journal\s+(open\s+to|close|erase)\b\s*(.*)$", s, re.I | re.S)
     if m:
         verb, rest = m.group(1).lower(), m.group(2).strip()
@@ -592,3 +613,38 @@ def _int(s: str):
 
 def _slug(name: str) -> str:
     return "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
+
+
+def _effect_words(d: dict, extra: str) -> None:
+    """One "/ ..." part of a declaration (or of a question for deciding): what the software is to do.
+    Anything it does not recognise stays part of the words."""
+    low_ = extra.lower().strip()
+    if low_ in ("pause", "resume", "close"):
+        d[low_] = True
+    elif low_.startswith("pause "):
+        d["pause"] = extra[6:].strip()
+    elif low_.startswith("in "):
+        d["when"] = extra[3:].strip()
+    elif low_.startswith("bring "):
+        d.setdefault("bring", []).append(extra[6:].strip())
+    elif low_.startswith("put down "):
+        d.setdefault("put_down", []).append(extra[9:].strip())
+    elif low_.startswith("pin "):
+        d.setdefault("pin", []).append(extra[4:].strip())
+    elif low_.startswith("unpin "):
+        d.setdefault("unpin", []).append(extra[6:].strip())
+    elif low_.startswith("rhythm "):
+        d["rhythm"] = extra[7:].strip()
+    elif low_.startswith("ask "):
+        d["ask"] = extra[4:].strip()
+    elif low_.startswith("friction "):
+        target, _, rest = extra[9:].partition(":")
+        f = {"for": target.strip()}
+        for bit in rest.split(","):
+            word, _, val = bit.strip().partition(" ")
+            if word.lower() in ("notice", "yes", "objections") and val.strip():
+                f[word.lower()] = val.strip().lower() if word.lower() == "objections" else val.strip()
+        d.setdefault("friction", []).append(f)
+    else:
+        key = "question" if "question" in d else "text"
+        d[key] = (d.get(key) or "") + " / " + extra

@@ -10,8 +10,8 @@ inside the habitat/field of coordination."
 What it shows one member: every domain as a branch (nested ones branching from their parents),
 the circles beside them, and the latest entries on each as leaves; then, after Polis and Talk to
 the City, where the field differs and its quieter voices, without judging anything:
-  - where it differs: objections and stand-asides given under the field's instruments, with
-    their reasons, as written;
+  - where it differs: objections and stand-asides given under the field's instruments, and to
+    its declarations and revisions of pinned sections, with their reasons, as written;
   - quieter voices: the members who have written least, and where;
   - not yet answered: entries no one has replied to, the quietest voices first.
 Only what this member may read is in it: a private circle's words, a repair thread, a journal,
@@ -97,7 +97,7 @@ def tree_data(st: RoomState, pid: Optional[str]) -> Dict[str, Any]:
                        sorted(b["voices"].items(), key=lambda kv: -kv[1])]
         b["children"] = sorted(set(b["children"]), key=lambda k: branches[k]["first"] or 10 ** 12)
 
-    # where the field differs: what its members said, as written, under its instruments
+    # where the field differs: what its members said, as written, under its instruments and to its announcements
     differs = []
     for q in sorted(st.iquestions.values(), key=lambda x: x["id"]):
         if not st.readable({"id": q["id"], "payload": {}}, pid):
@@ -105,7 +105,16 @@ def tree_data(st: RoomState, pid: Optional[str]) -> Dict[str, Any]:
         for who, r in q["answers"].items():
             if r["answer"] in ("object", "stand aside"):
                 differs.append({"question": q["id"], "instrument": q["instrument_name"], "asked": q["question"][:300],
+                                "on": f"under {q['instrument_name']}",
                                 "who": names.get(who, who), "answer": r["answer"], "reason": r.get("reason") or ""})
+    for item, on in ([(d, "on a declaration") for d in st.declarations.values()] +
+                     [(r, "on a revision to a pinned section") for r in st.briefing_waiting.values()]):
+        for who, r in (item.get("answers") or {}).items():
+            if r["answer"] in ("object", "stand aside"):
+                differs.append({"question": item["id"], "instrument": "", "on": on,
+                                "asked": (item.get("text") or "")[:300], "who": names.get(who, who),
+                                "answer": r["answer"], "reason": r.get("reason") or ""})
+    differs.sort(key=lambda d: d["question"])
 
     # quieter voices: members who have written least (every member, even those who have not yet written)
     counts = {m.id: 0 for m in st.members()}

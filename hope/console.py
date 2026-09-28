@@ -32,19 +32,20 @@ What the operator can do here is deliberately smaller than what a terminal can d
     answer          answer a question someone asked at the invitation gate
     seat            mint an invitation link for a person or an agent on another machine
     open/enter/run  the phases, exactly as hope/__main__.py runs them
-    declaration     answer a member's declaration of something the field decided (to pause, to
-                    close, or anything else it asks for): carry it out, or reply in the field
-                    (with words) and it stays open. There is no ignoring one.
+    bridge          answer what the field asked your help with (a declaration's "ask"): done, or
+                    not yet, saying what stops you; it stays open. You help; you approve nothing.
+                    The field carries out its own declarations (notes/sketch-8-the-operator-as-bridge.md)
+    resume          resume a declared pause the field cannot end itself, as its declaration said
     offer           answer a member's offer of resources: accept or decline, with a note
     reinvite        ask back someone who left: a former member is asked the entry question
                     again, someone who declined the invitation again; they answer like anyone
     budget          change what the field may spend; members are told in time, not dollars
     read_circle     open a private circle's words; this is written in the circle, where its members see it
-    reopen          undo a close carried out by mistake (needs words the field will read)
+    reopen          open a closed field again, when its members ask (needs words the field will read)
     stop            pause the software -- which decides nothing in the field
 
-There is no halt, no resume, and no restore here, and none anywhere else either: the field has
-no voting machinery at all, and whether it pauses or ends is its members' to decide. `stop` is
+There is no halt and no restore here, and none anywhere else either: the field has no voting
+machinery at all, and whether it pauses or ends is its members' to declare. `stop` is
 the operator pausing the software (to fix a fault, say), with an obligation attached: it
 will not stop the turns until you have written what the field should be told, and that
 notice is recorded before the turns cease.
@@ -263,20 +264,21 @@ class Console:
             return {"ok": True, "seat": sid, "path": f"/seat/{token}/",
                     "note": "the old link stopped working. Nothing they have said is affected."}
 
-        if action == "declaration":
-            did, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
-            if outcome not in ("carry_out", "reply"):
-                return {"ok": False, "error": "outcome must be carry_out or reply. There is no ignoring a declaration: "
-                                              "carry it out, or reply in the field and it stays open."}
-            if outcome == "reply":
-                out = self.room.reply_declaration(did, payload.get("note") or "")
-                if out.get("ok"):
-                    self._say(f"declaration #{did}: your reply is shown to the field; it stays open")
-                return out
-            out = self.room.answer_declaration(did, payload.get("note") or "")
+        if action == "bridge":
+            # What the field asked the operator's help with: done, or not yet (with what stops them).
+            rid, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
+            if outcome not in ("done", "not_yet"):
+                return {"ok": False, "error": "outcome must be done or not_yet (with a note saying what stops you). "
+                                              "You are asked to help, not to approve."}
+            out = self.room.answer_bridge(rid, outcome == "done", payload.get("note") or "")
             if out.get("ok"):
-                d = self.room.state().declarations.get(did) or {}
-                self._say(f"declaration #{did}: carried out" + ("; wakes will cease" if d.get("decision") in ("pause", "close") else ""))
+                self._say(f"#{rid}: " + ("done; the field is told" if outcome == "done" else "not yet; the field is told why"))
+            return out
+
+        if action == "resume":
+            out = self.room.resume(payload.get("note") or "")
+            if out.get("ok"):
+                self._say("the field's pause is over; the field is told why")
             return out
 
         if action == "reinvite":
@@ -324,22 +326,10 @@ class Console:
             return {"ok": True, "note": "notice recorded, wakes will cease. Nothing was decided in the field."}
 
         if action == "remove_tool":
-            # For example, carrying out what the field declared. Written in the field, with the note.
+            # For example, helping with what the field declared. Written in the field, with the note.
             out = self.room.remove_tool(str(payload.get("server") or ""), (payload.get("note") or "").strip()[:600])
             if out.get("ok"):
                 self._say(f"you removed the tool server {payload.get('server')!r}; the field is told, with your note")
-            return out
-
-        if action == "question":
-            # A question under one of the field's instruments, once its pause is over: carry it out, or reply.
-            qid, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
-            if outcome == "reply":
-                return self.room.reply_question(qid, payload.get("note") or "")
-            if outcome != "carry_out":
-                return {"ok": False, "error": "outcome must be carry_out or reply"}
-            out = self.room.carry_out_question(qid, payload.get("note") or "")
-            if out.get("ok"):
-                self._say(f"question #{qid}: carried out")
             return out
 
         if action == "answer_many":

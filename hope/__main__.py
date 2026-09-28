@@ -20,19 +20,17 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope cost   --db FIELD.db
   python3 -m hope input  --db FIELD.db --source NAME --text TEXT     (passes moderation boundary)
   python3 -m hope note   --db FIELD.db --text TEXT                   (operator notice, shown to members)
-  python3 -m hope declaration --db FIELD.db --id N (--carry-out | --reply) [--note TEXT]
-                                                                    carry out a member's declaration of something
-                                                                    the field decided, or reply (needs --note; it stays open)
+  python3 -m hope bridge --db FIELD.db --id N (--done | --not-yet) [--note TEXT]
+                                                                    answer what the field asked your help with:
+                                                                    done, or not yet (needs --note: what stops you)
+  python3 -m hope resume --db FIELD.db --note TEXT                   resume a declared pause the field cannot end itself
   python3 -m hope reinvite --db FIELD.db --presence ID [--note TEXT]  ask back someone who left
   python3 -m hope offer  --db FIELD.db --id N (--accept | --decline) [--note TEXT]
                                                                     answer a member's offer of resources
-  python3 -m hope reopen --db FIELD.db --note TEXT                   undo a close carried out by mistake
+  python3 -m hope reopen --db FIELD.db --note TEXT                   open a closed field again, when its members ask
   python3 -m hope tools  --db FIELD.db [--remove NAME --note TEXT]   the field's tools, flags and uses; remove one
   python3 -m hope skills --db FIELD.db [--out DIR]                   write the field's skills as DIR/<name>/SKILL.md
   python3 -m hope briefing --db FIELD.db --out FILE                  write the field's own edition of the briefing
-  python3 -m hope question --db FIELD.db --id N (--carry-out | --note TEXT)
-                                                                    carry out a question under one of the field's
-                                                                    instruments, once its pause is over, or reply
 
   Tools (notes/sketch-4-tools.md), on open, enter, run and console: --tools FILE (the operator's MCP tool
   servers; see tools.example.json), --no-fetch, --tool-steps N, --tool-view CHARS, --skills DIR (skills for
@@ -50,7 +48,7 @@ import time
 from .connector import MockConnector
 from .engine import Room
 from .log import EventLog
-from .model import decided, replay
+from .model import effects_words, replay
 
 
 def _connectors(args, allow_empty: bool = False):
@@ -287,21 +285,24 @@ def cmd_note(args):
     print("operator notice recorded; members see it in their next view.")
 
 
-def cmd_declaration(args):
+def cmd_bridge(args):
+    """Answer what the field asked the operator's help with (notes/sketch-8-the-operator-as-bridge.md)."""
     room = _room(args)
-    if args.carry_out == args.reply:
-        sys.exit("say --carry-out or --reply (exactly one). There is no ignoring a declaration: carry it out, "
-                 "or reply in the field with --note, and it stays open.")
-    if args.reply:
-        out = room.reply_declaration(args.id, args.note or "")
-        if not out.get("ok"):
-            sys.exit(out["error"])
-        print("your reply is shown to the field; the declaration stays open until you carry it out.")
-        return
-    out = room.answer_declaration(args.id, args.note or "")
+    if args.done == args.not_yet:
+        sys.exit("say --done or --not-yet (exactly one). You are asked to help, not to approve: say when it is done, "
+                 "or what stops you for now (--not-yet --note ...); it stays open.")
+    out = room.answer_bridge(args.id, args.done, args.note or "")
     if not out.get("ok"):
         sys.exit(out["error"])
-    print("carried out and the field told; if turns are running in another process, stop them there.")
+    print("the field is told." + ("" if args.done else " It stays open."))
+
+
+def cmd_resume(args):
+    room = _room(args)
+    out = room.resume(args.note)
+    if not out.get("ok"):
+        sys.exit(out["error"])
+    print("the field's pause is over; the field is told why.")
 
 
 def cmd_reinvite(args):
@@ -391,13 +392,24 @@ def cmd_status(args):
     if st.budget:
         print(f"budget: ${st.budget:.2f}" + (f"   runway notice: {st.runway}" if st.runway else ""))
     if st.closed_at is not None:
-        print(f"CLOSED at #{st.closed_at}, at the field's own declared decision. Nothing runs; `reopen` undoes a mistake.")
+        print(f"CLOSED at #{st.closed_at}, by the field's own declaration. Nothing runs; if its members ask, `reopen`.")
+    fp = st.paused_now(time.time())
+    if fp:
+        print(f"PAUSING by the field's own declaration (#{fp['from']})"
+              + (f", until {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(fp['until_ts']))}" if fp.get("until_ts") else
+                 ", until it resumes (`resume` bridges it, if the field cannot)"))
+    for d in sorted(st.declarations.values(), key=lambda x: x["id"]):
+        if d["status"] == "announced":
+            print(f"announced: declaration #{d['id']} by {names.get(d['by'], d['by'])}, taking effect "
+                  f"{time.strftime('%H:%M UTC', time.gmtime(d['due_ts']))}: {d['text'][:200]}"
+                  + (f"\n    the software will {effects_words(d['effects'], versions=st.instrument_versions)}"
+                     if effects_words(d["effects"]) else ""))
     for w in st.waiting_on_operator():
         who = names.get(w["by"], w["by"])
-        if w["kind"] == "declaration":
-            print(f"WAITING ON YOU: declaration #{w['id']} by {who}: the field has decided {decided(w['decision'])}\n    {w['text']}"
-                  f"\n    cites: {', '.join('#' + str(r) for r in w['refs']) or 'nothing'}"
-                  f"\n    answer: python3 -m hope --db {args.db} declaration --id {w['id']} --carry-out|--reply [--note ...]")
+        if w["kind"] == "bridge":
+            print(f"THE FIELD ASKS YOUR HELP: #{w['id']}, declared by {who}\n    {w['text']}"
+                  + "".join(f"\n    you said (not yet): {n['note']}" for n in w["notes"])
+                  + f"\n    answer: python3 -m hope --db {args.db} bridge --id {w['id']} --done|--not-yet [--note ...]")
         else:
             print(f"WAITING ON YOU: offer #{w['id']} by {who}\n    {w['text']}"
                   f"\n    answer: python3 -m hope --db {args.db} offer --id {w['id']} --accept|--decline [--note ...]")
@@ -574,21 +586,9 @@ def cmd_skills(args):
     print(f"{len(paths)} skill(s) written to {out}; commit them to publish", file=sys.stderr)
 
 
-def cmd_question(args):
-    """Carry out a question under one of the field's instruments, once its pause is over, or reply."""
-    room = _room(args, [])
-    if args.carry_out:
-        out = room.carry_out_question(args.id, args.note or "")
-    elif args.note:
-        out = room.reply_question(args.id, args.note)
-    else:
-        sys.exit("--carry-out, or --note TEXT to reply (it stays open)")
-    print(out)
-
-
 def cmd_briefing(args):
     """Write the field's edition of the briefing to a file: the operator's text, with every revision
-    members made to it (and every one the field decided on, for its firmer sections)."""
+    members made to it (and those to its pinned sections, once past their friction)."""
     st = replay(EventLog(args.db).iter())
     if not st.briefing:
         sys.exit("this field has no briefing")
@@ -708,17 +708,19 @@ def main(argv=None):
     s = sub.add_parser("status"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("close"); s.add_argument("--note", required=True); s.add_argument("--question", required=True); s.set_defaults(fn=cmd_close)
     s = sub.add_parser("note"); s.add_argument("--text", required=True); s.set_defaults(fn=cmd_note)
-    s = sub.add_parser("declaration", help="answer a member's declaration of something the field decided: carry it out, or reply (it stays open)")
-    s.add_argument("--id", type=int, required=True); s.add_argument("--carry-out", action="store_true")
-    s.add_argument("--reply", action="store_true", help="reply in the field without carrying it out yet (needs --note)")
-    s.add_argument("--note", default=None); s.set_defaults(fn=cmd_declaration)
+    s = sub.add_parser("bridge", help="answer what the field asked your help with: done, or not yet (and what stops you)")
+    s.add_argument("--id", type=int, required=True); s.add_argument("--done", action="store_true")
+    s.add_argument("--not-yet", dest="not_yet", action="store_true", help="say what stops you for now (needs --note)")
+    s.add_argument("--note", default=None); s.set_defaults(fn=cmd_bridge)
+    s = sub.add_parser("resume", help="resume a declared pause the field cannot end itself (as its declaration said)")
+    s.add_argument("--note", required=True); s.set_defaults(fn=cmd_resume)
     s = sub.add_parser("reinvite", help="ask back someone who left; they answer again like anyone")
     s.add_argument("--presence", required=True); s.add_argument("--note", default=None, help="a note they will read")
     s.set_defaults(fn=cmd_reinvite)
     s = sub.add_parser("offer", help="answer a member's offer of resources")
     s.add_argument("--id", type=int, required=True); s.add_argument("--accept", action="store_true")
     s.add_argument("--decline", action="store_true"); s.add_argument("--note", default=None); s.set_defaults(fn=cmd_offer)
-    s = sub.add_parser("reopen", help="undo a close carried out by mistake")
+    s = sub.add_parser("reopen", help="open a closed field again, when its members ask (or a fault closed it)")
     s.add_argument("--note", required=True); s.set_defaults(fn=cmd_reopen)
     s = sub.add_parser("log"); s.add_argument("--since", type=int, default=0); s.add_argument("--kind"); s.add_argument("--actor"); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("cost"); s.set_defaults(fn=cmd_cost)
@@ -736,9 +738,6 @@ def main(argv=None):
     s = sub.add_parser("export"); s.add_argument("--out", default=None); s.add_argument("--everything", action="store_true", help="include connector events and full texts"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("skills", help="write the field's skills as <name>/SKILL.md, to commit to the repository")
     s.add_argument("--out", default=None, help="the folder (default: skills/ in the repository)"); s.set_defaults(fn=cmd_skills)
-    s = sub.add_parser("question", help="carry out a question under one of the field's instruments, or reply to it")
-    s.add_argument("--id", type=int, required=True); s.add_argument("--carry-out", action="store_true")
-    s.add_argument("--note", default=None); s.set_defaults(fn=cmd_question)
     s = sub.add_parser("briefing", help="write the field's own edition of the briefing to a file")
     s.add_argument("--out", required=True); s.set_defaults(fn=cmd_briefing)
     s = sub.add_parser("tools", help="the field's tools, who runs each, their flags and uses; --remove one")

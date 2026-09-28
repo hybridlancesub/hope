@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from .labels import canonical
 from .log import EventLog
-from .model import CONTRIBUTION_KINDS, decided, replay
+from .model import CONTRIBUTION_KINDS, decided, effects_words, replay
 
 GATE_ORDER = ["INVITED", "ACCEPTED", "BRIEFED", "RECEIVED", "IN", "OUT"]
 
@@ -112,7 +112,12 @@ def record_text(log: EventLog, everything: bool = False) -> str:
             out.append(f"{head}\n{p.get('text') or '(let go by its author; the words were removed)'}\n")
         elif k == "declare":
             refs = f" (cites {', '.join('#' + str(r) for r in p.get('refs') or [])})" if p.get("refs") else ""
-            out.append(f"{head}: the field has decided {decided(p.get('decision'))}{refs}\n{p.get('text', '')}\n")
+            if isinstance(p.get("effects"), dict):
+                words = effects_words(p["effects"])
+                out.append(f"{head}{refs}: " + (f"the software will {words}" if words else "an announcement") +
+                           f"\n{p.get('text', '')}\n")
+            else:
+                out.append(f"{head}: the field has decided {decided(p.get('decision'))}{refs}\n{p.get('text', '')}\n")
         elif k == "offer":
             out.append(f"{head}\n{p.get('text', '')}\n")
         elif k == "telling":
@@ -217,8 +222,12 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                 "at": st.covenant_at,
                 "revisions": [{**h, "by": names.get(h["by"], h["by"])} for h in st.covenant_history]}
     memories = [{**m, "who": names.get(m["by"], m["by"])} for m in sorted(st.memories.values(), key=lambda m: m["id"])]
-    declarations = [{**d, "who": names.get(d["by"], d["by"]), "decided": decided(d["decision"])}
+    declarations = [{**d, "who": names.get(d["by"], d["by"]),
+                     "decided": (effects_words(d["effects"], versions=st.instrument_versions) if "effects" in d
+                                 else decided(d["decision"])),
+                     "answers": [{"who": names.get(x, x), **r} for x, r in (d.get("answers") or {}).items()]}
                     for d in sorted(st.declarations.values(), key=lambda d: d["id"])]
+    bridges = [{**b, "who": names.get(b["by"], b["by"])} for b in sorted(st.bridges.values(), key=lambda b: b["id"])]
     offers = [{**o, "who": names.get(o["by"], o["by"])} for o in sorted(st.offers.values(), key=lambda o: o["id"])]
     return {
         "generated": time.time(), "last_event": st.last_event,
@@ -226,7 +235,7 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
         "circles": [{"id": c["id"], "name": c["name"], "private": c["private"], "members": len(c["members"]),
                      "domains": c["domains"], "dispersed": c["dispersed_at"] is not None,
                      "reason": c["reason"] if c["private"] else ""} for c in st.circles.values() if not st.secret(c)],
-        # the field's instruments, and the questions under them (what the operator carries out)
+        # the field's instruments, and the questions under them (settled by their own rule, by the software)
         "instruments": [{"name": i["name"], "status": i["status"], "purpose": i["purpose"], "scope": i["scope"],
                          "pause": i["pause"], "current": i.get("current"), "latest": i.get("latest"),
                          "text": i["text"]} for i in st.instruments.values()],
@@ -260,6 +269,8 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                      "opening": (st.briefing or "").strip().splitlines()[0][:200] if st.briefing else ""},
         "covenant": covenant, "memories": memories, "runway": st.runway,
         "declarations": declarations, "offers": offers, "closed_at": st.closed_at,
+        # the operator as bridge: what the field asked their help with; the field's own pause, rhythm and friction
+        "bridges": bridges, "field_pause": st.paused_now(time.time()), "rhythm": st.rhythm, "friction": st.friction,
         "narrator": st.narrator, "tellings": st.tellings[-40:],
         "domains": list(domains.values()), "members": members, "contributions": list(contributions.values()),
         "links": list(links.values()), "operator_notes": st.operator_notes,

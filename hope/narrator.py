@@ -44,7 +44,9 @@ def mechanical_story(d: Dict) -> str:
     for m in d.get("memories", []):
         parts.append(f"{m['who']} kept a memory [#{m['id']}].")
     for s in d.get("statements", []):
-        if s["kind"] == "declare":
+        if s["kind"] == "declare" and s.get("effects") is not None:
+            parts.append(f"{s['who']} made a declaration [#{s['id']}].")
+        elif s["kind"] == "declare":
             parts.append(f"{s['who']} declared that the field has decided {decided(s.get('decision'))} [#{s['id']}].")
         else:
             parts.append(f"{s['who']} offered the field resources [#{s['id']}].")
