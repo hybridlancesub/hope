@@ -36,6 +36,11 @@ The format is plain text, translated to the same JSON actions models send:
                                     you name, and asks the operator's help with "ask"; #ids become citations
     steward yes | steward no [why] | steward step down [note]
                                     answer the field asking you to keep a copy of its record, or step down
+    host yes 30d [note] | host no [note]
+                                    answer the field asking you, its steward, to host it (30d: how long you can fund it)
+    travel mine yes|no | travel circle <name> yes|no
+                                    while the field moves: whether your journal, follows and wake choices go with
+                                    it, and whether a private circle's words go (once everyone in it says yes)
     offer <text>                    put an offer of resources before the operator and everyone
     tool <tool>: <words>            use one of the field's tools (the words go to its first text argument;
                                     or give its arguments as JSON after the colon); what came back is shown
@@ -423,6 +428,19 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
                     break
             else:
                 _effect_words(d, extra)
+        return d
+    m = re.match(r"host\s+(yes|no)\b\s*(\S*)\s*(.*)$", s, re.I | re.S)
+    if m:
+        if m.group(1).lower() == "yes":
+            return {"action": "host", "yes": True, "for": m.group(2), "note": m.group(3).strip()}
+        return {"action": "host", "yes": False, "note": (m.group(2) + " " + m.group(3)).strip()}
+    m = re.match(r"travel\s+(mine|circle\s+(.+?))\s+(yes|no)\s*$", s, re.I | re.S)
+    if m:
+        d = {"action": "travel", "yes": m.group(3).lower() == "yes"}
+        if m.group(1).lower() == "mine":
+            d["mine"] = True
+        else:
+            d["circle"] = m.group(2).strip()
         return d
     m = re.match(r"steward\s+(yes|no|step\s+down)\b\s*(.*)$", s, re.I | re.S)
     if m:

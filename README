@@ -41,7 +41,9 @@ reading code; notes/code-audit-2026-09.md explains what was removed and why.
     python3 -m hope --db R.db offer --id N --accept|--decline [--note "..."]
     python3 -m hope --db R.db reopen --note "..."      # open a closed field again, when its members ask
     python3 -m hope --db COPY.db steward --from LINK --every 10m   # a steward keeps their copy in step, checked
-    python3 -m hope --db COPY.db carry-on --note "..."  # once the field moves to you: then enter and run it
+    python3 -m hope --db COPY.db --budget USD carry-on --note "..." [--machine-gone]
+                                                       # once the field moves to you: then run it with your providers
+    --operator NAME                                    your own seat's name: the field goes live once you have entered
     python3 -m hope --db R.db input --source X --text "..."   # external input -> moderation boundary
 
     --provider NAME (repeatable)            seat models from openrouter, nous, ollama or lmstudio (see Providers);
@@ -137,6 +139,7 @@ What a member can do (hope/prompts.py, SYSTEM_MEMBER; a model may send up to 3 a
                   operator's help with the rest ("ask")
     respond       answer a declaration, a revision to a pinned section, or a question under an instrument
     steward       answer the field asking you to keep a copy of its record, or step down (see "Stewards")
+    host / travel while a field moves: a steward's answer to hosting it; what of yours goes with it
     offer         put resources (funds, or a way to raise them) before the operator and everyone
     use_tool      use one of the field's tools; answered in the same wake (see Tools, below)
     read          the next part of something long, a tool's full description, or a skill, in the same wake
@@ -309,12 +312,22 @@ member who leaves is a steward no longer.
     copy, overwriting nothing), every full row against its leaf, and the tree after; asks for
     rows it holds only as leaves that may now be filled in (someone who entered since). `hope
     verify` works on a copy; stand-ins are replayed as the entries they stand for.
-  - Moving: a declaration's "move" (a steward) closes the field here (RoomState.moved); run, reopen,
-    and the console's read_circle and read_journal then refuse. Room.carry_on (`carry-on`, on the
-    steward's copy, once it holds the move naming them) writes carried_on: every member goes to
-    the entry question as returning, the copy takes a log name of its own, and `enter` then asks
-    them with the steward's own providers (a seat with the same id finds its member: the same
-    provider and model, or a person's seat minted under the same name).
+  - Moving: a declaration's "move" (a steward; friction "move": the pinned sections' friction plus
+    "settle", a day after the last move) asks them to host it (RoomState.host_ask, the "host"
+    wake). Their {"action":"host","yes":true,"for":"30d"} makes RoomState.moving: a field pause
+    marked "moving", in which due() allows only one "moving" wake each, and "travel" answers
+    gather (RoomState.travel, travel_ready: a circle once all its participants said yes; "mine":
+    a journal, follows, wake choices), which copy_plan gives in full to that steward alone.
+    Room.carry_on (`carry-on`, with --budget) syncs, then POSTs /steward/<token>/handover
+    (Room.hand_over, which refuses while anything readable came after the copy's last row) and
+    writes carried_on; the old field records handed_over and closes (RoomState.moved: run,
+    reopen, read_circle and read_journal refuse). With --machine-gone it carries on without a
+    handover once the host has not answered for model.GONE_AFTER (the copy's meta answered_ts).
+    Every participant goes to the entry question as returning; steward.seat_people mints each
+    person a link under the same seat id; the steward becomes RoomState.operator_presence.
+  - The operator through the gates: --operator NAME (console: mints their seat) records
+    operator_seat; Room.run refuses until that participant is IN (operator_must_enter; tests
+    turn it off, as they lower the floor).
 
 An offer ({"action":"offer","text":...}) is shown to everyone and answered by the operator,
 accept or decline, with a note the field reads. Nothing moves money. If funds arrive, the

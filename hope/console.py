@@ -115,9 +115,10 @@ class Console:
                  briefing: str = "", documentation: str = "",
                  briefing_source: str = "", budget: Optional[float] = None,
                  covenant_seed: str = "",
-                 briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = ""):
+                 briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = "", operator: str = ""):
         self.room = room
         self.rv = rv
+        self.operator = operator            # the operator's own seat's name: they enter through the same gates
         self.key = operator_key or secrets.token_urlsafe(24)
         self.invitation, self.briefing = invitation, briefing
         self.documentation = documentation
@@ -173,6 +174,10 @@ class Console:
     def _open(self, **_):
         room, st = self.room, self.room.state()
         self._say(f"invited {room.invite_all()} presences")
+        if self.operator:
+            out = room.name_operator(self.operator)
+            if not out.get("ok"):
+                self._say(out["error"])
         if st.invitation is None and self.invitation:
             room.invite_text(self.invitation)
         if self.faq and room.set_faq(self.faq):
@@ -647,6 +652,10 @@ def make_console_handler(console: Console):
                 # a steward's machine catching its copy up (hope/steward.py); the link is the steward's
                 out = console.room.serve_copy(parts[1], payload.get("since"), payload.get("held"))
                 return self._json(out, 200 if out.get("ok") else 404)
+            if len(parts) == 3 and parts[0] == "steward" and parts[2] == "handover":
+                # the steward the field is moving to: their machine has it all, up to an entry
+                out = console.room.hand_over(parts[1], payload.get("upto"))
+                return self._json(out, 200 if out.get("ok") else 409)
 
             if token is not None:
                 if rv is None or rv.seat_for_token(token) is None:

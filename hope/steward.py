@@ -16,6 +16,11 @@ What the copy checks each time: that nothing it already holds has changed (the f
 the copy's last row is the copy's own), that every row it is given in full matches its leaf, and
 that what it adds makes the tree the field says it has. It trusts the host for a stand-in, whose
 leaf cannot be checked against it.
+
+While the field is moving to a steward, that steward's copy is also given, in full, the private
+things that may go with it: a private circle's (or a repair thread's) words once every one of its
+participants has said yes, and a participant's journal, follows and wake choices once they have.
+No other copy is given them.
 """
 from __future__ import annotations
 
@@ -74,9 +79,10 @@ def _stand_in(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def copy_plan(rows: List[Dict[str, Any]]) -> Tuple[Dict[int, Any], RoomState]:
+def copy_plan(rows: List[Dict[str, Any]], for_pid: Optional[str] = None) -> Tuple[Dict[int, Any], RoomState]:
     """How each row travels in a steward's copy: "full", ("as", kind, stand-in), or None (its leaf
-    alone). Worked out from the whole transcript, since whether someone entered is known only later."""
+    alone). Worked out from the whole transcript, since whether someone entered is known only later.
+    `for_pid` is whose copy it is: the steward the field is moving to is given what may go with it."""
     st = RoomState()
     entered_before: Dict[int, bool] = {}     # a decline: had its presence entered before it?
     evs = []
@@ -88,11 +94,17 @@ def copy_plan(rows: List[Dict[str, Any]]) -> Tuple[Dict[int, Any], RoomState]:
         st.apply(ev)
         evs.append(ev)
     entered = {pid for pid, p in st.presences.items() if p.joined_at is not None}
+    going = st.travel_ready() if st.moving and for_pid and st.moving["to"] == for_pid else {"circles": set(), "mine": set()}
     plan: Dict[int, Any] = {}
     for ev in evs:
         k, p, eid = ev["kind"], ev["payload"], ev["id"]
+        sc = st.scoped.get(eid) or {}
         if k == WITHHELD:                    # a carried-on field's own copy of something held back
             plan[eid] = ("as", p["as"], p.get("stand_in") or {}) if p.get("as") else None
+        elif eid in st.scoped and (sc.get("circle") in going["circles"] or sc.get("journal") in going["mine"]):
+            plan[eid] = "full"               # it goes with the field, with the yes of those it belongs to
+        elif k in ("follow", "unfollow", "wake_pref", "pause") and ev["actor"] in going["mine"] and eid not in st.scoped:
+            plan[eid] = "full"               # a participant's own choices, with their yes
         elif eid in st.scoped or k in FINGERPRINT_ONLY:
             plan[eid] = None
         elif k == "unparsed" and p.get("phase"):
@@ -122,12 +134,12 @@ def _wire(r: Dict[str, Any], form: Any) -> Dict[str, Any]:
     return {"id": r["id"], "ts": 0.0, "actor": "", "kind": WITHHELD, "body": "{}", "payload_hash": "", "leaf": r["leaf"]}
 
 
-def serve_copy(log: EventLog, since: int, held: List[int], page: int = PAGE) -> Dict[str, Any]:
+def serve_copy(log: EventLog, since: int, held: List[int], page: int = PAGE, for_pid: Optional[str] = None) -> Dict[str, Any]:
     """What a steward's copy is sent: the tree as it stood at the copy's last row (so the copy can
     check nothing it holds has changed), the next rows, anything held back before that may now be
     held, and the tree as it stands after them."""
     rows = log.rows()
-    plan, _ = copy_plan(rows)
+    plan, _ = copy_plan(rows, for_pid)
     frontier: List[Tuple[int, bytes]] = []
     n_since, root_since = 0, _root([])
     new: List[Dict[str, Any]] = []
@@ -169,8 +181,8 @@ def _bad(r: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _post(link: str, body: Dict[str, Any], timeout: float = 60.0) -> Dict[str, Any]:
-    url = link.rstrip("/") + "/copy.json"
+def _post(link: str, body: Dict[str, Any], timeout: float = 60.0, what: str = "copy.json") -> Dict[str, Any]:
+    url = link.rstrip("/") + "/" + what
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", "User-Agent": "hope-steward"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -190,10 +202,18 @@ def sync(link: str, log: EventLog, fetch: Optional[Callable[[str, Dict[str, Any]
         size, root, upto = log.size_and_root()
         try:
             got = fetch(link, {"since": upto, "held": held})
+        except urllib.error.HTTPError as e:            # it answered, and refused: it is not gone
+            log.set_meta("answered_ts", str(time.time()))
+            try:
+                why = json.loads(e.read().decode("utf-8")).get("error")
+            except (ValueError, OSError):
+                why = None
+            return {"ok": False, "problem": why or f"the field's machine refused: {e}", "upto": upto}
         except (urllib.error.URLError, OSError, ValueError) as e:
             return {"ok": False, "unreachable": True, "problem": f"the field's machine did not answer: {e}", "upto": upto}
         if not got.get("ok", True):
             return {"ok": False, "problem": got.get("error") or "the field refused", "upto": upto}
+        log.set_meta("answered_ts", str(time.time()))      # the field's machine answered: it is not gone
         if size == 0 and not log.meta("steward"):
             log.set_meta("origin", got["origin"])
             log.set_meta("witnessed_from", str(got.get("witnessed_from") or 1))
@@ -236,6 +256,32 @@ def sync(link: str, log: EventLog, fetch: Optional[Callable[[str, Dict[str, Any]
             "stand_ins": sum(1 for b in kept if b.get("as")),
             "moved_to_you": bool(st.moved and st.moved.get("to") == me),
             "moved": st.moved, "steward": me}
+
+
+def report_handover(link: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Tell the field's machine that this steward's machine has taken the field on, up to an entry."""
+    try:
+        return _post(link, body, what="handover")
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode("utf-8"))
+        except (ValueError, OSError):
+            return {"ok": False, "error": f"the field's machine refused: {e}"}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return {"ok": False, "unreachable": True, "error": f"the field's machine did not answer: {e}"}
+
+
+def seat_people(st: RoomState, rv) -> List[Tuple[str, str]]:
+    """On the machine the field was carried on to: a new seat link for every person who was a
+    participant, for the steward to send them. A seat under the same id finds the same participant."""
+    from .connector import Seat
+    out = []
+    for p in st.presences.values():
+        if p.id.startswith("remote__") and p.joined_at is not None and p.state != "OUT":
+            token = rv.add_seat(Seat(id=p.id, name=p.name, hails_from=p.hails_from, people=p.people, model="remote",
+                                     pricing={"prompt": 0.0, "completion": 0.0}))
+            out.append((p.name, f"/seat/{token}/"))
+    return out
 
 
 class Links:

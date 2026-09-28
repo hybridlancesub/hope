@@ -38,8 +38,11 @@ What IS here, and why:
     expected, which the field sets by declaring it;
   - stewards (notes/sketch-9-stewards.md): members the field declares, on their own yes, who
     keep a copy of what every member can read on machines of their own (the rest only as
-    fingerprints), and how far each copy has caught up; a field that moves to a steward closes
-    here, and is carried on there, where every member is asked again;
+    fingerprints), and how far each copy has caught up. A move asks a steward to host the field;
+    on their yes its wakes pause here while private things may go with it (each with the yes of
+    those it belongs to); it closes here once the steward's machine has taken it all on, and is
+    carried on there, where everyone is asked again;
+  - which participant runs the software: the operator enters through the same gates;
   - offers: a member putting resources (funds, or a way to raise them) before the operator
     and everyone. The software never moves money;
   - rounds, and the budget's runway, so the field is told before its funding runs out;
@@ -98,7 +101,10 @@ EVERYONE = 1_000_000         # a friction's "yes" that asks for every other memb
 FRICTION_DEFAULTS = {
     "declare": {"notice": NOTICE, "yes": 0, "hold": False},     # loose by default (the author)
     "pinned": {"notice": 3600.0, "yes": 1, "hold": True},       # a pinned section: 1 hour, 1 other yes, and an objection holds it
+    # a move: the Maxims' friction, and a day to settle after one (the author, 2026-09-28)
+    "move": {"notice": 3600.0, "yes": 1, "hold": True, "settle": 86400.0},
 }
+GONE_AFTER = 3 * 86400.0     # seconds a field's machine may be silent before a steward may carry it on (the author: 3 days)
 FRICTION_FOR = ("declare", "pinned") + EFFECTS   # every declaration, the pinned sections, or declarations that carry one act
 
 # The two clocks, in seconds. "between": from the end of one round (or one person's turn) to the
@@ -169,6 +175,8 @@ def friction_words(f: Dict[str, Any]) -> str:
     elif y:
         bits.append(f"{y} yes{'es' if y != 1 else ''} besides its author's")
     bits.append("an objection holds it until its author withdraws it" if f.get("hold") else "an objection is heard, and holds nothing")
+    if f.get("settle"):
+        bits.append(f"and none takes effect within {duration(f['settle'])} of the field's last move")
     return "; ".join(bits)
 
 
@@ -205,7 +213,8 @@ def effects_words(fx: Dict[str, Any], names: Optional[Dict[str, str]] = None, ve
             (f"a notice of {duration(f['notice'])}" if f.get("notice") else "no notice") if "notice" in f else "",
             ("every other member's yes" if int(f["yes"]) >= EVERYONE else f"{int(f['yes'])} yes{'es' if int(f['yes']) != 1 else ''}")
             if "yes" in f else "",
-            ("objections hold" if f["hold"] else "objections hold nothing") if "hold" in f else "") if x)
+            ("objections hold" if f["hold"] else "objections hold nothing") if "hold" in f else "",
+            f"a settling period of {duration(f['settle'])}" if f.get("settle") else "") if x)
         out.append(f"set the friction for {friction_target(f['for'])} to {new}")
     who = lambda ids: ", ".join(_line((names or {}).get(x, x)) for x in ids)
     if fx.get("steward"):
@@ -216,7 +225,7 @@ def effects_words(fx: Dict[str, Any], names: Optional[Dict[str, str]] = None, ve
     if fx.get("close"):
         out.append("close the field")
     if fx.get("move"):
-        out.append(f"move the field to the machine of {who([fx['move']])}, its steward, closing it here")
+        out.append(f"ask {who([fx['move']])}, its steward, to host the field at their machine (it moves only on their yes)")
     if fx.get("ask"):
         out.append(f"ask the operator's help: {_line(fx['ask'])[:300].rstrip('.')}")
     return "; ".join(out)
@@ -244,7 +253,7 @@ STEP4_KINDS = ("declaration_withdrawn", "roles", "play_tag", "play_untag", "brie
 REPAIR_STATUSES = ("open", "partly resolved", "resolved", "stepping back")
 INSTRUMENT_PURPOSES = ("decide", "adopt", "separate")
 INSTRUMENT_KINDS = ("instrument", "iquestion", "iresponse", "iquestion_withdrawn", "iquestion_due")
-STEWARD_KINDS = ("steward_answer", "steward_step_down")
+STEWARD_KINDS = ("steward_answer", "steward_step_down", "host_answer", "travel")
 RESPONSES = ("yes", "stand aside", "object")
 INVITE_PAUSE = 3600.0        # seconds between the briefing and the entry question, for an invitee who names none
 VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS + INSTRUMENT_KINDS + STEWARD_KINDS
@@ -334,6 +343,10 @@ class RoomState:
     steward_asks: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # members the field asked, not yet answered
     moved: Optional[Dict[str, Any]] = None   # the field moved to a steward's machine: when, to whom, by which declaration
     carried: List[Dict[str, Any]] = field(default_factory=list)            # where this transcript was carried on from
+    host_ask: Optional[Dict[str, Any]] = None  # a move declared: the steward asked to host the field, not yet answered
+    moving: Optional[Dict[str, Any]] = None  # the steward said yes: wakes pause here until their machine has it all
+    travel: Dict[str, Any] = field(default_factory=lambda: {"circles": {}, "mine": []})  # who said yes to what going with it
+    operator_presence: Optional[str] = None  # the participant who runs the software (through the same gates as everyone)
     offers: Dict[int, Dict[str, Any]] = field(default_factory=dict)        # by event id: text, status
     closed_at: Optional[int] = None          # the event that closed the field, by its own declaration
     narrator: Optional[Dict[str, Any]] = None  # who writes tellings: kind ("model" | "mechanical"), model, every
@@ -397,8 +410,34 @@ class RoomState:
         """The friction a declaration carrying `fx` meets: the heaviest of the field's friction for
         every declaration and for each act it carries."""
         fs = [self.friction.get("declare") or FRICTION_DEFAULTS["declare"]] + [self.friction[k] for k in fx if k in self.friction]
-        return {"notice": max(float(f.get("notice") or 0) for f in fs), "yes": max(int(f.get("yes") or 0) for f in fs),
-                "hold": any(bool(f.get("hold")) for f in fs)}
+        out = {"notice": max(float(f.get("notice") or 0) for f in fs), "yes": max(int(f.get("yes") or 0) for f in fs),
+               "hold": any(bool(f.get("hold")) for f in fs)}
+        settle = max(float(f.get("settle") or 0) for f in fs)
+        if settle:
+            out["settle"] = settle
+        return out
+
+    def last_move_ts(self) -> float:
+        """When the field last moved (was carried on here), or 0."""
+        return max([float(c.get("ts") or 0) for c in self.carried] + [0.0])
+
+    def travel_ready(self) -> Dict[str, Any]:
+        """What may go with the field to the steward hosting it: private circles every one of whose
+        participants said yes (a repair thread is such a circle), and the participants who said yes
+        for their own journal, follows and wake choices."""
+        circles = set()
+        for cid, yes in (self.travel.get("circles") or {}).items():
+            c = self.circles.get(cid)
+            if c and c["members"] and set(c["members"]) <= set(yes):
+                circles.add(cid)
+        return {"circles": circles, "mine": set(self.travel.get("mine") or [])}
+
+    def _end_move(self) -> None:
+        """A move that will not happen now: the steward said no, stepped down, or left."""
+        if self.field_pause and self.field_pause.get("moving"):
+            self.field_pause = None
+        self.host_ask, self.moving = None, None
+        self.travel = {"circles": {}, "mine": []}
 
     def standing(self, item: Dict[str, Any], among=None) -> Dict[str, Any]:
         """Where an announcement (a declaration, a revision to a pinned section, a question under an
@@ -438,7 +477,7 @@ class RoomState:
             self.rhythm, self.rhythm_at = max(0.0, float(fx["rhythm"] or 0)), eid
         for f in fx.get("friction") or []:
             cur = dict(self.friction.get(f["for"]) or {"notice": 0.0, "yes": 0, "hold": False})
-            cur.update({k: f[k] for k in ("notice", "yes", "hold") if k in f})
+            cur.update({k: f[k] for k in ("notice", "yes", "hold", "settle") if k in f})
             self.friction[f["for"]] = cur
         if fx.get("ask"):
             self.bridges[source["id"]] = {"id": source["id"], "kind": "bridge", "by": source["by"], "text": fx["ask"],
@@ -453,11 +492,13 @@ class RoomState:
         for pid in fx.get("unsteward") or []:
             self.stewards.pop(pid, None)
             self.steward_asks.pop(pid, None)
+            if (self.host_ask or {}).get("to") == pid or (self.moving or {}).get("to") == pid:
+                self._end_move()
         if fx.get("close"):
             self.closed_at = eid
-        if fx.get("move") and fx["move"] in self.stewards:
-            self.moved = {"at": eid, "to": fx["move"], "from": source["id"], "ts": ts}
-            self.closed_at = eid                   # it closes here; the steward carries it on there
+        if fx.get("move") and fx["move"] in self.stewards and not self.host_ask and not self.moving:
+            # nothing moves without the steward's yes: they are asked to host it
+            self.host_ask = {"to": fx["move"], "from": source["id"], "at": eid, "ts": ts}
 
     def in_force(self) -> List[Dict[str, Any]]:
         return [i for i in self.instruments.values() if i["status"] == "in force"]
@@ -817,12 +858,16 @@ class RoomState:
                 pr.ask_again, pr.returning = p.get("ask_again") or None, False
                 self.stewards.pop(a, None)
                 self.steward_asks.pop(a, None)
+                if (self.host_ask or {}).get("to") == a or (self.moving or {}).get("to") == a:
+                    self._end_move()
         elif k == "withdraw":
             if pr and pr.state != OUT:
                 pr.state, pr.left_at, pr.left_reason = OUT, eid, p.get("reason") or "withdrew"
                 pr.ask_again = p.get("ask_again") or None
                 self.stewards.pop(a, None)        # a steward who leaves keeps no link to the field
                 self.steward_asks.pop(a, None)
+                if (self.host_ask or {}).get("to") == a or (self.moving or {}).get("to") == a:
+                    self._end_move()
         elif k == "clock":
             # A member setting their own clock. The engine checked whose clock it is and the limits.
             which = p.get("clock")
@@ -953,6 +998,8 @@ class RoomState:
                 fx = p["effects"]
                 f = self.friction_of(fx)             # the friction when it was made holds for it
                 wait = max(float(p.get("in_seconds") or 0.0), f["notice"])
+                if fx.get("move") and f.get("settle") and self.last_move_ts():
+                    wait = max(wait, self.last_move_ts() + f["settle"] - ts)   # a field that just moved settles first
                 self.declarations[eid] = {"id": eid, "kind": "declaration", "by": a, "text": p.get("text", ""),
                                           "effects": fx, "ts": ts, "due_ts": ts + wait, "friction": f, "answers": {},
                                           "status": "announced", "note": "", "answered_at": None, "decision": "other",
@@ -1021,13 +1068,51 @@ class RoomState:
         elif k == "steward_step_down":
             if a in self.stewards:
                 del self.stewards[a]
+                if (self.host_ask or {}).get("to") == a or (self.moving or {}).get("to") == a:
+                    self._end_move()
+        elif k == "host_answer":                     # the steward's answer to hosting the field, or taking it back
+            if self.host_ask and a == self.host_ask["to"] and a in self.stewards:
+                if p.get("yes") and p.get("for_seconds"):
+                    self.moving = {**self.host_ask, "yes_at": eid, "yes_ts": ts, "for_seconds": float(p["for_seconds"]),
+                                   "note": p.get("note") or ""}
+                    self.host_ask = None
+                    self.field_pause = {"at": eid, "from": self.moving["from"], "ts": ts, "until_ts": None, "moving": True}
+                elif not p.get("yes"):
+                    self._end_move()
+            elif self.moving and a == self.moving["to"] and not p.get("yes"):
+                self._end_move()
+        elif k == "travel":                          # yes, or no, to something private going with the field
+            if pr and pr.state == IN and self.moving:
+                yes = bool(p.get("yes"))
+                if p.get("mine"):
+                    mine = [x for x in self.travel["mine"] if x != a]
+                    self.travel["mine"] = mine + ([a] if yes else [])
+                c = self.circles.get(p.get("circle")) if p.get("circle") is not None else None
+                if c and a in c["members"]:
+                    got = [x for x in self.travel["circles"].get(c["id"], []) if x != a]
+                    self.travel["circles"][c["id"]] = got + ([a] if yes else [])
+                    if c["private"] or c.get("repair"):
+                        self.scoped[eid] = {"circle": c["id"]}
+        elif k == "handed_over":                     # the steward's machine has it all: the field closes here
+            if self.moving and p.get("to") == self.moving["to"]:
+                self.moved = {"at": eid, "to": self.moving["to"], "from": self.moving["from"], "ts": ts,
+                              "upto": p.get("upto")}
+                self.closed_at = eid
+                self.moving, self.host_ask, self.field_pause = None, None, None
+        elif k == "operator_seat":                   # which participant runs the software
+            if p.get("presence") in self.presences:
+                self.operator_presence = p["presence"]
         elif k == "steward_synced":                  # the software's record of how far a copy has caught up
             s = self.stewards.get(p.get("presence"))
             if s:
                 s.update({"upto": int(p.get("upto") or 0), "synced_ts": ts, "synced_at": eid})
         elif k == "carried_on":                      # carried on at a steward's machine: every member is asked again
-            self.carried.append({"id": eid, **{x: p.get(x) for x in ("from", "upto", "fingerprint", "steward", "declaration", "note")}})
+            self.carried.append({"id": eid, "ts": ts, **{x: p.get(x) for x in ("from", "upto", "fingerprint", "steward",
+                                                                              "declaration", "note", "why", "for_seconds")}})
             self.closed_at, self.field_pause, self.runway, self.moved = None, None, None, None
+            self.host_ask, self.moving, self.travel = None, None, {"circles": {}, "mine": []}
+            if p.get("steward") in self.presences:
+                self.operator_presence = p["steward"]      # who runs it now: a participant, asked again like everyone
             for m in self.presences.values():
                 if m.state == IN:
                     m.came_back_from = {"at": eid, "reason": "the field moved", "ask_again": None,

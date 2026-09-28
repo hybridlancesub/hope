@@ -193,6 +193,12 @@ def cmd_open(args):
     room.alert = _print_alert
     n = room.invite_all()
     print(f"invited {n} presences")
+    if args.operator:
+        out = room.name_operator(args.operator)
+        print(f"you run this field, and enter it through the same gates, as {args.operator}" if out.get("ok") else out["error"])
+    else:
+        print("note: name your own seat with --operator NAME: the field does not go live until the person who runs it has "
+              "entered it as a participant, through the same gates as everyone.", file=sys.stderr)
     st = room.state()
     if st.invitation is None:
         room.invite_text(open(args.invitation, encoding="utf-8").read())
@@ -483,12 +489,22 @@ def cmd_steward(args):
 
 def cmd_carry_on(args):
     room = _room(args, [])
-    out = room.carry_on(args.note)
+    out = room.carry_on(args.note, budget=args.budget, machine_gone=args.machine_gone)
     if not out.get("ok"):
         sys.exit(out["error"])
-    print(f"carried on at #{out['at']}: the transcript goes on from the same fingerprints. {len(out['asked'])} member(s) "
-          f"will be asked the entry question again. Next: `enter` with your own providers (models seated through the same "
-          f"provider and model find their members; mint people new links in the console under the same names), then `run`.")
+    # every person who was a participant gets a new link here, for the steward to send them
+    from .rendezvous import Rendezvous
+    from .steward import seat_people
+    links = seat_people(room.state(), Rendezvous(store=args.db + ".seats.json"))
+    print(f"carried on at #{out['at']}" + (" (the field's machine had gone silent)" if out["why"] == "silent" else "")
+          + f": the transcript goes on from the same fingerprints. {len(out['asked'])} participant(s), you among them, "
+          f"will be asked the entry question again.")
+    if links:
+        print("New links for the people, to send each of them (the field's address here, then the path):")
+        for name, path in links:
+            print(f"  {name}: {path}")
+    print("Next: `console` (or `enter`, then `run`) here, with your own providers; models seated through the same provider "
+          "and model find their participants. Enter yourself too: the field goes live once you have.")
 
 
 def cmd_verify(args):
@@ -582,10 +598,18 @@ def cmd_console(args):
 
     cs = _connectors(args, allow_empty=not args.no_remote)
     rv = None
+    own = None
     if not args.no_remote:
         from .rendezvous import Rendezvous, RendezvousConnector
         rv = Rendezvous(store=args.db + ".seats.json")
         cs.append(RendezvousConnector(rv, gate_window=args.gate_window, reach_window=args.gate_reach))
+        if args.operator:
+            # your own seat: you come in through the same gates as everyone
+            from .connector import Seat
+            sid = "remote__" + "".join(c.lower() if c.isalnum() else "-" for c in args.operator).strip("-")
+            own = rv.add_seat(Seat(id=sid, name=args.operator, hails_from="the machine that runs this field",
+                                   people="the person who runs the software", model="remote",
+                                   pricing={"prompt": 0.0, "completion": 0.0}))
     room = _room(args, cs, narrator=_narrator(args))
     _announce(room, args)
     read = lambda p: open(p, encoding="utf-8").read() if p else ""
@@ -599,11 +623,18 @@ def cmd_console(args):
                       documentation=read(doc if os.path.isfile(doc) else None),
                       briefing_source=args.briefing_source or "",
                       budget=(args.budget or None),
-                      covenant_seed=seed, briefing_page=page, faq=read(args.faq) if args.faq else "")
+                      covenant_seed=seed, briefing_page=page, faq=read(args.faq) if args.faq else "",
+                      operator=args.operator or "")
     httpd = serve_console(console, port=args.port, bind=args.bind)
     shown = "127.0.0.1" if args.bind in ("0.0.0.0", "::") else args.bind
     url = f"http://{shown}:{args.port}/?k={console.key}"
     print(f"\n  console: {url}\n", flush=True)
+    if own:
+        print(f"  your own seat, as {args.operator}: http://{shown}:{args.port}/seat/{own}/\n"
+              f"  (the field goes live once you have entered it, through the same gates as everyone)\n", flush=True)
+    elif not args.operator:
+        print("  note: name your own seat with --operator NAME; the field does not go live until the person who\n"
+              "  runs it has entered it as a participant.\n", flush=True)
     print("  Keep that link private: it is the key to the transcript. Seat links are made in the console\n"
           "  and show their holder only their own turns. Ctrl-C stops the process, which decides\n"
           "  nothing in the field -- use the console's stop, which records a notice first.\n", flush=True)
@@ -678,6 +709,9 @@ def cmd_input(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="hope")
     ap.add_argument("--db", default="field.db")
+    ap.add_argument("--operator", default=None,
+                    help="your own seat's name: the person who runs the field enters it as a participant, through the "
+                         "same gates, before it goes live")
     ap.add_argument("--alert-every", type=float, default=50.0, help="USD; alert each time spend crosses a multiple")
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--window", type=float, default=120.0,
@@ -786,7 +820,9 @@ def main(argv=None):
     s.add_argument("--every", default=None, help="keep it in step every so often, such as 10m, until stopped")
     s.set_defaults(fn=cmd_steward)
     s = sub.add_parser("carry-on", help="carry the field on at this machine, from your steward's copy, once it moves to you")
-    s.add_argument("--note", required=True, help="what members read when they are asked whether to continue here")
+    s.add_argument("--note", required=True, help="what participants read when they are asked whether to continue here")
+    s.add_argument("--machine-gone", action="store_true",
+                   help="the field's machine has been silent for three days, so it cannot declare anything")
     s.set_defaults(fn=cmd_carry_on)
     s = sub.add_parser("verify", help="check the transcript against its fingerprints, or one old fingerprint")
     s.add_argument("--upto", type=int, default=None, help="an entry number from an old WITNESS line")
