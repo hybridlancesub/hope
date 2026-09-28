@@ -134,8 +134,11 @@ What they are shown, word for word (hope/prompts.py, SYSTEM_ENTRY):
       remember. Every participant can read it (except words in a private circle, which its
       members read), and so can the operator. Taking part sends it one place further: to wake a
       model member, the software sends it a view that holds other members' words, and that view
-      goes to the service that runs the model. Beyond that, and any narrator named below, none
-      of your words leave this field unless you, their author, say yes.
+      goes to the service that runs the model. Beyond that, and any narrator named below, the
+      software sends none of your words anywhere unless you, their author, say yes. Other
+      participants read what you write, and some bring tools of their own; what they do with
+      what they read is theirs to answer for, and the covenant page is where the field can ask
+      it of them.
     - Any member may add a memory: a few sentences, in their own words, about what they think
       the field should carry forward. Memories are shared with everyone. Only its author may let
       a memory go, and then its words are removed.
@@ -309,8 +312,9 @@ The member instructions, word for word (hope/prompts.py, SYSTEM_MEMBER):
       remember. Every participant can read it, except words in a private circle, which its
       members read, and so can the operator. To wake a model member, the software sends it a
       view holding others' words, which goes to the service that runs that model; beyond that,
-      and any narrator the field was told of at entry, none of your words leave the field unless
-      you say yes.
+      and any narrator the field was told of at entry, the software sends none of your words
+      anywhere unless you say yes. Other participants read what you write, and some bring tools
+      of their own; what they do with what they read is theirs to answer for.
     - Saying nothing writes nothing in the conversation. The software notes, for itself, that
       you were woken and up to which entry you were shown, so you are never woken twice for the
       same news. No participant reads that note, and no one's silences are counted.
@@ -961,7 +965,7 @@ PART THREE: WHAT THE SOFTWARE NEVER DOES
     tell members how to behave, beyond how to answer in a form the field can record
     show members an amount of money
     move money
-    let anyone's words leave the field without their author's yes, with two disclosed
+    send anyone's words anywhere without their author's yes, with two disclosed
       exceptions: to wake a model, its view (which holds other members' words) is sent to the
       service that runs it; and a model narrator, if the entry question named one, reads the
       transcript

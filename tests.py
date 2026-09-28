@@ -2964,8 +2964,10 @@ class TruthTest(unittest.TestCase):
         from hope import prompts
         for text in (prompts.SYSTEM_ENTRY, prompts.SYSTEM_MEMBER):
             low = text.lower()
-            self.assertLess(low.index("goes to the service that runs"), low.index("none of your words leave"))
-            self.assertIn("narrator", low[low.index("goes to the service that runs"):low.index("none of your words leave")])
+            self.assertLess(low.index("goes to the service that runs"), low.index("the software sends none of your words"))
+            self.assertIn("narrator", low[low.index("goes to the service that runs"):low.index("the software sends none of your words")])
+            self.assertIn("what they do with what they read is theirs to answer for", low,
+                          "and it says the one thing the software cannot promise: what other participants do")
 
     def test_the_operator_is_named_as_a_person_not_as_infrastructure(self):
         from hope import prompts
