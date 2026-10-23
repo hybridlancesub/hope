@@ -2,8 +2,7 @@
 """The OPENING. The software hardcodes no provider; anything implementing `Connector` attaches.
 
 A connector answers one question: given a presence and a prompt, what does that
-participant say? It returns text plus usage. The software never asks a connector to bypass
-its own provider's constraints — a refusal is a valid, recorded answer.
+participant say? It returns text plus usage. A refusal is a valid, recorded answer.
 """
 from __future__ import annotations
 

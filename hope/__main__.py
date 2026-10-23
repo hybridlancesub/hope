@@ -831,7 +831,9 @@ def main(argv=None):
     s.add_argument("--decline", action="store_true"); s.add_argument("--note", default=None); s.set_defaults(fn=cmd_offer)
     s = sub.add_parser("reopen", help="open a closed field again, when its participants ask (or a fault closed it)")
     s.add_argument("--note", required=True); s.set_defaults(fn=cmd_reopen)
-    s = sub.add_parser("log"); s.add_argument("--since", type=int, default=0); s.add_argument("--kind"); s.add_argument("--actor"); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_log)
+    _raw = ("the raw transcript, private circles, journals and repair threads included: for the operator's own "
+            "file, never to share")
+    s = sub.add_parser("log", help=_raw, description=_raw); s.add_argument("--since", type=int, default=0); s.add_argument("--kind"); s.add_argument("--actor"); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("cost"); s.set_defaults(fn=cmd_cost)
     s = sub.add_parser("map", help="a sitting retold, by the software's own account")
     s.add_argument("--since", type=int, default=None); s.add_argument("--upto", type=int, default=None); s.add_argument("--title"); s.add_argument("--out")

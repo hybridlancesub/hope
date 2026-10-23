@@ -3030,6 +3030,29 @@ class WakeTest(unittest.TestCase):
 
 
 class TruthTest(unittest.TestCase):
+    def test_guide_quotes_the_participant_instructions_word_for_word(self):
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        lines = open(os.path.join(here, "GUIDE"), encoding="utf-8").read().splitlines()
+        quoted = set()
+        for i, line in enumerate(lines):
+            m = re.search(r"word for word \(hope/prompts\.py, (\w+)\)", line)
+            if not m:
+                continue
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            block = []
+            while j < len(lines) and (lines[j].startswith("    ") or not lines[j].strip()):
+                if not lines[j].strip() and j + 1 < len(lines) and not lines[j + 1].startswith("    "):
+                    break
+                block.append(lines[j])
+                j += 1
+            self.assertEqual(" ".join(" ".join(block).split()), " ".join(getattr(prompts, m.group(1)).split()),
+                             f"GUIDE's quote of {m.group(1)} (line {i + 1}) must match prompts.py")
+            quoted.add(m.group(1))
+        self.assertEqual(quoted, {"SYSTEM_ENTRY", "SYSTEM_MEMBER"})
+
     """What participants are told must be true of the code."""
 
     def setUp(self):
@@ -4393,6 +4416,19 @@ class StepFourTest(unittest.TestCase):
         tel = self.last("telling")
         self.assertEqual(tel["payload"]["circle"], cid, "told inside the circle, it may cite the circle")
         self.assertFalse(self.st().readable(tel, self.b), "and it stays in the circle")
+
+    def test_a_telling_in_a_private_circle_never_reaches_the_operators_feed(self):
+        from hope.serve import state_json
+        self.act(self.a, action="form_circle", name="harbour", private=True, reason="a quiet place")
+        cid = self.last("circle_form")["id"]
+        self.act(self.a, action="contribute", content="said in the harbour", circle=cid)
+        inner = self.last("contribute")["id"]
+        self.act(self.a, action="tell", story=f"HARBOUR-STORY [#{inner}].", circle=cid)
+        self.act(self.a, action="contribute", content="said in the open")
+        self.act(self.a, action="tell", story=f"An open telling [#{self.last('contribute')['id']}].")
+        told = json.dumps(state_json(self.room.log)["tellings"])
+        self.assertNotIn("HARBOUR-STORY", told, "the Loom and the operator's feed leave it out")
+        self.assertIn("An open telling", told, "an open telling still shows")
 
     def test_a_telling_citing_an_entry_that_does_not_exist_is_refused_with_the_list(self):
         self.act(self.a, action="tell", story="It began at [#999999] and [#999998].")

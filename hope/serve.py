@@ -286,7 +286,8 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                      for pid, s in st.stewards.items()],
         "moved": ({**st.moved, "who": names.get(st.moved["to"], st.moved["to"])} if st.moved else None),
         "carried": st.carried,
-        "narrator": st.narrator, "tellings": st.tellings[-40:],
+        "narrator": st.narrator,
+        "tellings": [t for t in st.tellings if t["id"] not in st.scoped][-40:],   # a private circle's stay in it
         "domains": list(domains.values()), "members": members, "contributions": list(contributions.values()),
         "links": list(links.values()), "operator_notes": st.operator_notes,
         "admission": admission_json(st),

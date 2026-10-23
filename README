@@ -777,8 +777,8 @@ No turns              engine.why_wake / due / step / run; model.FLOOR; prompts.w
                       Room.post for people. Earlier versions' clock events are read past.
 Channels              labels.path (nesting); model.py circles, awaiting (every yes), scoped + readable()
                       (private words), tree(); engine._channel_action.
-No coerced override   prompts.py: every system prompt says declining/withdrawing is complete and that
-                      the participant's own constraints win. A refusal is recorded as a normal answer.
+No coerced override   prompts.py: SYSTEM_ENTRY and SYSTEM_MEMBER say declining and withdrawing are
+                      complete answers. A refusal is recorded as a normal answer.
 No procedure          model.py and engine.py hold no votes, thresholds, halts, restores, or scores. Old
 nobody chose          voting events in files from earlier versions are read past and change nothing. tests.py
                       checks the state carries none of it.
