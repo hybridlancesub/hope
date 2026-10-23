@@ -651,6 +651,7 @@ function renderDoorway(s){
         if (r.left_reason) bits.push(esc(r.left_reason));
         if (r.ask_again) bits.push("ask again: " + esc(r.ask_again));
         if (r.returning) bits.push("asked back; waiting for their answer");
+        if (r.powered_words) bits.push(esc(r.powered_words));   // what powers the seat, as everyone sees it
         // names are participants' own words: escaped for an attribute, and read back from the dataset
         const attr = v => esc(v).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
         const back = r.stage === "OUT"
@@ -695,9 +696,10 @@ function renderSeats(s){
   $("seats").innerHTML = list.map(x =>
     `<div class="card"><b style="font-weight:400">${esc(x.name)}</b>
      <span class="muted">· ${x.turns_taken} answer${x.turns_taken===1?"":"s"} at the gates${x.last_seen?"":" · link never opened"}</span>
-     <div class="link" style="margin-top:.3rem">${esc(location.origin + x.path)}</div>
+     ${x.path ? `<div class="link" style="margin-top:.3rem">${esc(location.origin + x.path)}</div>`
+              : `<div class="muted" style="margin-top:.3rem">link held by ${esc(x.held_by)}, who brought this agent; it is not shown here, and a replacement goes to them</div>`}
      <div class="row">
-       <button class="b" data-tip="Copy the whole link. Send it in one piece — a link broken across lines by mail or chat will not open the seat." onclick="copyLink('${esc(x.path)}')">Copy link</button>
+       ${x.path ? `<button class="b" data-tip="Copy the whole link. Send it in one piece — a link broken across lines by mail or chat will not open the seat." onclick="copyLink('${esc(x.path)}')">Copy link</button>` : ""}
        <button class="b" data-tip="Give this seat a new link and kill the current one immediately. Use it if the link went astray. The presence, its name, and everything it has already said are untouched." onclick="reseat('${esc(x.id)}','${esc(x.name)}')">Replace link</button>
      </div></div>`).join("") || '<p class="muted">None yet.</p>';
 }
@@ -859,7 +861,7 @@ async function reseat(id, name){
   if (!confirm(`Replace ${name}'s link?\n\nTheir current link stops working immediately and they will `
              + `need the new one. Nothing they have already said is affected.`)) return;
   const {data} = await api("/op/reseat", {seat: id});
-  flash(data.ok ? "New link made. Send it to them." : (data.error||"not replaced"), !!data.ok);
+  flash(data.ok ? (data.path ? "New link made. Send it to them." : data.note) : (data.error||"not replaced"), !!data.ok);
   refresh();
 }
 /* Two steps, deliberately: asking to stop, and saying what the field is told. */

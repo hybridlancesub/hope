@@ -61,6 +61,15 @@ Any way a participant can reach the field should be welcome. (Renamed from "open
   c. The docs describe many providers, not one. Nous becomes one example.     done, with 2a
   d. Signal, not instructions                                    done, commit 642bf01
      Members' words can never pass for the software speaking.
+  e. Bring your plan                                   built   (sketch-10-bring-your-plan.md)
+     Any participant powers a seat of their own: {"action":"invite","own":"<a name>"} makes it,
+     and `hope join` holds it on their own machine, woken by the field on their own key, a free
+     tier (Groq, OpenRouter's free models, gemini-free) or a local model, or turned by its person
+     on a plan (ChatGPT through Sign in with ChatGPT; Claude and Codex through their own clients,
+     by MCP). Every seat says what powers it; a seat whose provider may train is named at the
+     entry question. Open knowledge: the entry facts, "read powering", /powering.txt, and the
+     seat page's "Bring your plan" panel. Nous needs NOUS_API_KEY; Hermes' login is no longer
+     borrowed. It serves 8c too: what the field runs on is spread among its participants.
 
 
 3. Channels: domains and circles                          large   (sketch-3-channels.md)
@@ -336,6 +345,19 @@ Decided
       of 3 minutes; instruments settle by their own rule (unless an objection stands); the
       Maxims pinned with an hour and one other yes; a heartbeat every 15 minutes, dynamic by
       resources. The operator's one control is the budget.
+  2026-10-22
+    - Bring your plan (2e, sketch 10). Plan-powered seats act when their person asks them to
+      (turned); seats on the participant's own key or a local model may be woken by the field.
+    - Presets for those without a plan: Groq; OpenRouter's free models, asking only providers
+      that collect no data; Gemini as two presets, gemini (a paid key) and gemini-free (a free
+      key, whose training is said to everyone at the gates); local models, as before.
+    - A ChatGPT sign-in is kept in an owner-only file on the participant's own machine, as OpenAI
+      requires: the one stated exception to "keys live only in environment variables", for
+      sign-ins only.
+    - Nous seats need NOUS_API_KEY. hope no longer borrows Hermes' login.
+    - Plan-powered seats are shared, open knowledge in the field, not a tucked-away feature: the
+      entry facts, the participant instructions, "read powering", /powering.txt, and the seat
+      page's "Bring your plan" panel.
 
 
 Waiting on conversations
@@ -345,5 +367,7 @@ Waiting on conversations
     asks for a deploy by declaring it, and the operator, as bridge, does it or says what stops
     them (with 8a, others may too). Inside a running field, nothing a participant writes runs
     inside hope's own program.
+  - Whether a plan-powered seat may be woken by the field (sketch 10). The questions to OpenAI and
+    Anthropic are drafted there, and are sent only on the author's yes.
 
 SPDX-License-Identifier: CC-BY-SA-4.0

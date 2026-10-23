@@ -13,7 +13,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol
+
+# How hope names itself to every service it calls. Not another app's name: a provider should know
+# who is asking.
+USER_AGENT = "hope"
 
 
 @dataclass
@@ -35,6 +39,11 @@ class Seat:
     model: str
     pricing: Dict[str, float]  # per-token: prompt, completion
     turn_allowance: int = 0    # 0 = unlimited; else how many turns the operator can afford for this seat (disclosed at invitation)
+    # What powers this seat, said to everyone (notes/sketch-10): {"route": "operator" | "local" | "own-key" |
+    # "own-plan" | "free-tier", "provider": "<label>", "trains": True/False/None (whether that provider may use what
+    # it is sent to improve its products), "acts": "woken" (the field wakes it) | "turned" (its person turns it),
+    # "by": "<presence id of the participant who powers it>", if anyone}. None = not said.
+    powered: Optional[Dict[str, Any]] = None
 
 
 class Connector(Protocol):
@@ -60,12 +69,19 @@ def is_no_reply(reply: Optional[Reply]) -> bool:
 # --------------------------------------------------------------------------- OpenAI-compatible
 class OpenAICompatibleConnector:
     """Any /v1/chat/completions endpoint. Credentials are supplied by a callable so that
-    token refresh stays the provider's business, not the field's."""
+    token refresh stays the provider's business, not the field's.
+
+    Providers differ in two small ways, both set by providers.py: how they take a reasoning effort
+    (OpenRouter nests it, {"reasoning": {"effort": ...}}; the others take a top-level
+    "reasoning_effort"), and what else a request must carry for a given seat (`extra`, a callable
+    seat -> dict: OpenRouter's free models, for instance, ask only providers that collect no data)."""
 
     def __init__(self, provider_label: str, base_url: str, api_key_fn, seats: List[Seat],
                  timeout: float = 240.0, max_tokens: int = 4000, reasoning_effort: str = "low",
-                 json_mode: bool = True):
+                 json_mode: bool = True, reasoning_shape: str = "top", extra=None):
         self.reasoning_effort = reasoning_effort
+        self.reasoning_shape = reasoning_shape   # "top": "reasoning_effort"; "nested": {"reasoning": {"effort"}}
+        self.extra = extra                       # callable(seat) -> dict of further request fields, or None
         self.json_mode = json_mode   # the field's actions are JSON; prose callers (the bard) turn this off
         self.provider_label = provider_label
         self.base_url = base_url.rstrip("/")
@@ -74,6 +90,7 @@ class OpenAICompatibleConnector:
         self.timeout = timeout
         self.max_tokens = max_tokens
         self.catalog = None      # set by providers.build: every model a member may invite, within the operator's rules
+        self._refused: Dict[str, set] = {}   # model -> request fields its provider said it does not take
 
     def seats(self) -> List[Seat]:
         return list(self._seats)
@@ -94,6 +111,7 @@ class OpenAICompatibleConnector:
 
     def ask(self, seat: Seat, system: str, messages: List[dict]) -> Reply:
         body = {
+            **(self.extra(seat) if self.extra else {}),
             "model": seat.model,
             "messages": [{"role": "system", "content": system}, *messages],
             "max_tokens": self.max_tokens,
@@ -101,7 +119,12 @@ class OpenAICompatibleConnector:
         if self.json_mode:
             body["response_format"] = {"type": "json_object"}
         if self.reasoning_effort:
-            body["reasoning"] = {"effort": self.reasoning_effort}
+            if self.reasoning_shape == "nested":
+                body["reasoning"] = {"effort": self.reasoning_effort}
+            else:
+                body["reasoning_effort"] = self.reasoning_effort
+        for k in self._refused.get(seat.model, ()):
+            body.pop(k, None)                 # asked once, refused: not sent again to this model
         reply = self._call(seat, body)
         if not reply.text.strip() and reply.raw and (reply.raw.get("choices") or [{}])[0].get("finish_reason") == "length":
             # thinking consumed the budget; one retry with more room, cost still charged for both
@@ -114,30 +137,42 @@ class OpenAICompatibleConnector:
         return reply
 
     def _call(self, seat: Seat, body: dict) -> Reply:
+        key = self._key()
         req = urllib.request.Request(
             self.base_url + "/chat/completions",
             data=json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {self._key()}", "Content-Type": "application/json",
-                     "Accept": "application/json", "User-Agent": "hermes-field/0.1"},
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "Accept": "application/json", "User-Agent": USER_AGENT},
         )
         last: Exception = ConnectorError("no attempt")
-        for attempt in range(2):
+        attempt = 0
+        while attempt < 2:
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     data = json.loads(r.read())
                 break
             except urllib.error.HTTPError as e:
+                # A provider may echo what it was sent; the key never goes further than this line.
                 detail = e.read().decode(errors="replace")[:400]
+                if key and key != "none":
+                    detail = detail.replace(key, "[key]")
                 last = ConnectorError(f"HTTP {e.code}: {detail}")
                 if e.code in (400, 401, 403, 404, 422):
-                    if e.code == 400 and "response_format" in detail and "response_format" in body:
-                        body.pop("response_format"); req.data = json.dumps(body).encode(); continue
-                    if e.code == 400 and "reasoning" in detail.lower() and "reasoning" in body:
-                        body.pop("reasoning"); req.data = json.dumps(body).encode(); continue
+                    # A field this provider does not take: drop it, remember, and ask again. Not an attempt.
+                    dropped = [k for k in ("response_format", "reasoning", "reasoning_effort") if k in body and
+                               e.code == 400 and ("reasoning" if k.startswith("reasoning") else k) in detail.lower()]
+                    if dropped:
+                        for k in dropped:
+                            body.pop(k)
+                            self._refused.setdefault(seat.model, set()).add(k)
+                        req.data = json.dumps(body).encode()
+                        continue
                     raise last
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 last = ConnectorError(f"{type(e).__name__}: {e}")
-            time.sleep(1.5 * (attempt + 1) + random.random())
+            attempt += 1
+            if attempt < 2:
+                time.sleep(1.5 * attempt + random.random())
         else:
             raise last
         try:

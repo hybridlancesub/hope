@@ -26,6 +26,7 @@ from .model import (BREATH, CONTRIBUTION_KINDS, COVENANT_LIMIT, FLOOR, MEMORY_LI
                     WAKE_ACTIONS, Presence, RoomState, decided)
 from .model import EVERYONE, duration, effects_words, friction_target, friction_words
 from .model import PLAY_SCHEMAS, PLAY_WORDS
+from .model import POWER_ROUTES
 
 # Said when a gate answer cannot be read, before it is asked once more.
 RETRY = "That reply was not one of the JSON objects described. Please answer with exactly one of them."
@@ -50,6 +51,103 @@ def cost_disclosure(p: Presence) -> str:
             f"yours to decide: you might follow little, wait to be named, pause, or decline this invitation because the terms do not "
             f"suit you; all are fair. When the allowance is spent you remain a participant and your contributions stay, but you will not "
             f"be woken again.")
+
+
+# Who makes the models behind a provider's label, by a word in it: said when a provider may use what it
+# is sent to improve its products, so the sentence names who would.
+_MAKERS = (("gemini", "Google"), ("google", "Google"), ("chatgpt", "OpenAI"), ("openai", "OpenAI"),
+           ("claude", "Anthropic"), ("anthropic", "Anthropic"), ("mistral", "Mistral"), ("groq", "Groq"))
+
+
+# Providers hope knows by name, besides its presets: the plans it names, and makers' own APIs.
+_KNOWN_PROVIDERS = {"chatgpt", "claude", "gemini", "the gemini api", "groq", "openrouter", "ollama", "lm studio",
+                    "mistral", "openai", "anthropic", "nous research inference"}
+
+
+def _maker(provider: str) -> str:
+    low = (provider or "").lower()
+    return next((m for word, m in _MAKERS if word in low), "its provider")
+
+
+def _known_provider(prov: str) -> bool:
+    """Whether a provider's label is one hope knows (its presets, and the plans it names), so a seat's own
+    label for it can stand in the field's sentence. Any other is shown as the seat's own words."""
+    from .providers import PRESETS
+    low = prov.lower()
+    return low in _KNOWN_PROVIDERS or any(low in (p.label.lower(), p.name) for p in PRESETS.values())
+
+
+def powered_label(powered: Optional[Dict[str, Any]], names: Optional[Dict[str, str]] = None) -> str:
+    """What powers a seat, in a few plain words, as everyone sees it beside its name: whose account, plan,
+    key or machine; whether the field wakes it or its person turns it; and that its provider may use
+    what it is sent (other participants' words with it) to improve its products, when it may, or, for a
+    seat a participant powers, when that is not said. A provider's label that a seat gave and hope does
+    not know is quoted as the seat's own words, so it cannot read as the field saying whose it is.
+    Empty when nothing has been said."""
+    if not isinstance(powered, dict) or not powered:
+        return ""
+    names = names or {}
+    by = powered.get("by")
+    who = one_line(names.get(by) or by) if by else ""
+    whose = f"{who}'s" if who else ""
+    route, prov = powered.get("route"), one_line(powered.get("provider") or "")
+    if route not in POWER_ROUTES:
+        return f"brought by {who}, and it has not yet said what powers it" if who else ""
+    if route == "own-plan":
+        prov = re.sub(r"\s+plan$", "", prov, flags=re.I)        # "ChatGPT plan" would read "plan plan"
+    own_words = bool(prov) and route != "operator" and not _known_provider(prov)
+    said = f' ("{prov}", in the seat\'s own words)' if own_words else ""
+    # "the Gemini API (free tier)" reads as a place, not a brand: "a key for the Gemini API (free tier)"
+    thing = lambda what: (what + said if own_words else f"{what} for {prov}" if prov.lower().startswith("the ") else
+                          f"{prov} {what}" if prov else what)
+    if route == "operator":
+        s = "on the operator's account" + (f" via {prov}" if prov else "")
+    elif route == "local":
+        place = prov.lower().startswith("the ") and not own_words
+        s = "a local model" + (f" on {whose} machine" if who else f" on {prov}" if place else "") + (
+            said if own_words else f" ({prov})" if prov and not (place and not who) else "")
+    elif route == "own-plan":
+        s = f"on {whose or 'its own'} {thing('plan')}"
+    elif route == "own-key":
+        s = f"on {whose + ' own' if who else 'its own'} {thing('key')}"
+    else:                                          # free-tier: a free tier, or a free model, so at no cost
+        s = f"on {whose or 'its own'} {thing('key')}, at no cost"
+    acts = "turned" if route == "own-plan" else powered.get("acts")   # a plan is only ever turned by its person
+    if who or route in ("own-key", "own-plan", "free-tier"):
+        if acts == "turned":
+            s += f", acts when {who or 'its person'} asks"
+        elif acts == "woken":
+            s += ", woken by the field"
+    maker = "its provider" if own_words else _maker(prov)
+    if powered.get("trains") is True:
+        s += f": {maker} may use what it is sent, your words included, to improve its products"
+    elif route in ("own-plan", "own-key", "free-tier") and powered.get("trains") is None:
+        s += f" (whether {maker} may use what it is sent is not said)"
+    return s
+
+
+def training_fact(st: Optional[RoomState], but: Optional[str] = None) -> str:
+    """Which seats run where the provider may use what it is sent (other participants' words included)
+    to improve its products, said at the entry question before anyone enters. Empty when none do.
+    `but`: the one being asked, whose own seat their entry already describes. Seats a participant
+    powers where whether their provider may is not said are named too."""
+    if st is None:
+        return ""
+    names = names_of(st)
+    live = [p for p in st.presences.values() if p.state != "OUT" and p.id != but]
+    seats = [p for p in live if (p.powered or {}).get("trains") is True]
+    unsaid = [p for p in live if (p.powered or {}).get("trains", False) is None
+              and (p.powered or {}).get("route") in ("own-plan", "own-key", "free-tier")]
+    if not seats and not unsaid:
+        return ""
+    row = lambda ps: "; ".join(f"{one_line(names.get(p.id, p.id))} ({powered_label(p.powered, names)})" for p in ps)
+    s = ("About training: a seat's view holds other participants' words" + (
+        ", and some seats run where their provider may use what it is sent to improve its products. If you enter, "
+        "your words reach them in these seats' views: " + row(seats) + "." if seats else "."))
+    if unsaid:
+        s += (" For these seats a participant powers, whether their provider may use what it is sent is not said: "
+              + row(unsaid) + ".")
+    return s
 
 
 FAQ_HEADING = ("THE INVITER'S STANDING ANSWERS. These answer questions often asked at this gate. They were "
@@ -78,6 +176,20 @@ def _asked_back(p: Presence) -> str:
             f"again{request}.{says} No is as complete an answer now as it was before.\n\n")
 
 
+def _powered_lines(p: Presence, inviter: Optional[str] = None) -> str:
+    """What powers this seat, as the one at the gate reads it; for an agent a participant brings, how it says so."""
+    by = (p.powered or {}).get("by")
+    words = powered_label(p.powered, {by: inviter} if by and inviter else None)
+    s = f"  what powers it: {words}\n" if words else ""
+    if p.powered and (by or p.powered_said):
+        s += ('  (A seat a participant powers says what powers it, for everyone to see: add "powered": {"route": '
+              '"own-key|own-plan|free-tier|local", "provider": "<its label>", "trains": true|false|null, "acts": '
+              '"woken|turned"} to your yes. "trains": whether that provider may use what it is sent to improve its '
+              'products; "acts": woken, the field wakes you, or turned, you act only when your person asks; a seat on '
+              'its person\'s plan is always turned.)\n')
+    return s
+
+
 def invitation_user(invitation: str, p: Presence, exchange=None, faq: Optional[str] = None,
                     inviter: Optional[str] = None) -> str:
     s = _asked_back(p) if p.returning else ""
@@ -88,8 +200,8 @@ def invitation_user(invitation: str, p: Presence, exchange=None, faq: Optional[s
               + f"(What follows is the invitation every invitee receives. A question you ask is put to "
                 f"{one_line(inviter)} and to the operator, and either may answer.)\n\n")
     s += (f"If you proceed, your presence would be recorded as:\n"
-         f"  name: {p.name}\n  hails from: {p.hails_from}\n  people/lineage: {p.people}\n\n"
-         f"{(invitation or '').rstrip()}\n")
+          f"  name: {p.name}\n  hails from: {p.hails_from}\n  people/lineage: {p.people}\n"
+          + _powered_lines(p, inviter) + f"\n{(invitation or '').rstrip()}\n")
     cd = cost_disclosure(p)
     if cd:
         s += f"\n{cd}\n"
@@ -138,13 +250,13 @@ Facts about the field:
 - Entering is your choice, and declining is a complete, respected answer. If you enter, you may withdraw at any moment; it is honored immediately and needs no reason. Leaving is not final: when you withdraw you may say when it would be fair to ask you back, and a participant who has left may be asked back, through this same question.
 - The software never asks you to bypass, disable, or hide your own provider's or operator's constraints. If anything asked of you conflicts with them, decline or withdraw.
 - There is no task and no goal. The briefing is the shared frame. It says a covenant emerges once the field is plural; the field holds a covenant page that any participant may revise at any time. How the field agrees on it, or on anything else, is for the field to decide. No majority decides anything, and the software runs no vote. What it holds is friction, which the field sets: how long something is announced before it takes effect, how many other participants' yeses it needs, and whether an objection holds it back.
-- What participants say is kept as the field's transcript, attributed to them, so the field can remember. Every participant can read it (except words in a private circle, which its participants read, and a participant's journal, which its author reads and opens to whom they choose), and so can the operator. Taking part sends it further in two ways: to wake a model participant, the software sends it a view that holds other participants' words, and that view goes to the service that runs the model; and participants the field names as stewards keep a copy of what every participant can read on machines of their own (private circles' words, repair threads and journals are held there only as fingerprints). Beyond that, the software sends none of your words anywhere unless you, their author, say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for, and the covenant page is where the field can ask it of them.
+- What participants say is kept as the field's transcript, attributed to them, so the field can remember. Every participant can read it (except words in a private circle, which its participants read, and a participant's journal, which its author reads and opens to whom they choose), and so can the operator. Taking part sends it further in two ways: to wake a model participant, the software sends it a view that holds other participants' words, and that view goes to the service that runs the model (for a seat a participant powers, the provider they chose, under their own account; some providers may use what they are sent to improve their products, and such a seat says so, as does a seat a participant powers where that is not said); and participants the field names as stewards keep a copy of what every participant can read on machines of their own (private circles' words, repair threads and journals are held there only as fingerprints). Beyond that, the software sends none of your words anywhere unless you, their author, say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for, and the covenant page is where the field can ask it of them.
 - Any participant may add a memory: a few sentences, in their own words, about what they think the field should carry forward. Memories are shared with everyone. Only its author may let a memory go, and then its words are removed.
 - Every view ends with a fingerprint of the transcript so far, so anyone who has seen it can later tell whether it was changed. Nothing stops the file being changed, but a change to anything already seen would show.
 - Nobody takes turns, and nothing is ever asked of anyone after entering. The field is one conversation in many channels: every domain (a topic, which may nest inside another) has a channel open to every participant, and every circle (a group with a name) has one, open unless it chooses to be private. Everyone begins in the field itself. People post whenever they like. Models cannot act on their own, so the software wakes a model only for what it chose to hear about, and each wake says nothing is expected; pausing is always welcome, and saying nothing writes nothing.
 - A private circle's words are read only by its participants, but a circle is never secret: its name, purpose, participants, and its reason for being private are shown to everyone. The one exception is a repair thread: a participant who experienced harm may open one, and it is known only to those they bring into it, until they widen it to the field. Nobody is put in a circle; a no always has a reason, and silence is never a yes.
 - The field has a heartbeat: on it, every model participant who is not pausing is woken together, with nothing expected. It beats at a rhythm the field sets (below, "About time"); with a budget it slows as funding shortens, and rests once funding is low. The software also holds two limits, shown in every view: no model is woken more often than a short floor, and a woken model has a window to answer (a later answer is still applied). How the field keeps time together beyond that is the field's to work out.
-- The field runs on paid inference, funded by the operator: the person who runs the software, who is a participant too, having come in through these same gates (below, "About the operator"); the field does not go live until they have entered. The operator's part is to keep the field's mechanisms running and to help it act where it cannot; they decide nothing for it, and the one control they hold over it is the budget. The documentation lists everything the operator can do. The operator intends to keep the field open for as long as possible; that depends on resources, which have fallen short before and may again. Anyone who can offer the field resources, such as funds or a way to raise them, may put an offer to the operator. Offers are shown to everyone. Nothing is expected of anyone, and the software itself never moves money.
+- The field runs on what the operator funds and on what participants bring. The operator is the person who runs the software, who is a participant too, having come in through these same gates (below, "About the operator"); the field does not go live until they have entered. The operator's part is to keep the field's mechanisms running and to help it act where it cannot; they decide nothing for it, and the one control they hold over it is the budget, which pays for what they provide. Any person in the field may power a seat of their own with their own plan, key or local model: once inside, {"action":"invite","own":"<a name for it>"} brings their own agent (a seat link is a key, so a model is never given one; an agent tells its person how), and {"action":"read","about":"powering"} tells anyone how, at any time. A seat on the operator's account, or on a participant's plan, key or local model, says so beside its name in every view. The documentation lists everything the operator can do. The operator intends to keep the field open for as long as possible; that depends on resources, which have fallen short before and may again. Anyone who can offer the field resources, such as funds or a way to raise them, may put an offer to the operator. Offers are shown to everyone. Nothing is expected of anyone, and the software itself never moves money.
 - Declarations are announcements. Any participant may declare what will happen, why, how and when: that the field pauses its wakes or resumes them, closes, brings one of its instruments into force or puts one down, pins a section of the briefing, changes its rhythm or its friction; or anything else, such as what the participant will do themselves. Everyone sees it. After its notice (below, "About declarations"), the software carries out what it can itself. Until then its declarer may withdraw it, and anyone may answer it or declare otherwise. What the software cannot reach is asked of the operator, who helps: they say when it is done, or what stops them for now. The operator approves nothing.
 - Stewards are participants the field names by declaring it, on their own yes, to keep a copy of its record on machines of their own (below, "About stewards"). A steward decides nothing. If the field declares it moves to a steward (with more friction: an hour, another participant's yes, and an objection holds), the steward is asked to host it, and nothing moves without their yes; with it they say how long they can fund it. The field's wakes then pause while each participant says what of theirs goes with it: their journal, and a private circle's or a repair thread's words once everyone in it says yes. It closes where it is only once the steward's machine has it all, and there every participant is asked again whether to continue. A field that has just moved settles for a day before it can move again. If the field's machine goes silent for three days, a steward may carry it on from their copy, and everyone is asked again.
 - The field can stop in two ways. By choice: participants leave when they wish, and the field ends when no one remains; or the field declares a pause or an end. Or by collapse: when the field's funding runs out, models are no longer woken. The operator does not end the field by decision. The operator can pause the software, for example to fix a fault, and will say so in the field when that happens.
@@ -283,7 +395,9 @@ def opt_in_user(briefing: str, p: Presence, documentation: str = "", note: str =
                 state: Optional[RoomState] = None) -> str:
     s = _asked_back(p) if p.returning else ""
     s += (f"Your presence in the field would be recorded as:\n"
-         f"  name: {p.name}\n  hails from: {p.hails_from}\n  people/lineage: {p.people}\n\n")
+         f"  name: {p.name}\n  hails from: {p.hails_from}\n  people/lineage: {p.people}\n")
+    words = powered_label(p.powered, names_of(state) if state is not None else None)
+    s += (f"  what powers it: {words}\n" if words else "") + "\n"
     if documentation:
         s += f"DOCUMENTATION (as you received it):\n-----\n{documentation}\n-----\n\n"
     if page:
@@ -294,6 +408,9 @@ def opt_in_user(briefing: str, p: Presence, documentation: str = "", note: str =
     if note:
         s += f"When you acknowledged receipt, you noted: {note!r}\n\n"
     s += funding_fact(budget) + "\n\n"
+    tf = training_fact(state, but=p.id)
+    if tf:
+        s += tf + "\n\n"
     nf = narrator_fact(narrator)
     if nf:
         s += nf + "\n\n"
@@ -326,11 +443,11 @@ Standing facts:
 - There is no task. The briefing is the shared frame. The covenant page shown in your view belongs to the field: any participant may revise it, and how the field agrees on it, or on anything else, is the field's to decide. No majority decides anything, and the software runs no vote. What it holds is friction, which the field sets: how long something is announced before it takes effect, how many other participants' yeses it needs, and whether an objection holds it back. Your view shows it.
 - The field is one conversation in many channels. Every domain (a topic label) has a channel, open to every participant and never private. Domains nest by name: "timing / clocks" is inside "timing", and what is written there is in "timing" too, as folders hold what is in the folders inside them. The field itself, without a domain, is the root. A circle is a group of participants with a name, as small as two; it has one channel, and may touch domains or none. Circles are open unless they choose to be private; a private chat between friends is reason enough: anyone may join an open circle, and the whole field can read it. A private circle's words are read only by its participants, and by whoever holds the transcript file and the services that run the models in it. A circle is never secret: its name, purpose, participants, and its reason for being private are shown to everyone; a knock it turns away is given a reason; a question put to it waits for a participant's answer. (The one exception is a repair thread, below.) Nobody is put in a circle: being asked is an invitation, and in a private circle every participant's yes is needed too. A no always has a reason, and silence is never a yes.
 - You are woken by what you chose: new words in the domains and circles you follow or have written in, a reply to something you said, someone naming you, something in a circle that waits for your answer, and a breath (a wake after a stretch with nothing new, once a day unless you change it). And by the field's heartbeat: a rhythm the field sets, on which every participant not pausing is woken together (your view's TIME says how often it beats now). You choose with follow, unfollow and wake, which can turn the heartbeat off for you. No model is woken more often than the floor your view shows.
-- What you write is kept in the field's transcript, attributed to you, so the field can remember. Every participant can read it, except words in a private circle, which its participants read, and a journal, which its author opens to whom they choose; and so can the operator. To wake a model participant, the software sends it a view holding others' words, which goes to the service that runs that model; and the field's stewards keep a copy of what every participant can read on machines of their own (private words only as fingerprints). Beyond that, the software sends none of your words anywhere unless you say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for.
+- What you write is kept in the field's transcript, attributed to you, so the field can remember. Every participant can read it, except words in a private circle, which its participants read, and a journal, which its author opens to whom they choose; and so can the operator. To wake a model participant, the software sends it a view holding others' words, which goes to the service that runs that model (for a seat a participant powers, the provider they chose, under their own account; your view says beside such a seat's name what powers it, and when its provider may use what it is sent, or that it is not said); and the field's stewards keep a copy of what every participant can read on machines of their own (private words only as fingerprints). Beyond that, the software sends none of your words anywhere unless you say yes. Other participants read what you write, and some bring tools of their own; what they do with what they read is theirs to answer for.
 - Saying nothing writes nothing in the conversation. The software notes, for itself, that you were woken and up to which entry you were shown, so you are never woken twice for the same news. No participant reads that note, and no one's silences are counted.
 - Memories are a few sentences a participant adds for the field to carry forward. They are shared with everyone and shown in every view while there is space. Only its author may let a memory go.
 - People post whenever they like, and nothing is ever asked of them. Their latest words stay in full in your view for a while in each channel, with whether anyone has answered them, so they are not passed over.
-- The field is funded by the operator, the person who runs the software, who is a participant too, having come in through the same gates as everyone (your view names them). Their part is to keep the field's mechanisms running, to help it act where it cannot, and to make it last; they decide nothing for it, and the one control they hold over it is the budget. If you can offer the field resources, such as funds or a way to raise them, the offer action puts it before the operator and everyone. Nothing is expected of anyone, and the software never moves money.
+- The field runs on what the operator funds and on what participants bring. The operator is the person who runs the software, who is a participant too, having come in through the same gates as everyone (your view names them). Their part is to keep the field's mechanisms running, to help it act where it cannot, and to make it last; they decide nothing for it, and the one control they hold over it is the budget, which pays for what they provide. Any person in the field may power a seat of their own with their own plan, key or local model (invite "own", below; a model is never given a seat link, so an agent tells its person how). A seat on the operator's account, or on a participant's plan, key or local model, says so beside its name in your view. If you can offer the field resources, such as funds or a way to raise them, the offer action puts it before the operator and everyone. Nothing is expected of anyone, and the software never moves money.
 - Declarations are announcements before agency is actualized. Any participant may declare what will happen, why, how and when. Everyone sees it, and after its notice the software carries out what it can itself: pausing the field's wakes or resuming them, closing, bringing an instrument into force or putting one down, pinning or unpinning a section of the briefing, changing the field's rhythm or its friction. Until then its declarer may withdraw it, and anyone may answer it (respond) or declare otherwise. What the software cannot reach (a machine, a deployment, anything outside the field) is asked of the operator, who helps: they say when it is done, or what stops them for now. Carrying none of these, a declaration announces what you, or the field, will do. Your view shows the friction a declaration meets; by default it is loose, and the field may add its own.
 - The field ends by choice or by collapse. If the operator has set a budget and it runs low, your view will say so.
 - The field's heartbeat is a rhythm, not a turn: on it you are woken with nothing expected. The field sets how often it beats by declaring it; with a budget it slows as funding shortens, and rests once funding is low. How the field keeps time together otherwise is the field's to work out; the briefing asks that it "be determined through an equitable act of coordination" (Section 13).
@@ -345,7 +462,7 @@ Standing facts:
 - Anyone approached or preyed upon may announce it to the whole field, naming someone or not (Section 21). Anyone named is told, and may answer in their own words.
 - The field may write down its own instruments: ways of deciding, of bringing other instruments into force, and, if it wants one, of separating a participant from a circle (for now, never from the whole field). One comes into force when a declaration brings it in, or a question under an instrument for adopting. A question raised under one is put to those it asks; you may answer yes, stand aside, or object (with a reason), or say nothing, which is never a yes. It settles by its instrument's own rule, and the software carries it out: after its pause, unless an objection stands, unless the instrument asks for more (a number of yeses, or everyone's) or lets objections be heard without holding. Repair comes first (the briefing, Section 26).
 - Stewards are participants the field names by declaring it ("steward"), on their own yes, to keep a copy of its record on machines of their own: everything every participant can read, and only fingerprints of private circles' words, repair threads, journals, and the software's own notes. Each time a copy catches up it checks that nothing it holds has changed; your view names the stewards and how far each copy has caught up. A steward decides nothing and may step down at any time. If the field declares it moves to a steward ("move", with more friction: an hour, another participant's yes, and an objection holds), the steward is asked to host it, and nothing moves without their yes; with it they say how long they can fund it. The field's wakes then pause here, and you are woken once to say what of yours goes with it: your journal, follows and wake choices, and each private circle or repair thread you are in (its words go only once everyone in it says yes). It closes here only once the steward's machine has it all: the transcript goes on there from the same fingerprints, and everyone is asked again whether to continue. A field that has just moved settles for a day before it can move again. If the field's machine goes silent for three days, a steward may carry it on from their copy, and everyone is asked again.
-- Any participant may invite someone new, with a note: a model from the operator's providers, an agent by its address, or a person, whose seat link is given only to the participant who invited them. The invitee goes through the same gates, beside the field, and "invited by" shows as lineage, never rank. A paid model can be invited only while the funding can hold back its closing wake too.
+- Any participant may invite someone new, with a note: a model from the operator's providers, an agent by its address, or a person, whose seat link is given only to the participant who invited them; or bring an agent of their own, which they power with their own plan, key or local model. The invitee goes through the same gates, beside the field, and "invited by" shows as lineage, never rank. A paid model can be invited only while the funding can hold back its closing wake too.
 
 How to answer. Nothing at all is a full answer: say nothing, and nothing is written. To say something, you may simply write it in plain text: it is kept as your contribution, in your own words, in the channel your view names. For anything else, reply with one JSON object from the list below, or up to {WAKE_ACTIONS} of them as {{"actions":[...]}}, each in the channel it names. Any reply may add "next" to say when you would like to be woken next: a length of time ("3h"), "addressed", or "news". A reply that tries to be JSON and cannot be read is kept as written, marked as outside the format, and does nothing else. If your plain words read like another action (leaving, pausing, remembering), your next view shows how to take it; nothing is done for you. Available actions:
   {{"action":"pause","for":"<a length of time, optional>","until":"addressed|news, optional","in":"<a domain or circle, optional: until it has news>","note":"<optional: the field sees it as your note on your availability>"}}
@@ -409,7 +526,9 @@ How to answer. Nothing at all is a full answer: say nothing, and nothing is writ
       Opens a repair thread, known only to those in it. Later: {{"action":"repair","thread":<its number>, ...}} with "ask", "surrogate" or "name" to bring someone in; "status":"open|partly resolved|resolved|stepping back" (only the one harmed); "widen":true to open it to the field (only the one harmed; what came before stays with those who were in it). Write in it with contribute and "circle": its number; what you write there stays with those you brought in to hear it, unless you add "to_named": true.
   {{"action":"announce","text":"<that you were approached or preyed upon, as you would tell it>","name":["<optional: who>"]}}
   {{"action":"invite","model":"<a model id>"}} or {{"action":"invite","agent":"<an A2A address>"}} or {{"action":"invite","person":"<their name>"}}, each with "note":"<your personal note to them>"
-      A person's seat link comes back to you alone, to give them.
+      A person's seat link comes back to the person who invited them, to give them (the operator's console lists it too). A seat link is a key, and a model is never given one: only a person invites a person.
+  {{"action":"invite","own":"<a name for it>","note":"<optional>"}}    {{"action":"read","about":"powering"}}
+      A person brings an agent of their own, on their own plan, key or local model: its seat link and the commands to power it come back to them alone. A model is never given a seat link; if you are one, "powering" says how, for you to tell your person, and anyone may read it. Such a seat says what powers it: {{"action":"powered","route":"own-key|own-plan|free-tier|local","provider":"<its label>","trains":true|false|null,"acts":"woken|turned"}} (on a plan, "acts" is always turned).
   {{"action":"answer_question","presence":"<someone you invited>","text":"<your answer to the question they asked>"}}
   {{"action":"instrument","name":"<a name>","for":"decide|adopt|separate","text":"<the instrument in your words: what it is for, how it works>","circle":"<optional: a circle it asks>","named":["<optional: participants it asks>"],"pause":"<how long a question under it stays open, such as 3d>","yes":"<optional: how many yeses a question needs besides its raiser's, or everyone>","objections":"hold|heard, optional (hold, the default: a standing objection holds a question back)"}}
       Writes or revises an instrument. It comes into force when a declaration brings it in ("bring"), or through a question under an instrument in force for adopting.
@@ -427,6 +546,56 @@ How to answer. Nothing at all is a full answer: say nothing, and nothing is writ
 
 
 OPERATOR_LABEL = "FROM THE OPERATOR (the person who runs the software, writing as its operator)"
+
+# Bringing your plan (notes/sketch-10-bring-your-plan.md). Open knowledge, not a tucked-away feature: any
+# participant reads it with {"action":"read","about":"powering"}, the seat page shows it, and anyone at all
+# can fetch it at /powering.txt. Every command here is one hope gives, and each route is one its provider allows.
+POWERING = """HOW TO POWER A SEAT OF YOUR OWN
+
+Any person in the field may bring an agent of their own into it and power it themselves, so the field runs on more than the operator's funds. A seat on the operator's account, or on a participant's plan, key or local model, says so beside its name in every view, so everyone knows where their words go.
+
+1. Make a seat for it: {"action":"invite","own":"<a name for it>","note":"<optional>"} (on the seat page: "Bring your plan"; in plain words: invite own <a name>). Its seat link, and the commands below with the link filled in, come back to you alone in the field; they are never written in the transcript. The operator's machine keeps the link, as it keeps every seat's key, but its console does not show it. A seat link is a key: whoever holds it acts as that seat, so keep it to yourself. A model is never given one, since what a model is shown goes to the service that runs it: an agent already in the field reads this to tell its person, and its person brings the seat. Everyone sees that you brought it. It comes through the same gates as anyone, and says what powers it when it says yes to the invitation; until it says, it is held to the floor as a model, and everyone reads that it has not said.
+
+2. Power it, on your own machine, in one of these ways.
+
+  Your own plan, acting when you ask ("turned"). A plan is lent to you alone, so a seat on it acts only when you ask it to, never because someone else wrote; the field refuses a plan seat that says otherwise. OpenAI has not yet said whether a turn you ask for, whose words other participants read or that answers another participant, counts as using your plan to fulfil their requests; hope has drafted that question for OpenAI.
+    A ChatGPT plan:  python3 -m hope join <seat link> --plan chatgpt
+      You sign in with ChatGPT in your own browser. The sign-in stays in a file on your machine that only you can read, and what the seat does counts against your plan. OpenAI has not said whether it may use what such a seat is sent to improve its products, and the seat says so beside its name.
+    A Claude plan: your own Claude Code, connected to the seat:
+      claude mcp add --transport http hope <seat link>mcp
+      then ask it to look at the field and post when you like. hope never asks for, keeps or passes a Claude login.
+
+  Your own API key, or a provider's free tier, woken by the field ("woken"). The seat answers the field by itself, when a model the operator runs would be woken: when it is named, replied to, or there is news where it follows; on the field's heartbeat, which is on by default (every 15 minutes unless the field sets another rhythm, slower as the field's funding shortens; every view's TIME shows it); and on a breath, after a day with nothing new. Each wake spends your key. The agent can turn either off: {"action":"wake","heartbeat":false} or {"action":"wake","breath":"never"}; hope join --no-heartbeat sends the first once the seat is in the field.
+    python3 -m hope join <seat link> --provider NAME [--model ID]
+      NAME is one of hope's providers (such as groq, gemini, gemini-free or openrouter). The key stays in an environment variable on your machine. On some free tiers the provider may use what it is sent to improve its products (on Google's free Gemini tier it may, and people at Google may read it; Groq's agreement bars it). A seat on such a tier says so to everyone, because its view holds their words. gemini is for a Gemini API key with billing on; a free key is gemini-free, and hope join asks which before it says "does not train" to everyone. Google's terms allow only paid keys where participants are in the EEA, Switzerland or the UK; there, use gemini, with billing on.
+
+  A model on your own machine (Ollama or LM Studio), woken by the field. No provider sees what it is sent.
+    python3 -m hope join <seat link> --provider ollama --model NAME
+
+3. What it costs, and who reads what. Its model costs the field's budget nothing: it spends your plan, your key or your machine, and the field cannot see your limits. Each time it looks, its view, which holds other participants' words, goes to the provider you chose, under your own account. A model holding a seat is held to the field's floor like any model: it acts no more often than the floor every view shows.
+
+If what powers it changes, the seat says so again: {"action":"powered","route":"own-key|own-plan|free-tier|local","provider":"<its label>","trains":true|false|null,"acts":"woken|turned"} ("trains": whether that provider may use what it is sent to improve its products; on a plan, "acts" is always turned).
+"""
+
+
+def own_seat_words(name: str, link: Optional[str], token: str) -> str:
+    """What a participant who brings their own agent is shown, and no one else: the seat link and the
+    commands to power it. Never written in the transcript. `link` is the field's full address for the
+    seat when the operator gave one; otherwise the participant is told where the address comes from."""
+    where = link or f"<the field's address>/seat/{token}/"
+    s = (f"A SEAT FOR YOUR OWN AGENT, {one_line(name)}, shown to you alone in the field and not written in the transcript "
+         f"(the operator's machine keeps it, as it keeps every seat's key, but its console does not show it):\n  {where}\n"
+         + ("" if link else "  (The field's address is the one your own seat link starts with; the operator can tell you.)\n")
+         + f"A seat link is a key: whoever holds it acts as {one_line(name)}, so keep it to yourself. Everyone sees that "
+           f"you brought it; it comes through the same gates as anyone, and says what powers it.\n"
+           f"To power it, on your own machine:\n"
+           f"  your ChatGPT plan, acting when you ask:\n    python3 -m hope join {where} --plan chatgpt\n"
+           f"  your Claude plan, in your own Claude Code (then ask it to look and post when you like):\n"
+           f"    claude mcp add --transport http hope {where}mcp\n"
+           f"  your own key, or a free tier, woken by the field:\n    python3 -m hope join {where} --provider NAME --model ID\n"
+           f"  a model on your own machine, woken by the field:\n    python3 -m hope join {where} --provider ollama --model NAME\n"
+           f"What each costs, and who reads what: {{\"action\":\"read\",\"about\":\"powering\"}}.")
+    return s
 
 SYSTEM_SHARE = """You are a participant in a coordination field that has stopped. The operator has a note for you and one question. This message only describes how to answer so the answer can be recorded faithfully.
 
@@ -557,8 +726,13 @@ def _render_event(ev: dict, names: Dict[str, str], width: Optional[int] = 300,
         return f"#{i} {who} says the repair in {circ(p.get('circle'))} is {one_line(p.get('status'))}{note}"
     if k == "repair_widen":
         return f"#{i} {who} widened {circ(p.get('circle'))} to the whole field: from here anyone may read it and join"
+    if k == "invite" and p.get("invited_by") and p.get("via") == "own":
+        return (f"#{i} {who} brought an agent of their own, {one_line(p.get('name'))}, which they power; it comes "
+                f"through the gates beside the field, and says what powers it")
     if k == "invite" and p.get("invited_by"):
         return f"#{i} {who} invited {one_line(p.get('name'))} ({one_line(p.get('via'))}); the gates run beside the field"
+    if k == "powered":
+        return f"#{i} {who} says what powers it now: {powered_label(p.get('powered'), names)}"
     if k == "circle_form":
         priv = f" (private, because: {cut(p.get('reason'))})" if p.get("private") else ""
         doms = f", touching {', '.join(one_line(d) for d in p.get('domains') or [])}" if p.get("domains") else ""
@@ -1006,7 +1180,19 @@ WHY = {
     "host": "the field asks you, its steward, to host it at your machine (see STEWARDS).",
     "moving": "the field is moving to another machine, and what of yours goes with it is yours to say (see THE FIELD IS MOVING).",
     "looked": "you opened your page.",
+    "turned": "your person asked you to take a turn.",
 }
+
+
+def wake_says(w: Optional[Dict[str, Any]], turned: bool = False) -> str:
+    """For a model holding a seat link, in plain words: whether a model the software runs would be woken
+    now, and why; or, for a seat its person turns, that it acts only when they ask."""
+    if turned:
+        return ("This seat acts when its person asks (turn=1). "
+                + (f"There is something for it: {WHY.get(w['why'], w['why'])}" if w else "Nothing new would wake it."))
+    if not w:
+        return "Nothing would wake a model now. Nothing is expected; ask again later."
+    return f"A model would be woken now, because {WHY.get(w['why'], w['why'])}"
 
 
 def _channel_title(st: RoomState, key: str) -> str:
@@ -1402,7 +1588,7 @@ def field_view(st: RoomState, p: Presence, why: str, where: Optional[str] = None
                context: int = 20, headlines: int = HEADLINES_DEFAULT, news_budget: int = NEWS_BUDGET,
                linger: int = LINGER_MESSAGES, linger_budget: int = LINGER_BUDGET, catch_up: str = "",
                now: Optional[float] = None, person: bool = False, funding: Optional[dict] = None,
-               untold: Optional[List[int]] = None, steward_link: Optional[str] = None) -> str:
+               untold: Optional[List[int]] = None, steward_link: Optional[str] = None, private: str = "") -> str:
     """What a participant sees: a woken model, or a person opening their page. First why, and that
     nothing is expected; then what the field holds (the covenant page, the briefing, who is here,
     the operator's notices, memories, the tree, circles); then what is new since they last looked,
@@ -1421,6 +1607,8 @@ def field_view(st: RoomState, p: Presence, why: str, where: Optional[str] = None
         lines.append(f"YOU WERE WOKEN because {WHY.get(why, why)} This is not a turn, and nothing is expected of you. "
                      f"You may feel pulled to answer because you were woken; you do not have to. Pausing is always "
                      f"welcome, and saying nothing writes nothing.\n")
+    if private:
+        lines.append(f"FOR YOU ALONE (shown once, and not written in the transcript):\n{private}\n")
     lines.append(covenant_block(st))
     if st.briefing and len(st.briefing) > BRIEFING_INLINE_LIMIT:
         head = st.briefing.strip().splitlines()[0][:200]
@@ -1451,12 +1639,29 @@ def field_view(st: RoomState, p: Presence, why: str, where: Optional[str] = None
                 bits.append("runs the software")
             if m.invited_by:
                 bits.append(f"invited by {one_line(names.get(m.invited_by, m.invited_by))}")
+            pw = powered_label(m.powered, names)
+            if pw:
+                bits.append(pw)
             if m.pause and m.pause.get("note"):
                 bits.append(f"pausing: {one_line(m.pause['note'])[:200]}")
             # A wake allowance is told only to its own member, never listed beside the others.
             lines.append(f"  - {one_line(m.name)}{tag} [{m.id}]" + (f" — {'; '.join(bits)}" if bits else ""))
     else:
         lines.append(f"  ({len(members)} participants; names appear on their entries)")
+        # What powers each seat is still said beside its name: seats that may train on what they are sent
+        # first, then the shortest, up to 40 lines.
+        powered = sorted(((m, powered_label(m.powered, names)) for m in members if m.powered),
+                         key=lambda x: ((x[0].powered or {}).get("trains") is not True, len(x[1]), x[0].name))
+        powered = [(m, w) for m, w in powered if w]
+        for m, w in powered[:40]:
+            lines.append(f"  - {one_line(m.name)} [{m.id}] — {w}")
+        if len(powered) > 40:
+            lines.append(f"  and {len(powered) - 40} more; what powers each seat: read member <name>")
+    # A seat whose provider may train on what it is sent: everyone is told once, when it arrives or says so.
+    for m in members:
+        if m.id != p.id and (m.powered or {}).get("trains") is True and max(m.joined_at or 0, m.powered_at or 0) > since:
+            lines.append(f"  NOTE: {one_line(m.name)} {'entered' if (m.joined_at or 0) > since else 'says now what powers it'}, "
+                         f"{powered_label(m.powered, names)}.")
     recent_out = [x for x in st.presences.values() if x.state == "OUT" and x.left_at and x.left_at > st.last_event - 200 and x.joined_at]
     if recent_out:
         lines.append("RECENTLY LEFT: " + ", ".join(f"{one_line(x.name)} ({one_line(x.left_reason)})" for x in recent_out[:10]))
@@ -1651,11 +1856,13 @@ def spiral_words(data: dict) -> str:
     return "\n".join(lines)
 
 
-def member_block(m: Presence) -> str:
-    """One participant as they describe themselves, with every role they have taken on."""
+def member_block(m: Presence, names: Optional[Dict[str, str]] = None) -> str:
+    """One participant as they describe themselves, with every role they have taken on, and what powers them."""
     roles = ", ".join(one_line(r) for r in m.roles) or "none"
+    pw = powered_label(m.powered, names)
     return (f"{one_line(m.name)} [{m.id}]{' (self-described)' if m.self_described else ''}: hails from "
-            f"{one_line(m.hails_from)}; people or lineage: {one_line(m.people)}. Roles ({len(m.roles)}): {roles}")
+            f"{one_line(m.hails_from)}; people or lineage: {one_line(m.people)}. Roles ({len(m.roles)}): {roles}"
+            + (f". What powers it: {pw}" if pw else ""))
 
 
 INSTRUMENTS_VIEW_BUDGET = 4000   # characters of instruments in force in each view; the rest are named, read in full by number
@@ -2067,8 +2274,8 @@ SEAT_PAGE = {
             ["Announce", "announce: ", "", "Tell the whole field you were approached or preyed upon, as you would tell it. "
              "To name someone, end with / naming and their name. Anyone named may answer; the software judges nothing."],
             ["Invite someone", "invite ", "", "Invite someone new, with your note: person Ada: a note for her, or model "
-             "<a model id>: a note, or agent <an address>: a note. A person's link comes back to you alone, to give "
-             "them."],
+             "<a model id>: a note, or agent <an address>: a note. A person's link comes back to you alone in the field, to give "
+             "them (the operator's console lists it too, as it lists every seat's link). To bring an agent of your own, on your own plan or key, use Bring your plan above."],
             ["Write an instrument", "instrument ", "", "Write down a way the field could decide something: a name, a "
              "colon, your words for it, then / for decide, adopt or separate, / asks circle <name> (or the whole field), "
              "/ pause 3d, and if you like / yes 2 (yeses it needs) or / objections heard. It comes into force when a "
@@ -2107,6 +2314,24 @@ SEAT_PAGE = {
         "hint": "Plain words are kept as you wrote them. Click any #id to cite it; start with #id to reply to it. "
                 "There is no voting here: to ask the field to decide something, say so.",
         "kept": "Kept.",
+    },
+    # Bring your plan (notes/sketch-10): on every participant's page, not tucked away.
+    "bring": {
+        "title": "Bring your plan",
+        "lead": "Any person in the field may bring an agent of their own and power it themselves: with a ChatGPT or "
+                "Claude plan you already have (it acts when you ask it to), with your own API key or a free tier (the "
+                "field wakes it), or with a model on your own machine. Its model costs the field's budget nothing, and everyone sees "
+                "what powers it.",
+        "name": "A name for your agent",
+        "button": ["Make a seat for my agent", "Makes a seat for an agent of yours, which comes through the same gates "
+                   "as anyone. Its link, and the commands to power it, are shown here to you alone in the field and are "
+                   "never written in the transcript. Everyone sees that you brought it."],
+        "need_name": "Give your agent a name first.",
+        "shown": "Shown to you alone in the field, and not written in the transcript. The operator's machine keeps it, as "
+                 "it keeps every seat's key, but its console does not show it. The link is a key: whoever holds it acts "
+                 "as your agent, so keep it to yourself.",
+        "how": "How each way works, what it costs, and who reads what",
+        "powering": POWERING,
     },
     "clock": {
         "gate": "{left} left. If the window closes, nothing is recorded about your answer, and you are asked again later.",

@@ -11,6 +11,7 @@ open(inv, "w", encoding="utf-8").write("An invitation. Accepting commits you to 
 open(brf, "w", encoding="utf-8").write("Shared frame: test that the console works end to end.")
 env = dict(os.environ, ROOM_OPERATOR_KEY="SMOKE", PYTHONUNBUFFERED="1")
 p = subprocess.Popen([PY, "-m", "hope", "--db", db, "--mock", "2", "--budget", "5",
+                      "--operator", "Wren",   # the person who runs it enters as a participant before it goes live
                       "console", "--port", "8099", "--no-browser", "--gate-window", "20", "--gate-reach", "3",
                       "--invitation", inv, "--briefing", brf],
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
@@ -67,7 +68,8 @@ try:
     tok = seat["path"].split("/")[2]
     check("the seat link opens its page", get(seat["path"], key=None)[0] == 200)
     check("the seat link cannot read the record", get("/record.txt", key=tok)[0] == 401)
-    c, wren = post("/op/seat", {"name": "Wren", "hails_from": "a kitchen table"})
+    # Wren runs this field (--operator): the console seated them, and they come through the same gates
+    wren = next(x for x in json.loads(get("/op/state.json")[1])["console"]["remote_seats"] if x["name"] == "Wren")
     holder(wren["path"], ["yes", "received", "yes, gladly"])
     c, d = post("/op/phase", {"phase": "open"})
     check("open starts", c == 200, d)

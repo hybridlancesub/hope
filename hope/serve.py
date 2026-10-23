@@ -34,6 +34,8 @@ GATE_ORDER = ["INVITED", "ACCEPTED", "BRIEFED", "RECEIVED", "IN", "OUT"]
 def admission_json(st) -> List[Dict[str, Any]]:
     """Every presence the field knows of, at whatever gate it has reached -- including the ones
     that never became participants. One row per seat, in the order the gates are walked."""
+    from .prompts import powered_label
+    names = {pid: p.name for pid, p in st.presences.items()}
     rows = []
     for p in st.presences.values():
         rows.append({
@@ -47,9 +49,16 @@ def admission_json(st) -> List[Dict[str, Any]]:
             # [question, answer|None] -- an unanswered question is someone waiting on the operator
             "questions": [{"asked": q, "answered": a} for q, a in (p.questions or [])],
             "awaiting_answer": any(a is None for _, a in (p.questions or [])),
+            # what powers the seat, as every participant sees it (notes/sketch-10)
+            "powered": p.powered, "powered_words": powered_label(p.powered, names) or None,
         })
     rows.sort(key=lambda r: (r["stage_index"], r["name"].lower()))
     return rows
+
+
+def _powered_words(powered, names) -> Optional[str]:
+    from .prompts import powered_label
+    return powered_label(powered, names) or None
 
 
 def spend_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
@@ -216,6 +225,7 @@ def state_json(log: EventLog, budget: Optional[float] = None) -> Dict[str, Any]:
                 "unreachable": p.unreachable, "self_described": p.self_described,
                 "pausing": bool(p.pause), "pause_note": (p.pause or {}).get("note") or None, "roles": list(p.roles),
                 "invited_by": names.get(p.invited_by, p.invited_by) if p.invited_by else None,
+                "powered": p.powered, "powered_words": _powered_words(p.powered, names),
                 "resting_until": None}
                for p in st.presences.values() if p.joined_at is not None]
     covenant = {"text": st.covenant, "by": names.get(st.covenant_by, st.covenant_by) if st.covenant_by else None,

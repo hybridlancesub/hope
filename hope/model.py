@@ -138,6 +138,56 @@ PLAY_SCHEMAS = ("transporting", "enclosing", "trajectory", "positioning", "trans
 FIRM_DEFAULT = ("Maxims",)   # the briefing's pinned sections, which change only past their friction ("pinned")
 CIRCLE_SCOPED = ("contribute", "affirm", "challenge", "circle_covenant", "circle_ask", "circle_knock",
                  "circle_answer", "harvest")   # in a private circle, read only by its members (and whoever is asked in)
+# What powers a seat (notes/sketch-10-bring-your-plan.md), said to everyone beside its name. The software
+# says it for the seats it runs (the operator's providers); a seat a participant powers says it itself, when
+# it accepts its invitation and again whenever it changes. Who powers it ("by") only ever comes from the
+# invitation: no seat can say that someone else is lending it their plan or their key.
+POWER_ROUTES = ("operator", "local", "own-key", "own-plan", "free-tier")
+POWER_ACTS = ("woken", "turned")   # woken: the field wakes it; turned: it acts only when its own person asks
+POWER_PROVIDER_LIMIT = 80          # characters in a provider's label
+
+
+def powered_problem(d: Any, said_by_seat: bool = True) -> Optional[str]:
+    """Why a statement of what powers a seat cannot be kept, or None if it can. A seat speaking for
+    itself cannot say it runs on the operator's account: only the software, which pays, says that."""
+    if not isinstance(d, dict):
+        return "say what powers the seat as an object: route, provider, trains, acts"
+    if d.get("route") not in POWER_ROUTES:
+        return f"route is one of {', '.join(POWER_ROUTES)}"
+    if said_by_seat and d["route"] == "operator":
+        return "only the software says a seat runs on the operator's account; a seat a participant powers is own-key, own-plan, free-tier or local"
+    if not isinstance(d.get("provider", ""), str) or len(d.get("provider") or "") > POWER_PROVIDER_LIMIT:
+        return f"provider is a label of at most {POWER_PROVIDER_LIMIT} characters"
+    if said_by_seat and _OWNER_WORDS.search(d.get("provider") or ""):
+        return "who powers a seat is said only by its invitation; name the provider, not whose it is"
+    if d.get("trains") is not None and not isinstance(d.get("trains"), bool):
+        return "trains is true, false, or null (not known)"
+    if d.get("acts") not in POWER_ACTS:
+        return "acts is woken (the field wakes it) or turned (it acts only when its own person asks)"
+    if d["route"] == "own-plan" and d["acts"] != "turned":
+        return "a seat on its person's plan acts only when they ask: acts is turned"
+    return None
+
+
+# Words in a provider's label that would say whose it is ("Ana's ChatGPT", "lent by Ana"): only the invitation says that.
+_OWNER_WORDS = re.compile(r"['’`]s\b|\b(lent|lend|lends|lending|by|from)\b", re.IGNORECASE)
+
+
+def clean_powered(d: Any, said_by_seat: bool = True) -> Optional[Dict[str, Any]]:
+    """A statement of what powers a seat, kept to its four fields (never "by"), or None if it cannot be kept."""
+    if powered_problem(d, said_by_seat):
+        return None
+    return {"route": d["route"], "provider": _line(d.get("provider"))[:POWER_PROVIDER_LIMIT],
+            "trains": d.get("trains"), "acts": d["acts"]}
+
+
+def acts_as_model(p) -> bool:
+    """Whether a presence says a model powers it (woken or turned), or is an agent a participant brought
+    ("by", which only an invitation to bring one's own agent sets): then it is a model, not a person, for
+    the field's tempo, whether or not it has said yet what powers it. The floor holds for its posts, and
+    its words are not people's words."""
+    return bool(p is not None and isinstance(p.powered, dict)
+                and (p.powered.get("acts") in POWER_ACTS or p.powered.get("by")))
 
 
 def _line(s) -> str:
@@ -257,6 +307,7 @@ STEWARD_KINDS = ("steward_answer", "steward_step_down", "host_answer", "travel")
 RESPONSES = ("yes", "stand aside", "object")
 INVITE_PAUSE = 3600.0        # seconds between the briefing and the entry question, for an invitee who names none
 VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS + INSTRUMENT_KINDS + STEWARD_KINDS
+VISIBLE_KINDS = VISIBLE_KINDS + ("powered",)   # a seat saying again what powers it (notes/sketch-10)
 TURN_KINDS = VISIBLE_KINDS                   # what earlier versions counted as a turn; a wake is counted now
 ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
 
@@ -300,6 +351,11 @@ class Presence:
     invite: Optional[Dict[str, Any]] = None  # how it was invited by a member: kind, note, and what reaches it again
     received_ts: float = 0.0                 # when it acknowledged the briefing
     pause_wanted: Optional[float] = None     # the pause it chose before the entry question (invitees of members), if any
+    # What powers it (notes/sketch-10): route, provider, trains, acts, and "by", the participant who powers
+    # it (from the invitation alone). None: not said. Shown beside its name in every view.
+    powered: Optional[Dict[str, Any]] = None
+    powered_said: bool = False               # it said so itself (a seat a participant powers), not the software
+    powered_at: Optional[int] = None         # the event that last said what powers it
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -742,6 +798,17 @@ class RoomState:
         if private and reason:
             c["reason"], c["reason_by"], c["reason_at"] = reason, by, ts or c.get("reason_at") or 0.0
 
+    @staticmethod
+    def _say_powered(pr: Presence, said: Any, eid: int) -> None:
+        """A seat says what powers it. Kept only for a seat the software does not run itself (what powers
+        the operator's seats is the software's to say), and "by" stays what the invitation said."""
+        clean = clean_powered(said)
+        if clean is None or (pr.powered and pr.powered.get("route") and not pr.powered_said):
+            return
+        by = (pr.powered or {}).get("by")
+        pr.powered = {**clean, **({"by": by} if by else {})}
+        pr.powered_said, pr.powered_at = True, eid
+
     # -- replay ---------------------------------------------------------------
     def apply(self, ev: Dict[str, Any]) -> None:
         if ev["kind"] == "withheld":
@@ -784,6 +851,16 @@ class RoomState:
                     np.invited_by = by
                     np.invite = {"kind": p.get("via") or "", "note": p.get("note") or "", "at": eid,
                                  "model": p.get("model") or "", "address": p.get("address") or ""}
+                pw = p.get("powered")
+                if isinstance(pw, dict):
+                    np = self.presences[p["id"]]
+                    # the software's own word for the seats it runs; for an agent a participant brings, only
+                    # who powers it (by), until the agent says the rest itself
+                    np.powered = clean_powered(pw, said_by_seat=False) or {}
+                    if by and pw.get("by") == by:
+                        np.powered["by"] = by
+                    np.powered = np.powered or None
+                    np.powered_at = eid if np.powered else None
         elif k == "invitation":
             self.invitation, self.invitation_event = p["text"], eid
         elif k == "standing_answers":
@@ -811,10 +888,16 @@ class RoomState:
                 ident = p.get("identity") or {}
                 if isinstance(ident, dict) and any(ident.get(k2) for k2 in ("name", "hails_from", "people")):
                     pr.seat = pr.seat or f"{pr.name} | {pr.hails_from} | {pr.people}"
-                    pr.name = _line(ident.get("name") or pr.name)[:120]
+                    # a name someone else in the field already goes by stays theirs: names are how participants
+                    # address each other, and a name two share reaches neither
+                    named = _line(ident.get("name") or "")[:120]
+                    if named and not any(q.id != pr.id and q.state != OUT and (q.name or "").lower() == named.lower()
+                                         for q in self.presences.values()):
+                        pr.name = named
                     pr.hails_from = _line(ident.get("hails_from") or pr.hails_from)[:200]
                     pr.people = _line(ident.get("people") or pr.people)[:300]
                     pr.self_described = True
+                self._say_powered(pr, p.get("powered"), eid)
         elif k == "question":
             if pr and pr.state == INVITED:
                 pr.questions.append([p.get("content", ""), None])
@@ -1144,6 +1227,17 @@ class RoomState:
             r = self.briefing_waiting.get(p.get("revision"))
             if r and r["by"] == a and r["status"] == "waiting":
                 r["status"], r["adopted_at"] = "withdrawn", None
+        elif k == "powered":                        # a seat saying again what powers it, after entry
+            if pr and pr.state == IN:
+                self._say_powered(pr, p.get("powered"), eid)
+        elif k == "seat_powered":
+            # The software says what powers a seat it runs that was invited before it said so (a field opened
+            # by an earlier version): only the operator's software, and never over what a seat said itself.
+            tgt = self.presences.get(p.get("id"))
+            pw = clean_powered(p.get("powered"), said_by_seat=False)
+            if a == "operator" and tgt is not None and pw and not tgt.powered_said and not (tgt.powered or {}).get("by") \
+                    and not (tgt.powered or {}).get("route"):
+                tgt.powered, tgt.powered_at = pw, eid
         elif k == "roles":
             if pr and pr.state == IN:
                 pr.roles = [_line(r)[:ROLE_LENGTH] for r in (p.get("roles") or []) if _line(r)]

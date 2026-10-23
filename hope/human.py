@@ -79,6 +79,9 @@ The format is plain text, translated to the same JSON actions models send:
                                     with those you brought in to hear it)
     announce: <text> [/ naming <names>]   tell the field you were approached or preyed upon
     invite person <name> [: note] | invite model <id> [: note] | invite agent <address> [: note]
+    invite own <a name> [: note]    bring an agent of your own, on your own plan, key or local model; its link
+                                    and the commands to power it come back to you alone in the field
+    read powering                   how to power a seat of your own (open to anyone)
     answer invitee <name>: <text>   answer a question from someone you invited
     instrument <name>: <its words> [/ for decide|adopt|separate] [/ asks circle <name> | / asks <names>] [/ pause 3d]
                [/ yes 2 | / yes everyone] [/ objections hold|heard]
@@ -207,6 +210,8 @@ class HumanConnector:
             self._say("(kept)" if out.get("ok") else f"(not kept: {out.get('error')})")
             for r in out.get("results") or []:
                 self._say(r)
+            if out.get("private"):
+                self._say(out["private"])      # for this person alone (a seat link is a key); not in the transcript
 
     def _say(self, s: str, end: str = "\n") -> None:
         self.outfile.write(s + end)
@@ -391,7 +396,7 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
         if m.group(2):
             d["name"] = [x.strip() for x in m.group(2).split(",") if x.strip()]
         return d
-    m = re.match(r"invite\s+(person|model|agent)\s+(.+?)(?::\s+(.*))?$", s, re.I | re.S)
+    m = re.match(r"invite\s+(person|model|agent|own)\s+(.+?)(?::\s+(.*))?$", s, re.I | re.S)
     if m:
         return {"action": "invite", m.group(1).lower(): m.group(2).strip(), "note": (m.group(3) or "").strip()}
     m = re.match(r"answer\s+invitee\s+([^:]+):\s*(.*)$", s, re.I | re.S)
@@ -541,6 +546,8 @@ def translate(line: str, *, gate: bool = False, entry: bool = False, delivery: b
     m = re.match(r"revise\s+briefing\s*:\s*(.+?)\s*==>\s*(.*?)(?:\s*//\s*(.*))?$", s, re.I | re.S)
     if m:
         return {"action": "revise_briefing", "passage": m.group(1), "text": m.group(2), "note": (m.group(3) or "").strip()}
+    if re.fullmatch(r"read\s+(?:about\s+)?powering|how\s+(?:do\s+i\s+|to\s+)?power\s+a\s+seat\??", s.strip(), re.I):
+        return {"action": "read", "about": "powering"}
     m = re.match(r"read\s+journal\s+(.+)$", s, re.I)
     if m:
         return {"action": "read", "journal": m.group(1).strip()}

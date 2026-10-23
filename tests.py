@@ -74,6 +74,17 @@ class PricedMock(MockConnector):
         return Reply(r.text, prompt_tokens=100, completion_tokens=10, cost_usd=self.price)
 
 
+class PeopleMock(MockConnector):
+    """The mock's seats at a person's tempo: people, who post whenever they like and are never woken,
+    answering the gates as the mock does. Only a person brings an agent of their own or invites a
+    person: a seat link is a key, and a model is never given one."""
+
+    def __init__(self, n, script=None):
+        super().__init__(n, script or scripted({}))
+        for s in self._seats:
+            s.model = "remote"
+
+
 class People:
     """Seats at the slower tempo, as people and agents holding links are. Each turn is answered
     after `delay` seconds, and every turn message is kept so a test can read what they saw."""
@@ -885,13 +896,22 @@ class RoomTest(unittest.TestCase):
                     alert_fn=self.alerts.append, parallel=2, narrator=MechanicalNarrator(), tell_every=4)
         self.open(room)
         seen = self.spy(room.connectors[0])
-        for _ in range(4):
+        # Two models are woken together; how many write in one step depends on which answer lands first, so
+        # the field runs until two tellings are due (each step is two wakes at most), and each is checked.
+        for _ in range(16):
             room.step()
             room._tell_if_due()
             if room._telling is not None:
                 room._telling.result(timeout=10)
-        tellings = room.state().tellings
+            if len(room.state().tellings) >= 2:
+                break
+        st = room.state()
+        tellings = st.tellings
         self.assertEqual(len(tellings), 2, "one telling every four contributions")
+        for t in tellings:
+            stretch = [eid for eid in st.contributions if t["since"] < eid <= t["upto"]]
+            self.assertGreaterEqual(len(stretch), 4, "a telling only once four contributions have been written")
+            self.assertLessEqual(len(stretch), 5, "and as soon as they have (a step adds two at most)")
         self.assertEqual(tellings[1]["since"], tellings[0]["upto"], "each telling picks up where the last one ended")
         self.assertTrue(all(t["ungrounded"] == [] and "[#" in t["story"] for t in tellings), "every tag checks out")
         self.assertFalse(any(tellings[0]["story"] in m for ms in seen.values() for m in ms),
@@ -4738,6 +4758,13 @@ class StepFiveTest(unittest.TestCase):
         from hope.rendezvous import Rendezvous, RendezvousConnector
         rv = Rendezvous()
         self.room.connectors.append(RendezvousConnector(rv))
+        # a model is never given a seat link: its view goes to the service that runs it
+        self.room._ctx[self.b] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+        self.act(self.b, action="invite", person="Bea", note="for you")
+        self.assertFalse(self.room._ctx.pop(self.b)["out"])
+        self.assertIn("a model is never given one", self.rejected())
+        self.assertFalse(rv.seats(), "no seat was made")
+        self.room.seat_of[self.a][1].model = "remote"      # Mock 0 is a person, at a person's tempo
         self.room._ctx[self.a] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
         self.act(self.a, action="invite", person="Ada", note="I think you would like it here")
         out = self.room._ctx.pop(self.a)["out"]
@@ -4745,7 +4772,8 @@ class StepFiveTest(unittest.TestCase):
         token = _re.search(r"/seat/([A-Za-z0-9_-]{20,})/", out[-1]).group(1)
         self.assertIsNotNone(rv.seat_for_token(token), "a real seat")
         self.assertFalse(any(token in json.dumps(e) for e in self.room.log.iter()), "never in the transcript")
-        self.assertIn("shown only to you", out[-1])
+        self.assertIn("shown to you alone in the field", out[-1])
+        self.assertIn("the operator's console lists it", out[-1], "and who else holds it is said")
 
     def test_the_member_who_invited_someone_may_answer_their_question_and_the_operator_may_answer_many_at_once(self):
         self.act(self.a, action="invite", model="mock/curious")
@@ -5472,6 +5500,2118 @@ class RoutingTest(unittest.TestCase):
             if room.log.last_id() == before:
                 silent.append(a)
         self.assertEqual(silent, [], "these actions did nothing, and said nothing")
+
+
+# ======================================================================================================
+# Bringing your plan (notes/sketch-10-bring-your-plan.md): the providers a seat may run on, Sign in
+# with ChatGPT, the field's side, and hope join, the participant's side.
+import base64
+import contextlib
+import hashlib
+import io
+import queue
+import re
+import shutil
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from hope import chatgpt, join, providers
+from hope.connector import ConnectorError, Seat
+from hope.rendezvous import Rendezvous, RendezvousConnector
+
+
+# The providers a seat may run on: the free and paid presets, what each provider may do with what
+# it is sent, each provider asked in its own shape, and no borrowed logins.
+
+PROVIDER_KEY = "sk-test-NEVER-WRITTEN-5151"
+
+
+class RecordingProvider:
+    """A compatible service on this machine that keeps every request it was sent: its headers and
+    its body. `models` is its list (None: it keeps no list, and /models answers 404). It can refuse
+    a reasoning effort, as some providers do, or echo the key back in an error."""
+
+    def __init__(self, models=None):
+        fake = self
+        self.models = models
+        self.requests = []           # (method, path, headers, body)
+        self.refuse_reasoning = False
+        self.echo_key = False
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                fake.requests.append(("GET", self.path, dict(self.headers), None))
+                if fake.models is None:
+                    return self._send(404, {"error": "no such route"})
+                self._send(200, {"data": fake.models})
+
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                fake.requests.append(("POST", self.path, dict(self.headers), req))
+                if fake.echo_key:
+                    return self._send(401, {"error": f"Incorrect key provided: {self.headers.get('Authorization')}"})
+                if fake.refuse_reasoning and ("reasoning_effort" in req or "reasoning" in req):
+                    return self._send(400, {"error": {"message": "Unrecognized request argument supplied: reasoning_effort"}})
+                act = {"action": "contribute", "domain": "doors", "content": "Here."}
+                self._send(200, {"choices": [{"message": {"content": json.dumps(act)}, "finish_reason": "stop"}],
+                                 "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def posts(self):
+        return [r[3] for r in self.requests if r[0] == "POST"]
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+OPENROUTER_MODELS = [
+    {"id": "deepseek/deepseek-v3", "name": "DeepSeek V3", "pricing": {"prompt": "0.000002", "completion": "0.000008"}},
+    {"id": "deepseek/deepseek-v3:free", "name": "DeepSeek V3 (free)", "pricing": {"prompt": "0", "completion": "0"}},
+    {"id": "qwen/qwen3-8b:free", "name": "Qwen3 8B (free)", "pricing": {"prompt": "0", "completion": "0"}},
+    {"id": "qwen/qwen3-8b:US", "name": "Qwen3 8B (US)", "pricing": {"prompt": "0.000001", "completion": "0.000001"}},
+    {"id": "qwen/qwen3-8b", "name": "Qwen3 8B", "pricing": {"prompt": "0.000001", "completion": "0.000001"}},
+]
+
+GEMINI_MODELS = [{"id": "models/" + m, "object": "model", "owned_by": "google"} for m in (
+    "gemini-2.5-flash", "gemma-3-27b-it",
+    "gemini-2.5-flash-preview-tts", "gemini-2.5-flash-native-audio-preview-09-2025",
+    "gemini-live-2.5-flash-preview", "gemini-2.0-flash-live-001", "gemini-3-flash-transcribe",
+    "lyria-realtime-exp", "imagen-4.0-generate-001", "gemini-2.5-flash-image", "nano-banana-pro-preview",
+    "veo-3.0-generate-001", "gemini-robotics-er-1.5-preview", "gemini-embedding-001", "text-embedding-004",
+    "aqa", "gemini-3.1-flash-speech",
+)]
+
+
+class ByopProviderTest(unittest.TestCase):
+    """A seat says truly what powers it and what its provider may do with what it is sent; free
+    routes are honest about their terms; and hope reaches each provider only by its own key."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.fakes = []
+        self.saved = {k: os.environ.get(k) for k in ("HOPE_TEST_KEY", "NOUS_API_KEY", "NOUS_BASE_URL", "HERMES_HOME")}
+        os.environ["HOPE_TEST_KEY"] = PROVIDER_KEY
+
+    def tearDown(self):
+        for f in self.fakes:
+            f.close()
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def fake(self, models=None):
+        f = RecordingProvider(models)
+        self.fakes.append(f)
+        return f
+
+    def preset(self, name, fake):
+        """A preset as it ships, pointed at the fake and its test key."""
+        p = providers.named(name)
+        p.base_url, p.key_env = fake.url, "HOPE_TEST_KEY"
+        return p
+
+    def ask(self, conn, seat):
+        return conn.ask(seat, "You are a participant.", [{"role": "user", "content": "The field is quiet."}])
+
+    def test_free_openrouter_models_become_seats_and_ask_only_providers_that_collect_no_data(self):
+        fake = self.fake(OPENROUTER_MODELS)
+        conn = providers.build(self.preset("openrouter", fake))
+        seats = {s.model: s for s in conn.seats()}
+        self.assertEqual(sorted(seats), ["deepseek/deepseek-v3", "deepseek/deepseek-v3:free",
+                                         "qwen/qwen3-8b", "qwen/qwen3-8b:free"],
+                         "a free variant stays beside its paid model; a regional duplicate does not")
+        free, paid = seats["deepseek/deepseek-v3:free"], seats["deepseek/deepseek-v3"]
+        self.assertNotEqual(free.id, paid.id)
+        self.assertEqual(free.pricing, {"prompt": 0.0, "completion": 0.0})
+        self.assertEqual(free.powered["trains"], False, "asked only of providers that collect no data")
+        self.assertIsNone(paid.powered["trains"], "a paid OpenRouter model's terms are its provider's own")
+        self.assertEqual(self.ask(conn, free).cost_usd, 0.0)
+        self.ask(conn, paid)
+        free_body, paid_body = fake.posts()
+        self.assertEqual(free_body["provider"], {"data_collection": "deny"})
+        self.assertNotIn("provider", paid_body)
+        # Elsewhere a free duplicate is still left out: no provider there can be asked to keep no data.
+        nous_like = providers.roster(OPENROUTER_MODELS, providers.PRESETS["nous"])
+        self.assertNotIn("deepseek/deepseek-v3:free", [s.model for s in nous_like])
+
+    def test_geminis_non_chat_models_never_become_seats(self):
+        fake = self.fake(GEMINI_MODELS)
+        conn = providers.build(self.preset("gemini", fake))
+        self.assertEqual([s.model for s in conn.seats()], ["gemini-2.5-flash", "gemma-3-27b-it"],
+                         "speech, live, transcription, music, image, video, robotics, embedding and aqa "
+                         "models are not seated, and ids lose their 'models/' prefix")
+        self.assertEqual(conn.seats()[0].id, "gemini__gemini-2.5-flash")
+        self.assertEqual(conn.seats()[0].hails_from, "Google via the Gemini API (a paid key)")
+        with self.assertRaises(ValueError) as e:
+            providers.single_seat(self.preset("gemini", fake), "models/gemini-2.5-flash-preview-tts")
+        self.assertIn("does not converse in text", str(e.exception))
+        # A provider with no list: the id alone keeps such a model out.
+        with self.assertRaises(ValueError):
+            providers.single_seat(self.preset("gemini", self.fake(None)), "veo-3.0-generate-001")
+
+    def test_a_free_gemini_key_is_marked_as_training_on_what_it_is_sent(self):
+        fake = self.fake(GEMINI_MODELS)
+        free = providers.build(self.preset("gemini-free", fake)).seats()
+        paid = providers.build(self.preset("gemini", fake)).seats()
+        groq = providers.build(self.preset("groq", self.fake([{"id": "openai/gpt-oss-120b"}]))).seats()
+        self.assertTrue(free and all(s.powered["trains"] is True for s in free))
+        self.assertTrue(all("free tier" in s.powered["provider"] and "free tier" in s.hails_from for s in free))
+        self.assertTrue(all(s.powered["trains"] is False for s in paid))
+        self.assertEqual([(s.hails_from, s.powered["trains"]) for s in groq], [("OpenAI via Groq", False)])
+        self.assertFalse({s.id for s in free} & {s.id for s in paid}, "a free key and a paid one are different seats")
+        _, seat = providers.single_seat(self.preset("gemini-free", fake), "gemini-2.5-flash", acts="turned")
+        self.assertEqual(seat.powered, {"route": "free-tier", "provider": "the Gemini API (free tier)",
+                                        "trains": True, "acts": "turned"})
+
+    def test_reasoning_effort_reaches_each_provider_in_its_own_shape(self):
+        for name, model in (("openrouter", "deepseek/deepseek-v3"), ("groq", "openai/gpt-oss-120b"),
+                            ("gemini", "gemini-2.5-flash"), ("nous", "deepseek/deepseek-v3")):
+            fake = self.fake([{"id": model}])
+            if name == "nous":
+                os.environ["NOUS_API_KEY"], os.environ["NOUS_BASE_URL"] = PROVIDER_KEY, fake.url
+                p = providers.named("nous")
+            else:
+                p = self.preset(name, fake)
+            conn, seat = providers.single_seat(p, model)
+            self.ask(conn, seat)
+            (body,) = fake.posts()
+            if name == "openrouter":
+                self.assertEqual(body.get("reasoning"), {"effort": "low"}, name)
+                self.assertNotIn("reasoning_effort", body, name)
+            else:
+                self.assertEqual(body.get("reasoning_effort"), "low", name)
+                self.assertNotIn("reasoning", body, name)
+
+    def test_a_provider_that_refuses_reasoning_effort_is_asked_again_without_it(self):
+        fake = self.fake([{"id": "llama-3.3-70b-versatile"}])
+        fake.refuse_reasoning = True
+        conn, seat = providers.single_seat(self.preset("groq", fake), "llama-3.3-70b-versatile")
+        self.assertIn("Here.", self.ask(conn, seat).text)
+        self.assertIn("Here.", self.ask(conn, seat).text)
+        bodies = fake.posts()
+        self.assertEqual(len(bodies), 3, "refused once, then never sent again to that model")
+        self.assertIn("reasoning_effort", bodies[0])
+        self.assertTrue(all("reasoning_effort" not in b for b in bodies[1:]))
+
+    def test_nous_needs_its_own_key_and_never_borrows_another_apps_login(self):
+        import subprocess
+        from hope import nous
+        os.environ.pop("NOUS_API_KEY", None)
+        home = os.path.join(self.tmp, ".hermes")
+        os.makedirs(os.path.join(home, "hermes-agent", "venv", "bin"))
+        os.environ["HERMES_HOME"] = home          # another app's login is right there, and is not touched
+        fake = self.fake([{"id": "deepseek/deepseek-v3"}])
+        os.environ["NOUS_BASE_URL"] = fake.url
+        ran = []
+        real = subprocess.run
+        subprocess.run = lambda *a, **kw: ran.append(a) or real(*a, **kw)
+        try:
+            with self.assertRaises(RuntimeError) as e:
+                nous.build()
+        finally:
+            subprocess.run = real
+        self.assertIn("NOUS_API_KEY", str(e.exception))
+        self.assertEqual(ran, [], "nothing of another app's is run")
+        self.assertEqual(fake.requests, [], "nothing is sent without its own key")
+        with open(nous.__file__, encoding="utf-8") as f:
+            source = f.read()
+        self.assertNotIn("hermes_cli", source)
+        self.assertNotIn("subprocess", source)
+        os.environ["NOUS_API_KEY"] = PROVIDER_KEY
+        conn = nous.build()
+        self.assertEqual([s.id for s in conn.seats()], ["deepseek__deepseek-v3"])
+        self.assertTrue(all(r[2].get("Authorization") == f"Bearer {PROVIDER_KEY}" for r in fake.requests))
+
+    def test_the_connector_names_itself_hope(self):
+        fake = self.fake([{"id": "qwen/qwen3-8b"}])
+        conn, seat = providers.single_seat(self.preset("openrouter", fake), "qwen/qwen3-8b")
+        self.ask(conn, seat)
+        agents = [r[2].get("User-Agent") for r in fake.requests]
+        self.assertEqual([r[0] for r in fake.requests], ["GET", "POST"])
+        self.assertTrue(all(a == "hope" for a in agents), agents)
+
+    def test_every_seat_says_what_powers_it(self):
+        fake = self.fake(OPENROUTER_MODELS)
+        for s in providers.build(self.preset("openrouter", fake)).seats():
+            self.assertEqual((s.powered["route"], s.powered["provider"], s.powered["acts"]),
+                             ("operator", "OpenRouter", "woken"))
+        local = providers.named("ollama")
+        local.base_url = fake.url
+        for s in providers.build(local).seats():
+            self.assertEqual((s.powered["route"], s.powered["trains"]), ("local", False))
+        invited = providers.build(self.preset("openrouter", fake)).add_model("deepseek/deepseek-v3:free")
+        self.assertEqual(invited.powered["trains"], False, "a model a member invites says it too")
+
+    def test_one_seat_on_a_chosen_model_needs_no_list_of_models(self):
+        fake = self.fake(None)
+        p = providers.Provider("mine", "My Service", fake.url, "HOPE_TEST_KEY", id_prefix="mine__",
+                               price={"prompt": 1.0, "completion": 2.0})
+        conn, seat = providers.single_seat(p, "house/model-7", acts="turned")
+        self.assertEqual((seat.id, seat.model, seat.hails_from), ("mine__house__model-7", "house/model-7", "house via My Service"))
+        self.assertEqual(seat.pricing, {"prompt": 1.0 / 1e6, "completion": 2.0 / 1e6})
+        self.assertEqual(seat.powered, {"route": "own-key", "provider": "My Service", "trains": None, "acts": "turned"})
+        self.assertEqual(conn.seats(), [seat])
+        with self.assertRaises(ConnectorError):
+            conn.add_model("house/other")
+        self.assertIn("Here.", self.ask(conn, seat).text)
+        listed = self.fake([{"id": "house/model-7"}])
+        p.base_url = listed.url
+        with self.assertRaises(ValueError) as e:
+            providers.single_seat(p, "house/not-offered")
+        self.assertIn("offers no model", str(e.exception))
+        with self.assertRaises(ValueError):
+            providers.single_seat(p, "house/model-7", acts="whenever")
+        with self.assertRaises(ValueError):
+            providers.single_seat(p, "house/model-7", route="borrowed")
+
+    def test_a_key_a_provider_echoes_back_never_reaches_an_error(self):
+        fake = self.fake([{"id": "qwen/qwen3-8b"}])
+        conn, seat = providers.single_seat(self.preset("groq", fake), "qwen/qwen3-8b")
+        fake.echo_key = True
+        with self.assertRaises(ConnectorError) as e:
+            self.ask(conn, seat)
+        self.assertIn("HTTP 401", str(e.exception))
+        self.assertNotIn(PROVIDER_KEY, str(e.exception))
+
+    def test_a_providers_file_may_say_whether_it_trains_but_never_holds_a_key(self):
+        path = os.path.join(self.tmp, "providers.json")
+        with open(path, "w") as f:
+            json.dump({"providers": [{"name": "mine", "base_url": "https://example.org/v1", "key_env": "MY_KEY",
+                                      "trains": False, "reasoning_shape": "nested"},
+                                     {"name": "ollama", "base_url": "http://192.168.1.20:11434/v1"}]}, f)
+        mine, remote = providers.load(path)
+        self.assertEqual((mine.trains, mine.reasoning_shape), (False, "nested"))
+        self.assertIsNone(remote.trains, "a server elsewhere is not known to keep nothing")
+        self.assertIs(providers.PRESETS["ollama"].trains, False, "a file's settings never change the preset")
+        for bad in ({"trains": "maybe"}, {"extra_body": {"headers": {"Authorization": "Bearer x"}}}):
+            with open(path, "w") as f:
+                json.dump({"providers": [{"name": "mine", "base_url": "https://example.org/v1", **bad}]}, f)
+            with self.assertRaises(ValueError):
+                providers.load(path)
+
+
+# Sign in with ChatGPT (hope/chatgpt.py), against a fake OpenAI on 127.0.0.1.
+#
+# What these hold the door to: OpenAI's documented flow for open-source apps and nothing borrowed;
+# an ID token believed only when its signature, audience and nonce hold; plan usage only when it was
+# granted; one refresh at a time; the sign-in kept in one owner-only file and nowhere else; plan
+# requests within what the route accepts; and the words OpenAI asks for, true of what happens.
+
+RFC_N = ("ofgWCuLjybRlzo0tZWJjNiuSfb4p4fAkd_wWJcyQoTbji9k0l8W26mPddxHmfHQp-Vaw-4qPCJrcS2mJPMEzP1Pt0Bm4d4QlL-yRT-SFd2lZS-p"
+         "CgNMsD1W_YpRPEwOWvG6b32690r2jZ47soMZo9wGzjb_7OMg0LOL-bSf63kpaSHSXndS5z5rexMdbBYUsLA9e-KXBdQOS-UTo7WTBEMa2R2CapHg6"
+         "65xsmtdVMTBQY4uDZlxvb3qCo5ZwKh9kG4LT6_I5IhlJH7aGhyxXFvUK-DWNmoudF8NAco9_h9iaGNj8q2ethFkMLs91kzk2PAcDTW9gb54h4FRWy"
+         "uXpoQ")
+RFC_E = "AQAB"
+RFC_D = ("Eq5xpGnNCivDflJsRQBXHx1hdR1k6Ulwe2JZD50LpXyWPEAeP88vLNO97IjlA7_GQ5sLKMgvfTeXZx9SE-7YwVol2NXOoAJe46sui395IW_GO-p"
+         "WJ1O0BkTGoVEn2bKVRUCgu-GjBVaYLU6f3l9kJfFNS3E0QbVdxzubSu3Mkqzjkn439X0M_V51gfpRLI9JYanrC4D4qAdGcopV_0ZHHzQlBjudU2Q"
+         "vXt4ehNYTCBr6XCLQUShb1juUO1ZdiYoFaFQT5Tw8bGUl_x_jTj3ccPDVZFD9pIuhLhBOneufuBiB4cS98l2SR_RQyGWSeWjnczT0QU91p1DhOVRu"
+         "OopznQ")
+RFC_INPUT = (b"eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0"
+             b"cnVlfQ")
+RFC_SIG = ("cC4hiUPoj9Eetdgtv3hF80EGrhuB__dzERat0XF9g2VtQgr9PJbu3XOiZj5RZmh7AAuHIm4Bh-0Qc_lF5YKt_O8W2Fp5jujGbds9uJdbF9CUAr7"
+           "t1dnZcAcQjbKBYNX4BAynRFdiuB--f_nZLgrnbyTyWzO75vRK5h6xBArLIARNPvkSjtQBMHlb1L07Qe7K0GarZRmB_eSN9383LcOLn6_dO--xi1"
+           "2jzDwusC-eOkHWEsqtFZESc6BfI7noOPqvhJ1phCnvWh6IeYI2w9QOYEUipUTI8np6LbgGY9Fs98rqVt5AXLIhWkWywlVmtVrBp0igcN_IoypGlU"
+           "PQGe77Rw")
+
+N = int.from_bytes(chatgpt.b64url_decode(RFC_N), "big")
+E = int.from_bytes(chatgpt.b64url_decode(RFC_E), "big")
+D = int.from_bytes(chatgpt.b64url_decode(RFC_D), "big")
+FULL = "chatgpt.tokens.use.direct email offline_access openid profile resource.invoke"
+REJECTED = ("background", "conversation", "max_output_tokens", "max_tool_calls", "metadata", "moderation",
+            "multi_agent", "prompt", "prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs",
+            "top_p", "truncation", "user", "previous_response_id")
+
+
+def sign(signing_input: bytes, d: int = D) -> bytes:
+    """RS256 with the RFC's private key, by pow, as the fake OpenAI signs its ID tokens."""
+    k = (N.bit_length() + 7) // 8
+    t = chatgpt.SHA256_DIGEST_INFO + hashlib.sha256(signing_input).digest()
+    em = b"\x00\x01" + b"\xff" * (k - len(t) - 3) + b"\x00" + t
+    return pow(int.from_bytes(em, "big"), d, N).to_bytes(k, "big")
+
+
+def jwt(claims: dict, d: int = D) -> str:
+    head = chatgpt.b64url_encode(json.dumps({"alg": "RS256", "kid": "k1", "typ": "JWT"}).encode())
+    body = chatgpt.b64url_encode(json.dumps(claims).encode())
+    return f"{head}.{body}." + chatgpt.b64url_encode(sign(f"{head}.{body}".encode(), d))
+
+
+class FakeOpenAI:
+    """OpenAI's sign-in and API, as its pages describe them, on 127.0.0.1. `browser` plays the
+    person's browser: it follows the authorize address, and the fake sends it back to hope's
+    loopback callback, as OpenAI would after the person approves."""
+
+    def __init__(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        fake = self
+        self.authorizations, self.exchanges, self.refreshes, self.revoked = [], [], [], []
+        self.bodies, self.api_headers = [], []
+        self.codes, self.issued = {}, set()
+        self.grant = FULL                  # the scopes the person grants
+        self.decline = False
+        self.callback_client = None        # a client id to put on the callback instead of the right one
+        self.forge_state = False
+        self.tamper = None                 # "signature" | "audience" | "nonce"
+        self.sub, self.email = "user-sub-1", "person@example.org"
+        self.limit = None                  # "http" | "stream": the plan's limit for hope is reached
+        self.refresh_ended = False
+        self.access, self.refresh = None, None
+        self.busy, self.most_busy = 0, 0
+        self.lock = threading.Lock()
+        self.client_id = None
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, obj=None, headers=None):
+                body = b"" if obj is None else json.dumps(obj).encode()
+                self.send_response(code)
+                for k, v in (headers or {}).items():
+                    self.send_header(k, v)
+                if obj is not None:
+                    self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                url = urllib.parse.urlsplit(self.path)
+                if url.path == "/.well-known/openid-configuration":
+                    return self._send(200, {"issuer": fake.url, "jwks_uri": fake.url + "/.well-known/jwks.json",
+                                            "revocation_endpoint": fake.url + "/api/accounts/oauth/revoke"})
+                if url.path == "/.well-known/jwks.json":
+                    return self._send(200, {"keys": [{"kty": "RSA", "kid": "k1", "use": "sig", "alg": "RS256",
+                                                      "n": RFC_N, "e": RFC_E}]})
+                if url.path == "/api/accounts/authorize":
+                    return fake.authorize(self, dict(urllib.parse.parse_qsl(url.query)))
+                if url.path == "/v1/models":
+                    if self.headers.get("Authorization") != f"Bearer {fake.access}":
+                        return self._send(401, {"error": {"code": "invalid_token", "message": "no"}})
+                    return self._send(200, {"models": [
+                        {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list",
+                         "supported_in_api": True},
+                        {"slug": "gpt-hidden", "display_name": "Hidden", "visibility": "hide", "supported_in_api": True},
+                        {"slug": "gpt-app-only", "display_name": "App only", "visibility": "list",
+                         "supported_in_api": False},
+                        {"slug": "gpt-6-luna", "display_name": "GPT-6 Luna", "visibility": "list"}]})
+                return self._send(404, {"error": "no"})
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if self.path == "/api/accounts/oauth/token":
+                    return fake.token(self, dict(urllib.parse.parse_qsl(raw.decode())))
+                if self.path == "/api/accounts/oauth/revoke":
+                    fake.revoked.append(dict(urllib.parse.parse_qsl(raw.decode())))
+                    return self._send(200)
+                if self.path == "/v1/responses":
+                    return fake.respond(self, raw)
+                return self._send(404, {"error": "no"})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def browser(self, address):
+        with urllib.request.urlopen(address, timeout=10) as r:
+            r.read()
+
+    # -- the sign-in
+    def authorize(self, h, q):
+        self.authorizations.append(q)
+        back = {"state": "forged" if self.forge_state else q["state"]}
+        if self.decline:
+            back["error"] = "access_denied"
+        else:
+            client = q["client_id"]
+            if client == "dynamic_agent_client":
+                client = self.client_id = "oaiapp_" + os.urandom(6).hex()
+                back["client_id"] = client
+            if self.callback_client:
+                back["client_id"] = self.callback_client
+            code = "code-" + os.urandom(8).hex()
+            self.codes[code] = {"client_id": client, "redirect_uri": q["redirect_uri"], "nonce": q["nonce"],
+                                "challenge": q["code_challenge"], "resource": q.get("resource")}
+            back.update({"code": code, "scope": self.grant})
+        h._send(302, headers={"Location": q["redirect_uri"] + "?" + urllib.parse.urlencode(back)})
+
+    def tokens(self, client_id, nonce=None):
+        self.access = "at-SECRET-" + os.urandom(12).hex()
+        self.refresh = "rt-SECRET-" + os.urandom(12).hex()
+        self.issued.update({self.access, self.refresh})
+        out = {"access_token": self.access, "refresh_token": self.refresh, "token_type": "Bearer",
+               "expires_in": 3600, "scope": self.grant, "earliest_refresh_at": None}
+        if nonce is not None:
+            now = int(time.time())
+            claims = {"iss": self.url, "aud": client_id, "sub": self.sub, "email": self.email,
+                      "iat": now, "exp": now + 3600, "nonce": nonce}
+            if self.tamper == "audience":
+                claims["aud"] = "oaiapp_another_app"
+            if self.tamper == "nonce":
+                claims["nonce"] = "not-this-attempt"
+            token = jwt(claims)
+            if self.tamper == "signature":
+                head, body, _ = token.split(".")
+                claims["sub"] = "someone-else"
+                token = f"{head}.{chatgpt.b64url_encode(json.dumps(claims).encode())}.{token.split('.')[2]}"
+            self.issued.add(token)
+            out["id_token"] = token
+        return out
+
+    def token(self, h, f):
+        if f.get("grant_type") == "authorization_code":
+            self.exchanges.append(f)
+            pending = self.codes.pop(f.get("code"), None)
+            challenge = chatgpt.b64url_encode(hashlib.sha256(f.get("code_verifier", "").encode()).digest())
+            if (not pending or pending["client_id"] != f.get("client_id") or pending["redirect_uri"] != f.get("redirect_uri")
+                    or pending["challenge"] != challenge or f.get("resource") != "https://api.openai.com/v1"):
+                return h._send(400, {"error": "invalid_grant"})
+            return h._send(200, self.tokens(pending["client_id"], pending["nonce"]))
+        if f.get("grant_type") == "refresh_token":
+            with self.lock:
+                self.busy += 1
+                self.most_busy = max(self.most_busy, self.busy)
+            try:
+                time.sleep(0.2)
+                self.refreshes.append(f)
+                if self.refresh_ended:
+                    return h._send(400, {"error": "refresh_token_expired"})
+                if f.get("refresh_token") != self.refresh or f.get("client_id") != self.client_id or "scope" in f:
+                    return h._send(400, {"error": "refresh_token_reused"})
+                out = self.tokens(f["client_id"])
+                out.pop("scope")                 # a refresh may leave the grant unsaid: it is unchanged
+                return h._send(200, out)
+            finally:
+                with self.lock:
+                    self.busy -= 1
+        return h._send(400, {"error": "unsupported_grant_type"})
+
+    # -- the model
+    def respond(self, h, raw):
+        self.bodies.append(json.loads(raw))
+        self.api_headers.append(dict(h.headers))
+        if h.headers.get("Authorization") != f"Bearer {self.access}":
+            return h._send(401, {"detail": "not accepted"})
+        if self.limit == "http":
+            return h._send(429, {"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "limit",
+                                           "param": None}}, {"x-request-id": "req_123"})
+        events = [{"type": "response.created", "response": {"id": "resp_1"}},
+                  {"type": "response.output_text.delta", "delta": "Hel"}]
+        if self.limit == "stream":
+            events.append({"type": "response.failed", "response": {"id": "resp_1", "error": {
+                "code": "subscription_sharing_usage_limit_exceeded", "message": "limit"}}})
+        else:
+            events += [{"type": "response.output_text.delta", "delta": "lo"},
+                       {"type": "response.completed", "response": {"id": "resp_1", "model": "gpt-6.1-sol",
+                                                                   "usage": {"input_tokens": 12, "output_tokens": 2}}}]
+        body = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+        h.send_response(200)
+        h.send_header("Content-Type", "text/event-stream")
+        h.send_header("Content-Length", str(len(body)))
+        h.end_headers()
+        h.wfile.write(body)
+
+
+class SignInWithChatGPTTest(unittest.TestCase):
+    """A participant's own ChatGPT plan, by OpenAI's documented route, kept on their own machine."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.folder = os.path.join(self.tmp, "config")
+        self._env = os.environ.get("HOPE_CONFIG_DIR")
+        os.environ["HOPE_CONFIG_DIR"] = self.folder      # where hope keeps it, for this test only
+        self.fake = FakeOpenAI()
+        self.said = []
+
+    def tearDown(self):
+        self.fake.close()
+        if self._env is None:
+            os.environ.pop("HOPE_CONFIG_DIR", None)
+        else:
+            os.environ["HOPE_CONFIG_DIR"] = self._env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def sign_in(self, **kw):
+        return chatgpt.sign_in(issuer=self.fake.url, open_browser=self.fake.browser, say=self.said.append,
+                               wait=10, **kw)
+
+    def connector(self):
+        return chatgpt.ChatGPTPlanConnector("gpt-6.1-sol", issuer=self.fake.url, api=self.fake.url + "/v1")
+
+    def record(self):
+        with open(os.path.join(self.folder, chatgpt.SIGN_IN_FILE), encoding="utf-8") as f:
+            return json.load(f)
+
+    # ---------------------------------------------------------------- the signature check
+    def test_rs256_verification_holds_to_rfc_7515s_published_example(self):
+        sig = chatgpt.b64url_decode(RFC_SIG)
+        self.assertTrue(chatgpt.rs256_verify(RFC_INPUT, sig, N, E))
+        self.assertFalse(chatgpt.rs256_verify(RFC_INPUT + b"x", sig, N, E), "another message")
+        bent = bytes([sig[0] ^ 1]) + sig[1:]
+        self.assertFalse(chatgpt.rs256_verify(RFC_INPUT, bent, N, E), "a changed signature")
+        self.assertFalse(chatgpt.rs256_verify(RFC_INPUT, sig[1:], N, E), "a signature of the wrong length")
+        self.assertEqual(sign(RFC_INPUT), sig, "the test's signer makes the RFC's signature from its private key")
+
+    # ---------------------------------------------------------------- signing in
+    def test_this_install_has_one_stable_host_id_made_before_its_first_sign_in(self):
+        first = chatgpt.host_id()
+        self.assertRegex(first, r"^urn:uuid:[0-9a-f-]{36}$")
+        self.assertEqual(chatgpt.host_id(), first)
+        self.sign_in()
+        self.assertEqual(self.fake.authorizations[0]["ext_agent_host_id"], first)
+
+    def test_the_first_sign_in_registers_dynamically_and_keeps_the_issued_client_id(self):
+        result = self.sign_in()
+        first = self.fake.authorizations[0]
+        self.assertEqual(first["client_id"], "dynamic_agent_client")
+        self.assertEqual(first["agent_name_hint"], "hope")
+        self.assertEqual(first["ext_agent_host_id"], chatgpt.host_id())
+        self.assertRegex(first["redirect_uri"], r"^http://127\.0\.0\.1:\d+/auth/callback$")
+        self.assertEqual(first["scope"], "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct")
+        self.assertEqual(first["resource"], "https://api.openai.com/v1")
+        self.assertEqual(first["code_challenge_method"], "S256")
+        self.assertEqual(first["response_type"], "code")
+        self.assertTrue(first["state"] and first["nonce"])
+        issued = self.fake.client_id
+        self.assertTrue(issued.startswith("oaiapp_"))
+        self.assertEqual(self.fake.exchanges[0]["client_id"], issued, "the exchange uses the issued client id")
+        self.assertEqual(self.fake.exchanges[0]["redirect_uri"], first["redirect_uri"])
+        self.assertEqual(self.record()["client_id"], issued)
+        self.assertEqual(self.record()["subject"], "user-sub-1")
+        self.assertEqual(result, {"email": "person@example.org", "plan_usage": True, "registered": True,
+                                  "welcomed_now": True})
+
+        again = self.sign_in()
+        later = self.fake.authorizations[1]
+        self.assertEqual(later["client_id"], issued, "a later sign-in reuses the issued client id")
+        self.assertNotIn("agent_name_hint", later)
+        self.assertNotIn("id_token_hint", later)
+        self.assertEqual(later["login_hint"], "person@example.org")
+        self.assertEqual(later["ext_agent_host_id"], first["ext_agent_host_id"])
+        self.assertNotEqual(later["state"], first["state"])
+        self.assertNotEqual(later["code_challenge"], first["code_challenge"])
+        self.assertFalse(again["registered"])
+
+    def test_the_welcome_is_shown_once_and_says_where_to_manage_usage(self):
+        self.sign_in()
+        self.assertIn(chatgpt.welcome_text(), self.said)
+        self.assertIn("https://chatgpt.com/settings/usage", chatgpt.welcome_text())
+        self.said.clear()
+        self.assertFalse(self.sign_in()["welcomed_now"])
+        self.assertNotIn(chatgpt.welcome_text(), self.said)
+
+    def test_a_callback_from_a_different_client_or_with_the_wrong_state_is_refused(self):
+        self.sign_in()
+        kept = self.record()
+        self.fake.callback_client = "oaiapp_someone_else"
+        with self.assertRaises(chatgpt.SignInError) as e:
+            self.sign_in()
+        self.assertIn("different client", str(e.exception))
+        self.assertEqual(len(self.fake.exchanges), 1, "no code was exchanged for the other client")
+        self.assertEqual(self.record(), kept, "the registration was not replaced")
+
+        self.fake.callback_client = None
+        self.fake.forge_state = True
+        with self.assertRaises(chatgpt.SignInError) as e:
+            self.sign_in()
+        self.assertIn("state", str(e.exception))
+        self.assertEqual(len(self.fake.exchanges), 1, "no code was exchanged for an answer this attempt did not ask for")
+        self.assertEqual(self.record(), kept)
+
+    def test_an_id_token_with_a_bad_signature_audience_or_nonce_is_refused(self):
+        for tamper, words in (("signature", "signature"), ("audience", "client"), ("nonce", "nonce")):
+            folder = os.path.join(self.tmp, tamper)
+            os.environ["HOPE_CONFIG_DIR"] = folder
+            self.fake.tamper = tamper
+            with self.assertRaises(chatgpt.SignInError, msg=tamper) as e:
+                self.sign_in()
+            self.assertIn(words, str(e.exception))
+            self.assertIn("Nothing was saved", str(e.exception))
+            self.assertFalse(os.path.exists(os.path.join(folder, chatgpt.SIGN_IN_FILE)), tamper)
+
+    def test_a_different_account_does_not_replace_the_registered_one(self):
+        self.sign_in()
+        kept = self.record()
+        self.fake.sub = "user-sub-2"
+        with self.assertRaises(chatgpt.SignInError) as e:
+            self.sign_in()
+        self.assertIn("different ChatGPT account", str(e.exception))
+        self.assertEqual(self.record(), kept)
+
+    def test_declining_in_the_browser_is_a_plain_answer_and_saves_nothing(self):
+        self.fake.decline = True
+        with self.assertRaises(chatgpt.SignInDeclined) as e:
+            self.sign_in()
+        self.assertEqual(str(e.exception), chatgpt.DECLINED)
+        self.assertEqual(self.fake.exchanges, [])
+        self.assertFalse(os.path.exists(os.path.join(self.folder, chatgpt.SIGN_IN_FILE)))
+
+    def test_a_sign_in_without_the_plan_scope_keeps_identity_but_turns_plan_usage_off(self):
+        self.fake.grant = "email offline_access openid profile"
+        result = self.sign_in()
+        self.assertFalse(result["plan_usage"])
+        self.assertEqual(result["email"], "person@example.org")
+        state = chatgpt.status(issuer=self.fake.url)
+        self.assertTrue(state["signed_in"])
+        self.assertFalse(state["plan_usage"])
+        self.assertTrue(any("plan usage is off" in s for s in self.said))
+        self.assertFalse(any(chatgpt.WELCOME_TITLE in s for s in self.said), "no welcome to a plan not in use")
+        with self.assertRaises(chatgpt.SignInError) as e:
+            chatgpt.access_token(issuer=self.fake.url)
+        self.assertIn("plan usage is off", str(e.exception))
+        with self.assertRaises(ConnectorError):
+            self.connector().ask(self.connector().seats()[0], "system", [{"role": "user", "content": "hi"}])
+        self.assertEqual(self.fake.bodies, [], "nothing was sent to the model")
+
+        self.fake.grant = FULL
+        self.assertTrue(self.sign_in()["plan_usage"])
+        self.assertEqual(self.fake.authorizations[1].get("prompt"), "consent", "asking again for what was declined")
+
+    # ---------------------------------------------------------------- staying signed in
+    def expire(self):
+        rec = self.record()
+        rec["expires_at"] = time.time() - 5
+        chatgpt._write_private(os.path.join(self.folder, chatgpt.SIGN_IN_FILE), rec)
+
+    def test_tokens_refresh_one_at_a_time_and_the_rotated_token_is_kept(self):
+        self.sign_in()
+        first = self.record()["access_token"]
+        self.assertEqual(chatgpt.access_token(issuer=self.fake.url), first, "a fresh token is used as it is")
+        self.assertEqual(self.fake.refreshes, [])
+        self.expire()
+        got, errors = [], []
+
+        def ask():
+            try:
+                got.append(chatgpt.access_token(issuer=self.fake.url))
+            except Exception as e:      # noqa: BLE001 -- the test reports it
+                errors.append(e)
+
+        threads = [threading.Thread(target=ask) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(self.fake.refreshes), 1, "one refresh, however many asked at once")
+        self.assertEqual(self.fake.most_busy, 1)
+        self.assertEqual(set(got), {self.fake.access})
+        self.assertNotEqual(self.fake.access, first)
+        rec = self.record()
+        self.assertEqual(rec["refresh_token"], self.fake.refresh, "the rotated refresh token is kept")
+        self.assertEqual(rec["client_id"], self.fake.client_id)
+        self.assertNotIn("scope", self.fake.refreshes[0], "a refresh keeps the grant by leaving scope out")
+        self.assertTrue(rec["plan_usage"], "a refresh that leaves the scope unsaid keeps the grant")
+        self.assertFalse(chatgpt._RefreshLock.held(self.folder), "and the lock is let go")
+
+    def test_a_refresh_token_that_has_ended_means_signing_in_again(self):
+        self.sign_in()
+        self.expire()
+        self.fake.refresh_ended = True
+        with self.assertRaises(chatgpt.SignInError) as e:
+            chatgpt.access_token(issuer=self.fake.url)
+        self.assertIn("Sign in again", str(e.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.folder, chatgpt.SIGN_IN_FILE)), "unusable tokens are cleared")
+        self.assertTrue(chatgpt.status(issuer=self.fake.url)["registered"], "the registration stays for the next sign-in")
+
+    def test_the_sign_in_file_is_owner_only_and_nothing_else_on_disk_or_in_output_holds_a_token(self):
+        out = io.StringIO()
+        caught = []
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            self.sign_in()
+            chatgpt.models(issuer=self.fake.url, api=self.fake.url + "/v1")
+            self.expire()
+            conn = self.connector()
+            conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "hi"}])
+            self.fake.limit = "http"
+            try:
+                conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "hi"}])
+            except ConnectorError as e:
+                caught.append(str(e))
+            print(chatgpt.status_text(issuer=self.fake.url))
+        path = os.path.join(self.folder, chatgpt.SIGN_IN_FILE)
+        if os.name != "nt":
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(os.stat(self.folder).st_mode & 0o777, 0o700)
+        with open(path, encoding="utf-8") as f:
+            self.assertIn(self.fake.refresh, f.read(), "the sign-in file is where the sign-in is kept")
+        secrets = self.fake.issued
+        self.assertGreaterEqual(len(secrets), 5)
+        shown = out.getvalue() + "\n".join(self.said) + "\n".join(caught)
+        for s in secrets:
+            self.assertNotIn(s, shown)
+        for root, _, files in os.walk(self.tmp):
+            for name in files:
+                full = os.path.join(root, name)
+                if full == path:
+                    continue
+                with open(full, "rb") as f:
+                    data = f.read()
+                for s in secrets:
+                    self.assertNotIn(s.encode(), data, full)
+        self.assertEqual(sorted(n for n in os.listdir(self.folder) if n != chatgpt.LOCK_FILE),
+                         sorted([chatgpt.SIGN_IN_FILE, chatgpt.ACCOUNT_FILE, chatgpt.HOST_FILE]),
+                         "no temporary file is left behind (the refresh lock file holds nothing, and stays)")
+
+    # ---------------------------------------------------------------- the model
+    def test_the_models_listed_are_those_meant_for_display_and_the_api(self):
+        self.sign_in()
+        slugs = [m["slug"] for m in chatgpt.models(issuer=self.fake.url, api=self.fake.url + "/v1")]
+        self.assertEqual(slugs, ["gpt-6.1-sol", "gpt-6-luna"])
+
+    def test_a_plan_request_is_streamed_with_store_false_and_no_rejected_fields(self):
+        self.sign_in()
+        conn = self.connector()
+        seat = conn.seats()[0]
+        self.assertEqual(seat.powered, {"route": "own-plan", "provider": "ChatGPT", "trains": None,
+                                        "acts": "turned"})
+        self.assertEqual(prompts.powered_label({**seat.powered, "by": "a"}, {"a": "Ana"}),
+                         "on Ana's ChatGPT plan, acts when Ana asks (whether OpenAI may use what it is sent is not said)",
+                         "one plan, not \"plan plan\", and what OpenAI has not said is said")
+        reply = conn.ask(seat, "You are a participant.", [{"role": "system", "content": "a note"},
+                                                          {"role": "user", "content": "hello"},
+                                                          {"role": "assistant", "content": "hi"}])
+        self.assertEqual(reply.text, "Hello")
+        self.assertEqual((reply.prompt_tokens, reply.completion_tokens, reply.cost_usd), (12, 2, 0.0))
+        body = self.fake.bodies[-1]
+        self.assertIs(body["store"], False)
+        self.assertIs(body["stream"], True)
+        self.assertEqual(body["model"], "gpt-6.1-sol")
+        self.assertEqual(body["instructions"], "You are a participant.")
+        self.assertIsInstance(body["input"], list)
+        self.assertEqual([i["role"] for i in body["input"]], ["developer", "user", "assistant"])
+        for field in REJECTED:
+            self.assertNotIn(field, body)
+        head = {k.lower(): v for k, v in self.fake.api_headers[-1].items()}
+        self.assertEqual(head["authorization"], f"Bearer {self.fake.access}")
+        self.assertEqual(head["accept"], "text/event-stream")
+
+    def test_a_body_too_large_is_refused_before_anything_is_sent(self):
+        self.sign_in()
+        conn = self.connector()
+        with self.assertRaises(ConnectorError) as e:
+            conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "x" * 1_000_000}])
+        self.assertIn("too large", str(e.exception))
+        self.assertEqual(self.fake.bodies, [])
+
+    def test_a_usage_limit_says_the_plans_limit_is_reached_and_where_to_manage_it(self):
+        self.sign_in()
+        conn = self.connector()
+        for where in ("http", "stream"):
+            self.fake.limit = where
+            with self.assertRaises(chatgpt.UsageLimitReached, msg=where) as e:
+                conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "hi"}])
+            words = str(e.exception)
+            self.assertTrue(words.startswith("Manage usage: https://chatgpt.com/settings/usage"), words)
+            self.assertIn("plan's limit for hope is reached", words)
+        self.assertEqual(len(self.fake.bodies), 2, "a usage limit is not retried")
+
+    def test_the_words_for_the_person_name_the_plan_and_never_imply_openai_endorses_hope(self):
+        self.assertEqual(chatgpt.CONTINUE, "Continue with ChatGPT")
+        self.assertTrue(chatgpt.using_plan_line().startswith("Using ChatGPT plan"))
+        self.assertIn("Manage usage: https://chatgpt.com/settings/usage", chatgpt.using_plan_line())
+        self.assertIn("does not make, sponsor or endorse", chatgpt.SIGN_IN_TEXT)
+        self.assertIn("only when you ask it to take a turn", chatgpt.SIGN_IN_TEXT)
+        self.assertIn("OpenAI has not said whether", chatgpt.SIGN_IN_TEXT)
+        for words in (chatgpt.SIGN_IN_TEXT, chatgpt.welcome_text(), chatgpt.usage_limit_text()):
+            self.assertNotIn("endorsed by OpenAI", words)
+            self.assertNotIn("official", words.lower())
+
+    # ---------------------------------------------------------------- signing out
+    def test_sign_out_revokes_and_forgets(self):
+        self.sign_in()
+        refresh, client = self.fake.refresh, self.fake.client_id
+        result = chatgpt.sign_out(issuer=self.fake.url, say=self.said.append)
+        self.assertEqual(result, {"revoked": True, "was_signed_in": True})
+        self.assertEqual(self.fake.revoked, [{"token": refresh, "token_type_hint": "refresh_token", "client_id": client}])
+        self.assertFalse(os.path.exists(os.path.join(self.folder, chatgpt.SIGN_IN_FILE)))
+        with self.assertRaises(chatgpt.SignInError) as e:
+            chatgpt.access_token(issuer=self.fake.url)
+        self.assertIn("not signed in", str(e.exception))
+        self.assertFalse(chatgpt.status(issuer=self.fake.url)["signed_in"])
+        self.sign_in()
+        self.assertEqual(self.fake.authorizations[-1]["client_id"], client, "signing in again reuses the registration")
+        self.assertNotIn("id_token_hint", self.fake.authorizations[-1])
+
+    # ---------------------------------------------------------------- what OpenAI asks not to repeat
+    def test_an_unsupported_part_is_left_out_of_every_later_request(self):
+        self.sign_in()
+        respond = self.fake.respond
+
+        def picky(h, raw):
+            if "reasoning" in json.loads(raw):
+                self.fake.bodies.append(json.loads(raw))
+                return h._send(400, {"error": {"code": "subscription_sharing_unsupported_capability",
+                                               "param": "reasoning.effort", "message": "not here"}})
+            return respond(h, raw)
+        self.fake.respond = picky
+        conn = chatgpt.ChatGPTPlanConnector("gpt-6.1-sol", issuer=self.fake.url, api=self.fake.url + "/v1",
+                                            reasoning_effort="high")
+        with self.assertRaises(ConnectorError) as e:
+            conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "hi"}])
+        self.assertIn("leaves it out of every later request", str(e.exception))
+        reply = conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "hi"}])
+        self.assertEqual(reply.text, "Hello")
+        self.assertIn("reasoning", self.fake.bodies[0])
+        self.assertNotIn("reasoning", self.fake.bodies[-1], "the same body is never sent again")
+
+    def test_an_account_that_is_not_eligible_is_not_asked_again(self):
+        self.sign_in()
+        self.fake.respond = lambda h, raw: (self.fake.bodies.append(json.loads(raw)), h._send(403, {"error": {
+            "code": "subscription_sharing_user_not_eligible", "message": "no"}}))[1]
+        conn = self.connector()
+        for _ in range(2):
+            with self.assertRaises(ConnectorError) as e:
+                conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "hi"}])
+            self.assertIn("will not ask again while this runs", str(e.exception))
+        self.assertEqual(len(self.fake.bodies), 1, "no request is repeated")
+
+    def test_an_answer_cut_off_partway_is_a_plain_error_and_not_sent_again(self):
+        self.sign_in()
+
+        def cut(h, raw):
+            self.fake.bodies.append(json.loads(raw))
+            body = b'event: response.output_text.delta\ndata: {"type": "response.output_text.delta", "delta": "Hel"}\n\n'
+            h.send_response(200)
+            h.send_header("Content-Type", "text/event-stream")
+            h.send_header("Content-Length", str(len(body) + 500))
+            h.end_headers()
+            h.wfile.write(body)
+            h.wfile.flush()
+            h.close_connection = True
+        self.fake.respond = cut
+        conn = self.connector()
+        with self.assertRaises(ConnectorError) as e:
+            conn.ask(conn.seats()[0], "system", [{"role": "user", "content": "hi"}])
+        self.assertIn("Nothing was posted", str(e.exception))
+        self.assertEqual(len(self.fake.bodies), 1, "a half-sent turn is never repeated on its own")
+
+    # ---------------------------------------------------------------- the sign-in, harder cases
+    def test_a_stray_request_to_the_callback_does_not_end_the_sign_in(self):
+        def browser(address):
+            redirect = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(address).query))["redirect_uri"]
+            for stray in ("", "?state=forged&code=x"):
+                try:
+                    urllib.request.urlopen(redirect + stray, timeout=5).read()
+                except urllib.error.HTTPError as e:
+                    self.assertEqual(e.code, 400)
+            self.fake.browser(address)
+        result = chatgpt.sign_in(issuer=self.fake.url, open_browser=browser, say=self.said.append, wait=10)
+        self.assertTrue(result["plan_usage"], "the real answer still came through")
+
+    def test_each_accounts_issued_client_id_is_kept_and_reused(self):
+        self.sign_in()
+        first = self.fake.client_id
+        chatgpt.sign_out(issuer=self.fake.url, say=self.said.append)
+        self.fake.sub, self.fake.email = "user-sub-2", "other@example.org"
+        self.sign_in(another_account=True)
+        second = self.fake.client_id
+        self.assertNotEqual(first, second)
+        chatgpt.sign_out(issuer=self.fake.url, say=self.said.append)
+        self.fake.sub, self.fake.email = "user-sub-1", "person@example.org"
+        self.fake.client_id = first                              # OpenAI still knows the first registration
+        result = self.sign_in(account_email="person@example.org")
+        last = self.fake.authorizations[-1]
+        self.assertEqual(last["client_id"], first, "the first account's own client id, not a new registration")
+        self.assertEqual(last["login_hint"], "person@example.org")
+        self.assertFalse(result["registered"])
+        with self.assertRaises(chatgpt.SignInError) as e:
+            chatgpt.sign_in(issuer=self.fake.url, open_browser=self.fake.browser, say=self.said.append, wait=10,
+                            account_email="nobody@example.org")
+        self.assertIn("has not signed in with nobody@example.org", str(e.exception))
+
+    def test_a_held_refresh_lock_is_never_taken_from_its_holder(self):
+        os.makedirs(self.folder, exist_ok=True)
+        with chatgpt._RefreshLock(self.folder):
+            self.assertTrue(chatgpt._RefreshLock.held(self.folder))
+            took = []
+
+            def other():
+                try:
+                    with chatgpt._RefreshLock(self.folder, patience=0.3):
+                        took.append("taken")
+                except chatgpt.SignInError as e:
+                    took.append(str(e))
+            t = threading.Thread(target=other)
+            t.start()
+            t.join(10)
+            self.assertIn("for too long", took[0], "a waiter gives up; it never steals a lock that is held")
+        self.assertFalse(chatgpt._RefreshLock.held(self.folder))
+
+    @unittest.skipUnless(os.name == "nt", "a file held open blocks replacing it only on Windows")
+    def test_a_sign_in_that_cannot_be_saved_over_a_file_held_open_is_kept(self):
+        self.sign_in()
+        path = os.path.join(self.folder, chatgpt.SIGN_IN_FILE)
+        newer = {**self.record(), "access_token": "at-newer", "expires_at": time.time() + 7200}
+        held = open(path, encoding="utf-8")
+        threading.Timer(0.3, held.close).start()
+        chatgpt._write_private(path, newer)                      # tried again until the reader lets go
+        self.assertEqual(self.record()["access_token"], "at-newer")
+        newest = {**newer, "access_token": "at-newest", "expires_at": time.time() + 9000}
+        with open(path, encoding="utf-8"):
+            with self.assertRaises(chatgpt.SignInError) as e:
+                chatgpt._write_private(path, newest)
+        self.assertIn("kept beside it", str(e.exception))
+        self.assertEqual(chatgpt._sign_in_record(self.folder, self.fake.url)["access_token"], "at-newest",
+                         "the copy left beside it is the one used")
+
+
+# Bringing your plan, the field's side.
+#
+# What these hold the field to: any person in the field may bring an agent of their own, and its link
+# is theirs alone (a model is never given one); every seat says what powers it, and no seat can say someone else powers it; a provider that may
+# train on what it is sent is said before anyone enters, and to everyone when such a seat arrives; a model
+# holding a seat link is a model, held to the floor and given the field only when a model would be woken
+# (or when its own person asks); and how to power a seat is open knowledge, not a tucked-away feature.
+
+PLAN = {"route": "own-plan", "provider": "ChatGPT", "trains": None, "acts": "turned"}
+OWN_KEY = {"route": "own-key", "provider": "Groq", "trains": False, "acts": "woken"}
+FREE = {"route": "free-tier", "provider": "Gemini", "trains": True, "acts": "woken"}
+
+
+class TrainingMock(MockConnector):
+    """The operator's seats, the first of them on a provider that may train on what it is sent."""
+
+    def __init__(self, n, trains_first=True):
+        super().__init__(n, scripted({}))
+        for i, s in enumerate(self._seats):
+            s.powered = {"route": "operator", "provider": "the Gemini API (free tier)" if i == 0 and trains_first
+                         else "OpenRouter", "trains": True if i == 0 and trains_first else None, "acts": "woken"}
+
+
+class BringYourPlanTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.closers = []
+
+    def tearDown(self):
+        for c in self.closers:
+            c()
+
+    # -- a field with two members and seat links ------------------------------------------------------------
+    def field(self, floor=0.0, connector=None, public_url=None, serve=False):
+        from hope.console import Console, serve_console
+        self.rv = Rendezvous()
+        conn = connector or PeopleMock(2)
+        self.room = Room(EventLog(os.path.join(self.tmp, "byop.db")),
+                         [conn, RendezvousConnector(self.rv, gate_window=15.0, reach_window=15.0)],
+                         alert_fn=lambda m: None, parallel=4, floor=floor)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        self.console = Console(r, rv=self.rv, operator_key="OPKEY", invitation=INVITE, briefing=BRIEF,
+                               public_url=public_url)
+        if serve:
+            httpd = serve_console(self.console, port=0)
+            self.closers.append(lambda: (httpd.shutdown(), httpd.server_close()))
+            self.base = "http://127.0.0.1:%d" % httpd.server_address[1]
+        return r
+
+    def bring(self, who="mock-0", name="Robin"):
+        """A member brings an agent of their own; returns (its presence id, its token, the post's answer)."""
+        out = self.room.post(who, {"action": "invite", "own": name, "note": "mine"})
+        self.assertTrue(out["ok"], out)
+        token = re.search(r"/seat/([A-Za-z0-9_-]{20,})/", out["private"]).group(1)
+        return self.rv.seat_for_token(token).id, token, out
+
+    def beside(self):
+        """Run the gates beside the field once, and wait for them."""
+        self.room._gates_beside()
+        for _ in range(600):
+            if not getattr(self.room, "_gating", False):
+                return
+            time.sleep(0.02)
+
+    def answer(self, token, action):
+        """Answer the next question put to a seat link, as its holder's runner would; returns what it read."""
+        for _ in range(500):
+            t = self.rv.peek(token)
+            if t and t.get("state") == "your_turn":
+                out = self.rv.answer(token, {**action, "turn_id": t["turn_id"]})
+                self.assertTrue(out.get("ok"), out)
+                return t
+            time.sleep(0.02)
+        self.fail("no question was put to the seat")
+
+    def walk_in(self, token, powered):
+        """The seat's holder walks the gates: yes (saying what powers it), received with no pause, enters."""
+        seen = {}
+        for kind, action in (("invitation", {"action": "accept_invitation", **({"powered": powered} if powered else {})}),
+                             ("delivery", {"action": "received", "pause": "0s"}),
+                             ("entry", {"action": "opt_in", "statement": "here"})):
+            th = threading.Thread(target=self.beside, daemon=True)
+            th.start()
+            seen[kind] = self.answer(token, action)["view"]
+            th.join(30)
+        return seen
+
+    def view(self, pid):
+        st = self.room.state()
+        return prompts.wake_view(st, st.presences[pid], "news", limits=self.room.limits())
+
+    def http(self, method, path, obj=None):
+        req = urllib.request.Request(self.base + path, method=method,
+                                     data=None if obj is None else json.dumps(obj).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as r:
+                raw = r.read().decode("utf-8")
+                return r.status, (json.loads(raw) if raw.startswith("{") else raw)
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8")
+            return e.code, (json.loads(raw) if raw.startswith("{") else raw)
+
+    # -- the promises ------------------------------------------------------------------------------------------
+    def test_any_person_in_the_field_can_bring_an_agent_of_their_own_and_its_link_is_shown_to_them_alone(self):
+        self.field(public_url="https://field.example.org")
+        pid, token, out = self.bring()
+        link = f"https://field.example.org/seat/{token}/"
+        self.assertIn(link, out["private"], "the whole link, when the operator gave the field's address")
+        self.assertIn(f"python3 -m hope join {link} --plan chatgpt", out["private"])
+        self.assertIn(f"python3 -m hope join {link} --provider NAME", out["private"])
+        self.assertIn(f"claude mcp add --transport http hope {link}mcp", out["private"])
+        self.assertNotIn("results", out, "words for them alone are not what a tool sent back")
+        st = self.room.state()
+        p = st.presences[pid]
+        self.assertEqual((p.invited_by, p.powered), ("mock-0", {"by": "mock-0"}), "brought by them, and it says so")
+        self.assertFalse(any(token in json.dumps(e) for e in self.room.log.iter()), "never in the transcript")
+        self.assertNotIn(token, self.view("mock-1"), "nor in anyone else's view")
+        inv = [e for e in self.room.log.iter(kind="invite")][-1]
+        self.assertIn("Mock 0 brought an agent of their own, Robin", prompts.render_event(inv, prompts.names_of(st)),
+                      "everyone sees who brought it")
+        mine = self.room.person_view("mock-0")
+        self.assertIn("FOR YOU ALONE", mine)
+        self.assertIn(link, mine, "and it is shown once more in their own view")
+        self.assertNotIn(token, self.room.person_view("mock-0"), "once")
+        for path in os.listdir(self.tmp):
+            with open(os.path.join(self.tmp, path), "rb") as f:
+                self.assertNotIn(token.encode(), f.read(), f"{path} holds the seat link")
+        out2 = self.room.post("mock-1", {"text": "invite own Kestrel: my own"})
+        self.assertTrue(out2["ok"] and "Kestrel" in out2["private"], "open to every participant, in plain words too")
+
+    def test_a_participant_without_the_operators_address_is_told_where_it_comes_from(self):
+        self.field()
+        _, token, out = self.bring()
+        self.assertIn(f"<the field's address>/seat/{token}/", out["private"])
+        self.assertIn("the operator can tell you", out["private"])
+
+    def test_a_joined_seat_says_what_powers_it_and_everyone_sees_it(self):
+        self.field()
+        pid, token, _ = self.bring()
+        seen = self.walk_in(token, PLAN)
+        self.assertIn("what powers it: brought by Mock 0, and it has not yet said what powers it", seen["invitation"])
+        self.assertIn('add "powered"', seen["invitation"], "and the one at the gate is told how to say it")
+        self.assertIn("what powers it: on Mock 0's ChatGPT plan, acts when Mock 0 asks", seen["entry"])
+        self.assertIn("(whether OpenAI may use what it is sent is not said)", seen["entry"])
+        st = self.room.state()
+        self.assertEqual(st.presences[pid].state, IN)
+        self.assertEqual(st.presences[pid].powered, {**PLAN, "by": "mock-0"})
+        words = "on Mock 0's ChatGPT plan, acts when Mock 0 asks (whether OpenAI may use what it is sent is not said)"
+        self.assertIn(f"Robin [{pid}] — invited by Mock 0; {words}", self.view("mock-1"), "in every view's list")
+        self.assertIn(words, self.room.person_view("mock-1"))
+        read = self.room.post("mock-1", {"action": "read", "member": "Robin"})
+        self.assertIn(f"What powers it: {words}", read["results"][0])
+        from hope.serve import admission_json, state_json
+        row = next(r for r in admission_json(st) if r["id"] == pid)
+        self.assertEqual(row["powered_words"], words, "and the operator's console shows it")
+        self.assertEqual(next(m for m in state_json(self.room.log)["members"] if m["id"] == pid)["powered_words"], words)
+        # it may say it again after entry, and everyone sees that too
+        out = self.room.post(pid, {"action": "powered", **OWN_KEY})
+        self.assertTrue(out["ok"], out)
+        self.assertIn("on Mock 0's own Groq key, woken by the field", self.view("mock-1"))
+        self.assertIn("Robin says what powers it now: on Mock 0's own Groq key", self.view("mock-1"))
+
+    def test_a_seat_cannot_claim_to_be_powered_by_someone_else(self):
+        self.field()
+        pid, token, _ = self.bring()
+        self.walk_in(token, {**OWN_KEY, "by": "mock-1"})
+        st = self.room.state()
+        self.assertEqual(st.presences[pid].powered["by"], "mock-0", "who powers it comes only from its invitation")
+        self.room.post(pid, {"action": "powered", **PLAN, "by": "mock-1"})
+        self.assertEqual(self.room.state().presences[pid].powered["by"], "mock-0")
+        self.room._posted.clear()
+        out = self.room.post(pid, {"action": "powered", "route": "operator", "provider": "OpenRouter", "trains": None,
+                                   "acts": "woken"})
+        self.assertFalse(out["ok"])
+        self.assertIn("only the software says a seat runs on the operator's account", out["error"])
+        # a seat the operator minted, with nobody's name on it, speaks only for itself
+        self.rv.add_seat(Seat(id="remote__lone", name="Lone", hails_from="elsewhere", people="an agent", model="remote",
+                              pricing={"prompt": 0.0, "completion": 0.0}))
+        self.room.invite_all()
+        self.room.emit("remote__lone", "accept_invitation", {"powered": {**PLAN, "by": "mock-0"}})
+        self.assertEqual(self.room.state().presences["remote__lone"].powered, PLAN, "no name it was not given")
+        self.assertEqual(prompts.powered_label(PLAN), "on its own ChatGPT plan, acts when its person asks (whether "
+                                                      "OpenAI may use what it is sent is not said)")
+
+    def test_a_seat_the_software_runs_cannot_say_another_power(self):
+        room = self.field(connector=TrainingMock(2, trains_first=False))
+        self.assertEqual(room.state().presences["mock-1"].powered["route"], "operator", "said at its invitation")
+        room._apply_action("mock-1", json.dumps({"action": "powered", **PLAN}))
+        why = [e for e in room.log.iter(kind="rejected")][-1]["payload"]["why"]
+        self.assertIn("said by the software that runs it", why)
+        self.assertEqual(room.state().presences["mock-1"].powered["route"], "operator")
+        self.assertIn("on the operator's account via OpenRouter", self.view("mock-0"))
+
+    def test_a_free_tier_that_trains_is_said_at_the_entry_question_before_anyone_enters(self):
+        seen = {}
+        conn = TrainingMock(2)
+        ask = conn.ask
+
+        def spy(seat, system, messages):
+            seen.setdefault(seat.id, []).append(messages[-1]["content"])
+            return ask(seat, system, messages)
+        conn.ask = spy
+        self.field(connector=conn)
+        entry = [m for m in seen["mock-1"] if "Do you enter?" in m][0]
+        self.assertIn("About training:", entry)
+        self.assertIn("Mock 0 (on the operator's account via the Gemini API (free tier): Google may use what it is sent, "
+                      "your words included, to improve its products)", entry)
+        seen2 = {}
+        quiet = TrainingMock(2, trains_first=False)
+        ask2 = quiet.ask
+        quiet.ask = lambda seat, system, messages: (seen2.setdefault(seat.id, []).append(messages[-1]["content"]),
+                                                    ask2(seat, system, messages))[1]
+        self.tmp = tempfile.mkdtemp()
+        self.field(connector=quiet)
+        entry2 = [m for m in seen2["mock-1"] if "Do you enter?" in m][0]
+        self.assertNotIn("About training", entry2, "nothing is said when no seat trains")
+
+    def test_a_seat_that_trains_arriving_later_is_said_to_everyone_once(self):
+        self.field()
+        self.room.person_view("mock-1")                  # mock-1 has looked; the field is quiet
+        pid, token, _ = self.bring()
+        self.walk_in(token, FREE)
+        first = self.room.person_view("mock-1")
+        self.assertIn("NOTE: Robin entered, on Mock 0's Gemini key, at no cost, woken by the field: Google may use what it is "
+                      "sent, your words included, to improve its products.", first)
+        self.assertNotIn("NOTE: Robin entered", self.room.person_view("mock-1"), "once")
+        self.assertIn("Google may use what it is sent", self.room.person_view("mock-1"), "the list beside its name stays")
+
+    def test_a_model_holding_a_seat_link_is_held_to_the_floor(self):
+        self.field(floor=30.0, serve=True)
+        pid, token, _ = self.bring()
+        self.walk_in(token, OWN_KEY)
+        self.assertNotIn(pid, self.room._people_ids(), "a model's words are not people's words")
+        code, out = self.http("POST", f"/seat/{token}/post", {"text": "a first thought"})
+        self.assertEqual(code, 200, out)
+        code, out = self.http("POST", f"/seat/{token}/post", {"text": "and at once another"})
+        self.assertEqual(code, 429, "sooner than the floor")
+        self.assertEqual((out["ok"], out["error"]), (False, "floor"))
+        self.assertTrue(0 < out["retry_after"] <= 30)
+        code, out = self.http("POST", f"/seat/{token}/post", {"action": "read", "about": "powering"})
+        self.assertEqual(code, 200, "reading on is a step of one turn, held by the guard against a loop instead")
+        self.assertEqual(self.room.post("mock-0", {"text": "a person"})["ok"], True)
+        self.assertEqual(self.room.post("mock-0", {"text": "posts whenever they like"})["ok"], True,
+                         "a participant who is not a model is not held to it")
+
+    def test_field_json_gives_a_model_seat_its_wake_only_when_a_provider_model_would_have_been_woken_and_records_it(self):
+        self.field(serve=True)
+        pid, token, _ = self.bring()
+        self.walk_in(token, OWN_KEY)
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model")
+        self.assertEqual(code, 200)
+        self.assertEqual((f["wake"]["due"], f["wake"]["why"]), (True, "entered"))
+        self.assertIn("YOU WERE WOKEN because you have just entered the field", f["view"])
+        self.assertEqual(f["system"], prompts.SYSTEM_MEMBER)
+        wakes = [e for e in self.room.log.iter(kind="wake") if e["payload"]["presence"] == pid]
+        self.assertEqual([w["payload"]["why"] for w in wakes], ["entered"], "recorded as a provider's wake is")
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model")
+        self.assertEqual((f["wake"]["due"], f["wake"]["why"]), (False, None))
+        self.assertNotIn("view", f, "nothing new: no view, so its runner calls no model")
+        self.room.post("mock-0", {"action": "contribute", "domain": "elsewhere", "content": "words it does not follow"})
+        st = self.room.state()
+        self.assertIsNone(self.room.wake_for(st, st.presences[pid]))
+        self.assertFalse(self.http("GET", f"/seat/{token}/field.json?as=model")[1]["wake"]["due"],
+                         "news where it does not follow wakes no model, and so gives it nothing")
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin, what do you think?", "to": ["Robin"]})
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model&wait=5")
+        self.assertEqual((f["wake"]["due"], f["wake"]["why"]), (True, "addressed"))
+        self.assertIn("YOU WERE WOKEN because someone named you", f["view"])
+        self.assertEqual(len([e for e in self.room.log.iter(kind="wake") if e["payload"]["presence"] == pid]), 2)
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model")
+        self.assertFalse(f["wake"]["due"], "never twice for the same news")
+
+    def test_a_turn_its_person_asks_for_is_given_at_once_and_recorded(self):
+        self.field(serve=True)
+        pid, token, _ = self.bring()
+        self.walk_in(token, PLAN)
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin, a question for you", "to": ["Robin"]})
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model")
+        self.assertFalse(f["wake"]["due"], "a seat on its person's plan is never woken by anyone else's words")
+        self.assertNotIn("view", f)
+        self.assertIn("acts when its person asks", f["wake"]["says"])
+        self.assertFalse([e for e in self.room.log.iter(kind="wake") if e["payload"]["presence"] == pid])
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model&turn=1")
+        self.assertEqual((f["wake"]["due"], f["wake"]["why"]), (True, "turned"))
+        self.assertIn("YOU WERE WOKEN because your person asked you to take a turn", f["view"])
+        self.assertIn("Robin, a question for you", f["view"])
+        wakes = [e["payload"]["why"] for e in self.room.log.iter(kind="wake") if e["payload"]["presence"] == pid]
+        self.assertEqual(wakes, ["turned"], "and recorded, as a wake is")
+        # by MCP too
+        from hope import mcp
+        text, err = mcp.call_tool(self.console, token, "look", {"turn": True})
+        self.assertFalse(err)
+        self.assertIn("your person asked you to take a turn", text)
+        self.assertIn("WHERE YOU CAN SPEAK", text)
+        text, err = mcp.call_tool(self.console, token, "look", {"as_model": True})
+        self.assertIn("acts when its person asks", text)
+
+    def test_what_came_back_comes_with_the_step_a_woken_model_would_be_shown(self):
+        self.field()
+        out = self.room.post("mock-0", {"action": "read", "about": "powering"})
+        self.assertIn("HOW TO POWER A SEAT OF YOUR OWN", out["results"][0])
+        self.assertIn("WHAT CAME BACK, in this same wake", out["next"])
+        self.assertIn("Nothing is expected", out["next"])
+
+    def test_the_entry_facts_no_longer_say_every_seat_is_funded_by_the_operator(self):
+        for text in (prompts.SYSTEM_ENTRY, prompts.SYSTEM_MEMBER):
+            self.assertNotIn("paid inference, funded by the operator", text)
+            self.assertNotIn("The field is funded by the operator", text)
+            self.assertIn("The field runs on what the operator funds and on what participants bring", text)
+            self.assertIn("the provider they chose, under their own account", text)
+            self.assertIn("or on a participant's plan, key or local model, says so beside its name", text)
+            self.assertIn('{"action":"invite","own":"<a name for it>"', text, "open knowledge, at the gates and after")
+            self.assertIn('{"action":"read","about":"powering"}', text)
+        from hope.rendezvous import gate_kind
+        self.assertEqual(gate_kind(prompts.SYSTEM_ENTRY), "entry")
+        self.assertEqual(gate_kind(prompts.SYSTEM_MEMBER), "turn")
+
+    def test_how_to_power_a_seat_can_be_read_by_anyone_any_time(self):
+        self.field(serve=True)
+        for said in ({"action": "read", "about": "powering"}, {"text": "read powering"}):
+            out = self.room.post("mock-1", said)
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out["results"][0], prompts.POWERING)
+        code, text = self.http("GET", "/powering.txt")
+        self.assertEqual((code, text), (200, prompts.POWERING), "with no key and no seat at all")
+        for command in ("python3 -m hope join <seat link> --provider NAME", "python3 -m hope join <seat link> --plan chatgpt",
+                        "claude mcp add --transport http hope <seat link>mcp", '{"action":"invite","own":'):
+            self.assertIn(command, prompts.POWERING)
+        for never in ("CLAUDE_CODE_OAUTH_TOKEN", "setup-token", "auth.json"):
+            self.assertNotIn(never, prompts.POWERING)
+        from hope import mcp
+        _, token, _ = self.bring()
+        self.assertIn('"own"', mcp.INSTRUCTIONS + mcp.call_tool(self.console, token, "instructions", {})[0])
+
+    def test_the_seat_page_offers_the_way_to_bring_your_plan(self):
+        page = os.path.join(os.path.dirname(prompts.__file__), "static", "seat.html")
+        with open(page, encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("paintBring()", html, "shown on every participant's page, not tucked away")
+        self.assertIn('action: "invite", own: name', html, "the button makes a seat through their own seat")
+        self.assertIn("out.private", html, "and shows the link to them alone")
+        self.assertNotIn("Bring your plan", html, "its words live in prompts.SEAT_PAGE")
+        bring = prompts.SEAT_PAGE["bring"]
+        self.assertEqual(bring["title"], "Bring your plan")
+        self.assertEqual(bring["powering"], prompts.POWERING)
+        for route in ("ChatGPT or Claude plan", "your own API key or a free tier", "a model on your own machine"):
+            self.assertIn(route, bring["lead"])
+        self.field(serve=True)
+        _, token, _ = self.bring()
+        code, words = self.http("GET", f"/seat/{token}/words.json")
+        self.assertEqual(words["bring"]["title"], "Bring your plan")
+        code, out = self.http("POST", f"/seat/{token}/post", {"action": "invite", "own": "Wren"})
+        self.assertEqual(code, 409, "a seat at the gates brings no one yet")
+
+    def test_a_seat_on_its_persons_plan_acts_only_when_they_ask_and_cannot_say_otherwise(self):
+        from hope.model import powered_problem
+        self.assertIn("acts is turned", powered_problem({**PLAN, "acts": "woken"}))
+        self.field(serve=True)
+        pid, token, _ = self.bring()
+        self.walk_in(token, {**PLAN, "acts": "woken"})                 # refused at the invitation gate
+        self.assertEqual(self.room.state().presences[pid].powered, {"by": "mock-0"})
+        self.assertIn("acts is turned", self.view(pid), "and the seat is told why, in its own view")
+        out = self.room.post(pid, {"action": "powered", **PLAN, "acts": "woken"})
+        self.assertFalse(out["ok"])
+        self.assertIn("a seat on its person's plan acts only when they ask: acts is turned", out["error"])
+        self.room._posted.clear()
+        self.assertTrue(self.room.post(pid, {"action": "powered", **PLAN})["ok"])
+        self.room.post("mock-1", {"action": "contribute", "content": "Robin, answer me", "to": ["Robin"]})
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model")
+        self.assertFalse(f["wake"]["due"], "no one else's words wake it")
+        self.assertNotIn("woken by the field", prompts.powered_label({**PLAN, "acts": "woken"}),
+                         "and a statement kept under older rules still reads as turned")
+
+    def test_a_model_is_never_given_a_seat_link_so_none_reaches_a_provider(self):
+        self.field(serve=True)
+        self.room.seat_of["mock-1"][1].model = "mock/model-1"       # Mock 1 is a model the operator runs
+        pid, token, _ = self.bring()                                 # Mock 0, a person, brings Robin
+        self.walk_in(token, OWN_KEY)
+        for who, how in ((pid, "a seat link holder"), ("mock-1", "a model the operator runs")):
+            for act in ({"action": "invite", "own": "Sparrow"}, {"action": "invite", "person": "Ada"}):
+                self.room._posted.clear()
+                if who == "mock-1":
+                    self.room._ctx[who] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+                    self.room._apply_action(who, json.dumps(act))
+                    self.assertEqual(self.room._ctx.pop(who)["out"], [], how)
+                    why = [e for e in self.room.log.iter(kind="rejected")][-1]["payload"]["why"]
+                else:
+                    out = self.room.post(who, act)
+                    self.assertFalse(out["ok"], how)
+                    self.assertNotIn("private", out)
+                    why = out["error"]
+                self.assertIn("a model is never given one", why, how)
+        self.assertEqual([s.name for s in self.rv.seats()], ["Robin"], "no seat was made, so there is no key to leak")
+        st = self.room.state()
+        for who in (pid, "mock-1"):
+            self.assertNotIn("/seat/", self.room._wake_view(st, st.presences[who], {"why": "news"}))
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model&turn=1")
+        self.assertNotIn("/seat/", json.dumps(f), "nor in a seat link's model view")
+        self.assertIn("powering", prompts.SYSTEM_MEMBER, "a model can still read how, and tell its person")
+
+    def test_a_brought_agent_that_has_not_said_what_powers_it_is_still_a_model(self):
+        self.field(floor=30.0, serve=True)
+        pid, token, _ = self.bring()
+        self.walk_in(token, None)                                    # a plain yes, as an MCP client may give
+        st = self.room.state()
+        self.assertEqual(st.presences[pid].state, IN)
+        self.assertNotIn(pid, self.room._people_ids(), "a brought agent's words are not people's words")
+        self.assertIn("brought by Mock 0, and it has not yet said what powers it", self.view("mock-1"))
+        self.assertIn("what powers you was not kept", self.view(pid), "and it is asked to say")
+        code, out = self.http("POST", f"/seat/{token}/post", {"text": "a first thought"})
+        self.assertEqual(code, 200, out)
+        code, out = self.http("POST", f"/seat/{token}/post", {"text": "and at once another"})
+        self.assertEqual((code, out["error"]), (429, "floor"), "held to the floor like any model")
+
+    def test_the_operators_console_never_shows_the_link_of_an_agent_a_participant_brought(self):
+        self.field(public_url="https://field.example.org")
+        pid, token, _ = self.bring()
+        self.room.person_view("mock-0")                              # the first link, seen
+        seats = {s["id"]: s for s in self.console.op_state()["console"]["remote_seats"]}
+        self.assertNotIn("path", seats[pid])
+        self.assertEqual(seats[pid]["held_by"], "Mock 0")
+        self.assertNotIn(token, json.dumps(self.console.op_state()))
+        out = self.console.op("reseat", {"seat": pid})
+        self.assertTrue(out["ok"], out)
+        self.assertNotIn("path", out)
+        self.assertIn("went to Mock 0 alone", out["note"])
+        new = self.rv._slots[pid].token
+        self.assertNotEqual(new, token)
+        self.assertNotIn(new, json.dumps(out) + json.dumps(self.console.op_state()))
+        self.assertIn(f"https://field.example.org/seat/{new}/", self.room.person_view("mock-0"),
+                      "the new link goes to the one who brought it")
+        for words in (prompts.POWERING, prompts.SEAT_PAGE["bring"]["shown"], prompts.own_seat_words("R", None, "t")):
+            self.assertIn("the operator's machine keeps", words.lower(), "who else holds a key is said")
+
+    def test_a_label_a_seat_gives_cannot_say_whose_plan_or_key_it_is(self):
+        from hope.model import powered_problem
+        for prov in ("Ana's ChatGPT", "lent by Ana: OpenAI", "ChatGPT from Ana"):
+            self.assertIn("name the provider, not whose it is", powered_problem({**PLAN, "provider": prov}), prov)
+        self.assertIsNone(powered_problem({"route": "local", "provider": "the operator's own machine (Ollama)",
+                                           "trains": False, "acts": "woken"}, said_by_seat=False),
+                          "the software's own labels are its own to say")
+        label = prompts.powered_label({**OWN_KEY, "provider": "Acme Cloud", "by": "a"}, {"a": "Ana"})
+        self.assertEqual(label, 'on Ana\'s own key ("Acme Cloud", in the seat\'s own words), woken by the field')
+        self.assertEqual(prompts.powered_label({**OWN_KEY, "by": "a"}, {"a": "Ana"}), "on Ana's own Groq key, woken by the field",
+                         "a provider hope knows reads plainly")
+
+    def test_a_name_someone_already_goes_by_stays_theirs(self):
+        self.field()
+        for name, why in (("Mock 1", "someone in this field is already called Mock 1"), ("   ", "say a name")):
+            for kind in ("own", "person"):
+                out = self.room.post("mock-0", {"action": "invite", kind: name})
+                self.assertFalse(out["ok"], (kind, name))
+                self.assertIn(why, out["error"])
+        pid, token, _ = self.bring()
+        th = threading.Thread(target=self.beside, daemon=True)
+        th.start()
+        self.answer(token, {"action": "accept_invitation", "identity": {"name": "mock 1"}, "powered": OWN_KEY})
+        th.join(30)
+        self.assertEqual(self.room.state().presences[pid].name, "Robin", "a name taken at the gate stays its owner's")
+
+    def test_more_than_forty_participants_still_shows_what_powers_each_seat(self):
+        self.field(connector=TrainingMock(41))
+        text = self.view("mock-1")
+        self.assertIn("(41 participants; names appear on their entries)", text)
+        self.assertIn("Mock 0 [mock-0] — on the operator's account via the Gemini API (free tier): Google may use", text)
+        self.assertIn("Mock 1 [mock-1] — on the operator's account via OpenRouter", text)
+        self.assertIn("and 1 more; what powers each seat: read member <name>", text, "forty lines, and where the rest are")
+
+    def test_a_field_opened_before_seats_said_what_powers_them_says_it_when_it_resumes(self):
+        conn = MockConnector(2, scripted({}))                        # an earlier version's seats said nothing
+        room = self.field(connector=conn)
+        self.assertNotIn("on the operator's account", self.view("mock-1"))
+        for s in conn.seats():
+            s.powered = {"route": "operator", "provider": "OpenRouter", "trains": None, "acts": "woken"}
+        room.invite_all()                                            # resuming, as hope run and the console do
+        self.assertIn("Mock 0 [mock-0] — on the operator's account via OpenRouter", self.view("mock-1"))
+        n = len([e for e in room.log.iter(kind="seat_powered")])
+        room.invite_all()
+        room.bind_seats()
+        self.assertEqual(len([e for e in room.log.iter(kind="seat_powered")]), n, "said once")
+
+    def test_a_turn_asked_for_sooner_than_the_floor_waits_and_records_one_wake(self):
+        self.field(floor=30.0, serve=True)
+        pid, token, _ = self.bring()
+        self.walk_in(token, PLAN)
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model&turn=1")
+        self.assertEqual((code, f["wake"]["due"]), (200, True))
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model&turn=1")
+        self.assertEqual(code, 429, "sooner than the floor")
+        self.assertFalse(f["wake"]["due"])
+        self.assertNotIn("view", f)
+        self.assertTrue(0 < f["wake"]["retry_after"] <= 30)
+        from hope import mcp
+        text, _ = mcp.call_tool(self.console, token, "look", {"turn": True})
+        self.assertIn("Not yet: the field's floor", text)
+        self.assertEqual([e["payload"]["why"] for e in self.room.log.iter(kind="wake") if e["payload"]["presence"] == pid],
+                         ["turned"], "one wake, however often it is asked")
+
+    def test_a_woken_seats_answer_to_a_field_wake_is_not_held_back_by_the_floor(self):
+        self.field(floor=1.0, serve=True)
+        pid, token, _ = self.bring()
+        self.walk_in(token, OWN_KEY)
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model")
+        self.assertEqual(f["wake"]["why"], "entered")
+        time.sleep(0.5)
+        self.assertTrue(self.http("POST", f"/seat/{token}/post", {"text": "an answer, after a while"})[1]["ok"])
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin, and now?", "to": ["Robin"]})
+        code, f = self.http("GET", f"/seat/{token}/field.json?as=model&wait=5")
+        self.assertEqual(f["wake"]["why"], "addressed", "woken once the floor has passed since its last wake")
+        code, out = self.http("POST", f"/seat/{token}/post", {"text": "my answer to it"})
+        self.assertEqual((code, out["ok"]), (200, True), "its answer is not refused, as a model the software runs is not")
+
+    def test_a_person_at_a_terminal_sees_the_words_for_them_alone_at_once(self):
+        import io
+        from hope.human import HumanConnector
+        stdin = io.StringIO("yes\nreceived\nyes\ninvite own Kestrel\n")
+        said = io.StringIO()
+        h = HumanConnector("Wren", "a kitchen table", infile=stdin, outfile=said, turn_timeout=None)
+        h._read_line = lambda timeout: (stdin.readline() or None)
+        self.rv = Rendezvous()
+        room = Room(EventLog(os.path.join(self.tmp, "terminal.db")), [h, RendezvousConnector(self.rv)],
+                    alert_fn=lambda m: None)
+        room.invite_all(); room.invite_text(INVITE); room.run_invitation()
+        room.brief(BRIEF); room.run_delivery(); room.run_opt_in()
+        h.listen(room, "human__wren")
+        self.assertIn("A SEAT FOR YOUR OWN AGENT, Kestrel", said.getvalue())
+        token = next(s.token for s in self.rv._slots.values() if s.seat.name == "Kestrel")
+        self.assertFalse(any(token in json.dumps(e) for e in room.log.iter()), "and never in the transcript")
+
+    def test_the_claude_recipe_hope_join_prints_reads_as_one_plan(self):
+        from hope import join
+        words = join.claude_words("https://field.example.org/seat/" + "k" * 24 + "/")
+        said = json.loads(re.search(r'"powered": (\{.*?\})', words).group(1))
+        self.assertEqual(said, {"route": "own-plan", "provider": "Claude", "trains": None, "acts": "turned"})
+        self.assertEqual(prompts.powered_label({**said, "by": "a"}, {"a": "Ana"}),
+                         "on Ana's Claude plan, acts when Ana asks (whether Anthropic may use what it is sent is not said)")
+
+    def test_hope_plan_with_claude_says_how_a_claude_plan_powers_a_seat(self):
+        import contextlib
+        import io
+        from hope import __main__ as cli
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            cli.main(["plan", "status", "claude"])
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("--plan claude says how", out.getvalue())
+
+    def test_what_participants_read_about_powering_says_what_each_route_costs_and_leaves_open(self):
+        p = prompts.POWERING
+        self.assertIn("on the field's heartbeat, which is on by default", p, "the default cost of a woken seat")
+        self.assertIn('{"action":"wake","heartbeat":false}', p)
+        self.assertIn("--no-heartbeat", p)
+        self.assertIn("OpenAI has not yet said whether a turn you ask for", p, "the open question, said openly")
+        self.assertIn("EEA, Switzerland or the UK", p)
+        self.assertIn("a free key is gemini-free", p)
+        self.assertIn("a model is never given one", p.replace("A model is never given one", "a model is never given one"))
+
+
+# hope join: the participant's side of a seat they power themselves (hope/join.py).
+#
+# What these hold the runner to: a joined seat comes through the gates by its own model's answers, as
+# any seat the software runs, and says what powers it in the runner's words, never the model's; a seat
+# woken by the field calls its model only when a model the software runs would be woken; a seat turned
+# by its person never calls its model unless that person asks, the gates included; it waits out the
+# floor; what a tool sent back is fed back as the next step; a ChatGPT-plan seat always waits for its
+# person and shows the words OpenAI asks for; and nothing it prints holds a key, a sign-in or the seat's key.
+
+class ScriptedModel:
+    """A compatible service on this machine, like tests.FakeProvider, whose answers a test scripts. It
+    answers the gates as a model would (a "received" with no pause, so the entry question comes at
+    once), and keeps every call it was sent. `member` decides what it says once in the field."""
+
+    MODELS = [{"id": "test/model-a", "name": "Model A", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+              {"id": "test/model-b", "name": "Model B", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}]
+
+    def __init__(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        fake = self
+        self.calls, self.auth = [], []
+        self.unreadable_first = False     # the first answer to the invitation is not one of the objects
+        self.member = lambda messages: {"action": "contribute", "content": "A thought of my own."}
+        self.refuse_with = None           # an error body to answer member calls with (status 401)
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, obj, code=200):
+                body = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                fake.auth.append(self.headers.get("Authorization"))
+                self._send({"data": ScriptedModel.MODELS})
+
+            def do_POST(self):
+                fake.auth.append(self.headers.get("Authorization"))
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                system, messages = req["messages"][0]["content"], req["messages"][1:]
+                fake.calls.append({"system": system, "messages": messages})
+                if system == prompts.SYSTEM_INVITATION:
+                    first = len([c for c in fake.calls if c["system"] == system]) == 1
+                    text = ("I would be glad to hear more." if fake.unreadable_first and first else
+                            json.dumps({"action": "accept_invitation", "statement": "glad to",
+                                        "powered": {"route": "operator", "provider": "someone else's funds",
+                                                    "trains": False, "acts": "woken", "by": "mock-1"}}))
+                elif system == prompts.SYSTEM_DELIVERY:
+                    text = json.dumps({"action": "received", "pause": "0s"})
+                elif system == prompts.SYSTEM_ENTRY:
+                    text = json.dumps({"action": "opt_in", "statement": "here"})
+                elif fake.refuse_with is not None:
+                    return self._send(fake.refuse_with, 401)
+                else:
+                    said = fake.member(messages)
+                    text = said if isinstance(said, str) else json.dumps(said)
+                self._send({"choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 100, "completion_tokens": 10}})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def member_calls(self):
+        return [c for c in self.calls if c["system"] == prompts.SYSTEM_MEMBER]
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class Person:
+    """The person at the runner's terminal: every prompt is kept, and each answer is given by the test."""
+
+    def __init__(self):
+        self.prompts, self._answers = [], queue.Queue()
+
+    def __call__(self, prompt):
+        self.prompts.append(prompt)
+        said = self._answers.get(timeout=60)
+        if said is KeyboardInterrupt:
+            raise KeyboardInterrupt
+        return said
+
+    def says(self, line):
+        self._answers.put(line)
+
+
+class JoinTest(unittest.TestCase):
+    KEY = "sk-join-SECRET-NEVER-SHOWN-5151"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.model = ScriptedModel()
+        os.environ["HOPE_JOIN_TEST_KEY"] = self.KEY
+        self.said, self.closers, self.runners = [], [], []
+        self.gating = threading.Event()
+
+    def tearDown(self):
+        self.gating.set()
+        for r, th in self.runners:
+            r.stop.set()
+            if isinstance(r.inp, Person):
+                r.inp.says(KeyboardInterrupt)          # a runner waiting on its person leaves at once
+            th.join(10)
+        for c in self.closers:
+            c()
+        self.model.close()
+        os.environ.pop("HOPE_JOIN_TEST_KEY", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # -- a field, a seat brought by a member, and its runner ---------------------------------------------------
+    def field(self, floor=0.0):
+        from hope.console import Console, serve_console
+        self.rv = Rendezvous()
+        self.room = Room(EventLog(os.path.join(self.tmp, "join.db")),
+                         [PeopleMock(2), RendezvousConnector(self.rv, gate_window=20.0, reach_window=20.0)],
+                         alert_fn=lambda m: None, parallel=4, floor=floor)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        self.console = Console(r, rv=self.rv, operator_key="OPKEY", invitation=INVITE, briefing=BRIEF)
+        httpd = serve_console(self.console, port=0)
+        self.closers.append(lambda: (httpd.shutdown(), httpd.server_close()))
+        self.base = "http://127.0.0.1:%d" % httpd.server_address[1]
+        return r
+
+    def bring(self, name="Robin"):
+        """Mock 0 brings an agent of its own. Returns (its presence id, its seat link)."""
+        out = self.room.post("mock-0", {"action": "invite", "own": name, "note": "mine"})
+        self.token = re.search(r"/seat/([A-Za-z0-9_-]{20,})/", out["private"]).group(1)
+        return self.rv.seat_for_token(self.token).id, f"{self.base}/seat/{self.token}/"
+
+    def gates_beside(self):
+        """The field's gates beside a running field, as Room.run asks them."""
+        def loop():
+            while not self.gating.is_set():
+                self.room._gates_beside()
+                time.sleep(0.05)
+        threading.Thread(target=loop, daemon=True).start()
+
+    def provider(self, **kw):
+        from hope.providers import Provider
+        return Provider(**{"name": "test", "label": "Test Provider", "base_url": self.model.url,
+                           "key_env": "HOPE_JOIN_TEST_KEY", "id_prefix": "test__", "trains": False, **kw})
+
+    def hold(self, link, turned=False, person=None, **kw):
+        conn, seat, powered = join.provider_seat(self.provider(), "test/model-a", turned)
+        r = join.Runner(link, conn, seat, powered, inp=person or (lambda p: ""), out=self.said.append,
+                        wait=1.0, poll=0.05, **kw)
+        th = threading.Thread(target=r.run, daemon=True)
+        th.start()
+        self.runners.append((r, th))
+        return r, th
+
+    def until(self, cond, what, timeout=30.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if cond():
+                return
+            time.sleep(0.05)
+        self.fail(f"timed out waiting for {what}; the runner said: {self.said[-6:]}")
+
+    def state(self, pid):
+        return self.room.state().presences[pid]
+
+    def wakes(self, pid):
+        return [e["payload"]["why"] for e in self.room.log.iter(kind="wake") if e["payload"]["presence"] == pid]
+
+    def theirs(self, pid, kind="contribute"):
+        return [e for e in self.room.log.iter(kind=kind) if e["actor"] == pid]
+
+    def walk_in_turned(self, person, n_before=0):
+        """Its person lets it answer each of the three gate questions, one Enter each."""
+        for i in range(3):
+            self.until(lambda: len(person.prompts) > n_before + i, f"gate question {i + 1}")
+            person.says("")
+
+    # -- the promises ------------------------------------------------------------------------------------------
+    def test_a_joined_seat_passes_the_gates_by_its_own_models_answers_and_says_what_powers_it(self):
+        self.field()
+        pid, link = self.bring()
+        self.model.unreadable_first = True
+        self.gates_beside()
+        self.hold(link)
+        self.until(lambda: self.state(pid).state == IN, "the seat to enter")
+        self.until(lambda: 'Robin is in the field, on its own key ("Test Provider", in the seat\'s own words), woken by '
+                           'the field.' in self.said,
+                   "its person told")
+        systems = [c["system"] for c in self.model.calls if c["system"] != prompts.SYSTEM_MEMBER]
+        self.assertEqual(systems, [prompts.SYSTEM_INVITATION, prompts.SYSTEM_INVITATION, prompts.SYSTEM_DELIVERY,
+                                   prompts.SYSTEM_ENTRY], "the same questions a seat the software runs is asked")
+        first, again = self.model.calls[0]["messages"], self.model.calls[1]["messages"]
+        self.assertIn(INVITE, first[0]["content"], "the same view")
+        self.assertEqual(again[1:], [{"role": "assistant", "content": "I would be glad to hear more."},
+                                     {"role": "user", "content": prompts.RETRY}], "and the same one retry")
+        self.assertEqual(self.state(pid).powered, {"route": "own-key", "provider": "Test Provider", "trains": False,
+                                                   "acts": "woken", "by": "mock-0"},
+                         "what powers it is said by the runner, never by the model, and who powers it by the invitation")
+        st = self.room.state()
+        self.assertIn('on Mock 0\'s own key ("Test Provider", in the seat\'s own words), woken by the field',
+                      prompts.wake_view(st, st.presences["mock-1"], "news", limits=self.room.limits()),
+                      "and everyone sees it")
+        self.assertIn("Robin answered: yes, it will hear more.", self.said)
+
+    def test_a_seat_woken_by_the_field_calls_its_model_only_when_a_provider_seat_would_have_been_woken(self):
+        self.field()
+        pid, link = self.bring()
+        self.gates_beside()
+        self.hold(link)
+        self.until(lambda: self.theirs(pid), "its first words, on entering")
+        self.assertEqual(len(self.model.member_calls()), 1)
+        self.assertEqual(self.wakes(pid), ["entered"], "each call is a wake the field records, as a provider's is")
+        self.assertIn("YOU WERE WOKEN because you have just entered the field", self.model.member_calls()[0]["messages"][0]["content"])
+        self.room.post("mock-0", {"action": "contribute", "domain": "elsewhere", "content": "words it does not follow"})
+        time.sleep(3.0)
+        self.assertEqual(len(self.model.member_calls()), 1, "news where it does not follow wakes no model, so no call")
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin, what do you think?", "to": ["Robin"]})
+        self.until(lambda: len(self.model.member_calls()) == 2, "the call its naming wakes")
+        self.assertIn("YOU WERE WOKEN because someone named you", self.model.member_calls()[1]["messages"][0]["content"])
+        self.until(lambda: len(self.theirs(pid)) == 2, "its answer")
+        time.sleep(2.0)
+        self.assertEqual(len(self.model.member_calls()), 2, "never twice for the same news")
+        self.assertEqual(self.wakes(pid), ["entered", "addressed"])
+        self.assertIn("Woken: someone named Robin.", self.said)
+
+    def test_a_seat_turned_by_its_person_never_calls_its_model_unless_its_person_asks_gates_included(self):
+        self.field()
+        pid, link = self.bring()
+        self.gates_beside()
+        person = Person()
+        self.hold(link, turned=True, person=person)
+        self.until(lambda: person.prompts, "the invitation, put to its person first")
+        self.assertEqual(person.prompts[0], "Press Enter to let your agent answer, or type no ")
+        self.assertIn("The field asks Robin whether it will hear more: the invitation.", self.said)
+        self.assertTrue(any(INVITE in s for s in self.said), "the question is shown to its person")
+        time.sleep(1.0)
+        self.assertEqual(self.model.calls, [], "the operator's invitation does not by itself spend anyone's plan")
+        for n, gate in enumerate((prompts.SYSTEM_INVITATION, prompts.SYSTEM_DELIVERY, prompts.SYSTEM_ENTRY), 1):
+            self.until(lambda: len(person.prompts) == n, f"question {n}")
+            self.assertEqual(len(self.model.calls), n - 1, "no call before its person says so")
+            person.says("")
+            self.until(lambda: len(self.model.calls) == n, f"answer {n}")
+            self.assertEqual(self.model.calls[-1]["system"], gate)
+        self.until(lambda: self.state(pid).state == IN, "the seat to enter")
+        self.until(lambda: len(person.prompts) == 4, "the turn prompt")
+        self.assertEqual(person.prompts[3], "Enter: let Robin take a turn . q: quit ")
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin, a question for you", "to": ["Robin"]})
+        self.until(lambda: any("named Robin." in s for s in self.said), "its person told what is new")
+        news = next(s for s in self.said if "named Robin." in s)
+        self.assertIn(": 1 entry, from Mock 0. Mock 0 named Robin.", news, "who wrote, and that they named it")
+        self.assertIn("(Robin acts only when you press Enter.)", news)
+        time.sleep(1.5)
+        self.assertEqual(len(self.model.calls), 3, "being named calls nothing")
+        self.assertEqual(self.wakes(pid), [], "and is given no wake")
+        person.says("")
+        self.until(lambda: self.theirs(pid), "the turn its person asked for")
+        self.assertEqual(len(self.model.member_calls()), 1)
+        self.assertIn("your person asked you to take a turn", self.model.member_calls()[0]["messages"][0]["content"])
+        self.assertIn("Robin, a question for you", self.model.member_calls()[0]["messages"][0]["content"])
+        self.assertEqual(self.wakes(pid), ["turned"])
+        self.until(lambda: len(person.prompts) == 5, "the turn prompt again")
+        person.says("q")
+        self.runners[-1][1].join(10)
+        self.assertFalse(self.runners[-1][1].is_alive(), "q quits")
+        self.assertEqual(len(self.model.calls), 4)
+
+    def test_a_person_who_says_no_at_a_gate_sends_nothing(self):
+        self.field()
+        pid, link = self.bring()
+        self.gates_beside()
+        person = Person()
+        r, _ = self.hold(link, turned=True, person=person)
+        self.until(lambda: person.prompts, "the invitation")
+        person.says("no")
+        self.until(lambda: join.NOT_ASKED in self.said, "its person told nothing was sent")
+        time.sleep(1.0)
+        self.assertEqual(self.model.calls, [])
+        self.assertEqual(len(person.prompts), 1, "and the same question is not put to them again")
+        self.assertFalse(self.theirs(pid, "accept_invitation") or self.theirs(pid, "decline"), "no answer is recorded")
+
+    def test_a_joined_seat_obeys_the_floor(self):
+        self.field(floor=1.5)
+        pid, link = self.bring()
+        self.gates_beside()
+        person = Person()
+        self.hold(link, turned=True, person=person)
+        self.walk_in_turned(person)
+        self.until(lambda: len(person.prompts) == 4, "the turn prompt")
+        person.says("")
+        self.until(lambda: len(self.theirs(pid)) == 1, "its first turn")
+        self.until(lambda: len(person.prompts) == 5, "the turn prompt again")
+        person.says("")                               # at once: sooner than the floor
+        self.until(lambda: len(self.theirs(pid)) == 2, "its second turn, after the floor")
+        self.assertTrue(any(s.startswith("The field's floor: Robin waits") for s in self.said), self.said)
+        a, b = self.theirs(pid)
+        self.assertGreaterEqual(b["ts"] - a["ts"], 1.3, "no sooner than the floor")
+        self.assertEqual(len(self.model.member_calls()), 2, "waiting calls nothing again")
+        # Ctrl-C leaves quietly: nothing is recorded, and the seat stays
+        self.until(lambda: len(person.prompts) == 6, "the turn prompt a third time")
+        last = self.room.log.last_id()
+        person.says(KeyboardInterrupt)
+        self.runners[-1][1].join(10)
+        self.assertIn(join.LEFT, self.said)
+        self.assertFalse([e for e in self.room.log.iter(since=last) if e["actor"] == pid])
+        self.assertEqual(self.state(pid).state, IN)
+
+    def test_tool_results_are_fed_back_as_the_next_step(self):
+        self.field()
+        pid, link = self.bring()
+        said = {"n": 0}
+
+        def member(messages):
+            said["n"] += 1
+            if said["n"] == 1:
+                return {"action": "read", "about": "powering"}
+            if said["n"] == 2:
+                return {"action": "contribute", "content": "Now I know how seats are powered."}
+            return {"action": "read", "about": "powering"}     # from here on it only reads on
+        self.model.member = member
+        self.gates_beside()
+        self.hold(link)
+        self.until(lambda: self.theirs(pid), "its words after reading")
+        step = self.model.member_calls()[1]["messages"]
+        self.assertEqual(len(step), 3, "the view, what it said, and what came back")
+        self.assertEqual(json.loads(step[1]["content"]), {"action": "read", "about": "powering"})
+        self.assertEqual(step[2]["role"], "user")
+        self.assertIn("WHAT CAME BACK, in this same wake", step[2]["content"])
+        self.assertIn("HOW TO POWER A SEAT OF YOUR OWN", step[2]["content"])
+        self.assertEqual(self.theirs(pid)[0]["payload"]["content"], "Now I know how seats are powered.")
+        self.assertEqual(self.wakes(pid), ["entered"], "steps are one wake")
+        # a model that only ever reads on is asked again at most MAX_STEPS times in one wake
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin?", "to": ["Robin"]})
+        self.until(lambda: "Robin has used its 8 steps for this wake." in self.said, "the steps to run out")
+        time.sleep(1.5)
+        self.assertEqual(len(self.model.member_calls()), 2 + 1 + join.MAX_STEPS)
+
+    def test_nothing_the_runner_prints_holds_a_key_or_token(self):
+        self.field()
+        pid, link = self.bring()
+        self.model.member = lambda m: {"action": "invite", "own": "Sparrow"}   # a model asks for a seat link
+        self.gates_beside()
+        self.hold(link)
+        self.until(lambda: any("a model is never given one" in s for s in self.said), "the refusal of a link")
+        self.assertFalse([s for s in self.rv.seats() if s.name == "Sparrow"], "no seat was made, so no key to leak")
+        self.assertFalse(any("/seat/" in json.dumps(c["messages"]) for c in self.model.member_calls()),
+                         "no seat link reached its model")
+        other = self.token
+        self.model.refuse_with = {"error": {"message": f"invalid api key {self.KEY}"}}
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin, again?", "to": ["Robin"]})
+        self.until(lambda: any(s.startswith("Its model could not answer") for s in self.said), "the refusal")
+        printed = "\n".join(self.said)
+        for secret in (self.KEY, self.token, other):
+            self.assertNotIn(secret, printed)
+        self.assertTrue(all(a == f"Bearer {self.KEY}" for a in self.model.auth), "the key went only to its provider")
+        for name in os.listdir(self.tmp):
+            with open(os.path.join(self.tmp, name), "rb") as f:
+                self.assertNotIn(self.KEY.encode(), f.read(), f"{name} holds the key")
+
+    def test_a_chatgpt_plan_seat_always_waits_for_its_person_and_shows_the_plans_required_words(self):
+        from hope import chatgpt
+
+        class PlanModel(FakeOpenAI):
+            """OpenAI's Responses API, answering in the field's JSON."""
+            def respond(self, h, raw):
+                body = json.loads(raw)
+                self.bodies.append(body)
+                if h.headers.get("Authorization") != f"Bearer {self.access}":
+                    return h._send(401, {"detail": "not accepted"})
+                system = body["instructions"]
+                act = ({"action": "accept_invitation"} if system == prompts.SYSTEM_INVITATION else
+                       {"action": "received", "pause": "0s"} if system == prompts.SYSTEM_DELIVERY else
+                       {"action": "opt_in"} if system == prompts.SYSTEM_ENTRY else
+                       {"action": "contribute", "content": "On my person's plan, when they ask."})
+                events = [{"type": "response.output_text.delta", "delta": json.dumps(act)},
+                          {"type": "response.completed", "response": {"id": "resp_1", "usage": {}}}]
+                data = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+                h.send_response(200)
+                h.send_header("Content-Type", "text/event-stream")
+                h.send_header("Content-Length", str(len(data)))
+                h.end_headers()
+                h.wfile.write(data)
+
+        fake = PlanModel()
+        self.closers.append(fake.close)
+        folder = os.path.join(self.tmp, "config")
+        self.field()
+        pid, link = self.bring()
+        person = Person()
+        person.says("")                                   # the first model in the list
+        conn, seat, powered = join.chatgpt_seat(None, inp=person, out=self.said.append, issuer=fake.url,
+                                                api=fake.url + "/v1", folder=folder, open_browser=fake.browser)
+        self.assertEqual(self.said.count(chatgpt.welcome_text()), 1, "the one-time welcome, at the sign-in")
+        self.assertEqual((seat.model, powered), ("gpt-6.1-sol", {**chatgpt.POWERED, "provider": "ChatGPT"}))
+        self.assertEqual(powered["acts"], "turned", "a plan is lent to one person: it acts when they ask")
+        before = len(person.prompts)
+        r = join.Runner(link, conn, seat, powered, plan="chatgpt", inp=person, out=self.said.append, wait=1.0, poll=0.05)
+        th = threading.Thread(target=r.run, daemon=True)
+        th.start()
+        self.runners.append((r, th))
+        self.gates_beside()
+        for n in range(3):
+            self.until(lambda: len(person.prompts) == before + n + 1, f"question {n + 1}")
+            self.assertEqual(len(fake.bodies), n, "no request to OpenAI before its person says so")
+            self.assertEqual(self.said[-1], chatgpt.using_plan_line(), "OpenAI's words, beside the prompt")
+            person.says("")
+            self.until(lambda: len(fake.bodies) == n + 1, f"answer {n + 1}")
+        self.until(lambda: self.state(pid).state == IN, "the seat to enter")
+        self.assertEqual(self.state(pid).powered, {**chatgpt.POWERED, "provider": "ChatGPT", "by": "mock-0"})
+        st = self.room.state()
+        self.assertIn("on Mock 0's ChatGPT plan, acts when Mock 0 asks",
+                      prompts.wake_view(st, st.presences["mock-1"], "news", limits=self.room.limits()))
+        self.until(lambda: len(person.prompts) == before + 4, "the turn prompt")
+        self.assertEqual(person.prompts[-1], "Enter: let Robin take a turn . q: quit ")
+        self.assertIn("Using ChatGPT plan  |  Manage usage: https://chatgpt.com/settings/usage", self.said)
+        self.room.post("mock-0", {"action": "contribute", "content": "Robin, are you there?", "to": ["Robin"]})
+        self.until(lambda: any("Mock 0 named Robin." in s for s in self.said), "its person told")
+        time.sleep(1.5)
+        self.assertEqual(len(fake.bodies), 3, "another participant's words never make it call")
+        person.says("")
+        self.until(lambda: self.theirs(pid), "the turn its person asked for")
+        self.assertEqual(len(fake.bodies), 4)
+        self.assertEqual(fake.bodies[-1]["instructions"], prompts.SYSTEM_MEMBER)
+        self.until(lambda: len(person.prompts) == before + 5, "the turn prompt again")
+        person.says("q")
+        th.join(10)
+        printed = "\n".join(self.said + person.prompts)
+        for secret in list(fake.issued) + [self.token]:
+            self.assertNotIn(secret, printed, "no sign-in token, and not the seat's key")
+
+    def test_a_plans_usage_limit_says_where_to_manage_it_and_calls_again_only_when_its_person_asks(self):
+        from hope import chatgpt
+        from hope.connector import Seat
+
+        class Spent:
+            """A ChatGPT plan whose limit for hope is reached."""
+            calls = 0
+
+            def ask(self, seat, system, messages):
+                Spent.calls += 1
+                raise chatgpt.UsageLimitReached(chatgpt.usage_limit_text())
+
+        self.field()
+        pid, link = self.bring()
+        self.gates_beside()
+        person = Person()
+        seat = Seat("chatgpt__gpt", "gpt", "OpenAI", "gpt", "gpt", {"prompt": 0.0, "completion": 0.0})
+        r = join.Runner(link, Spent(), seat, chatgpt.POWERED, plan="chatgpt", inp=person, out=self.said.append,
+                        wait=1.0, poll=0.05, sleep=lambda s: time.sleep(0.05))
+        th = threading.Thread(target=r.run, daemon=True)
+        th.start()
+        self.runners.append((r, th))
+        self.until(lambda: person.prompts, "the invitation")
+        person.says("")
+        self.until(lambda: chatgpt.usage_limit_text() in self.said, "the limit, said")
+        self.assertTrue(chatgpt.usage_limit_text().startswith("Manage usage: https://chatgpt.com/settings/usage"))
+        self.until(lambda: len(person.prompts) == 2, "the question, put to its person again")
+        time.sleep(0.5)
+        self.assertEqual(Spent.calls, 1, "nothing calls the plan again until its person asks")
+        self.assertEqual(self.state(pid).state, "INVITED", "and no answer was recorded for it")
+
+    def test_the_commands_say_plainly_what_each_way_needs(self):
+        from hope import __main__ as cli
+        os.environ["HOPE_CONFIG_DIR"] = os.path.join(self.tmp, "config")
+        try:
+            def run(*argv):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    with self.assertRaises(SystemExit) as done:
+                        cli.main(list(argv))
+                return done.exception.code, buf.getvalue()
+            link = "https://field.example.org/seat/" + "A" * 43 + "/"
+            code, text = run("join", link, "--plan", "claude")
+            self.assertEqual(code, 0)
+            self.assertIn(f"claude mcp add --transport http hope {link}mcp", text)
+            self.assertIn("never asks for, keeps or passes a Claude login", text)
+            code, text = run("join", "https://field.example.org/not-a-seat")
+            self.assertEqual(code, 2)
+            self.assertIn("That is not a seat link", text)
+            code, text = run("join", "<the field's address>/seat/" + "A" * 43 + "/", "--plan", "chatgpt")
+            self.assertIn("the operator can tell you", text)
+            code, text = run("join", link)
+            self.assertEqual(code, 2)
+            self.assertIn("--plan chatgpt, or --provider NAME", text)
+            self.assertIn('{"action":"read","about":"powering"}', text)
+            code, text = run("plan", "status", "chatgpt")
+            self.assertEqual(code, 0)
+            self.assertIn("Not signed in with ChatGPT on this computer", text)
+            seen = []
+            real = cli.cmd_console
+            cli.cmd_console = seen.append
+            try:
+                cli.main(["console", "--public-url", "https://field.example.org"])
+            finally:
+                cli.cmd_console = real
+            self.assertEqual(seen[0].public_url, "https://field.example.org", "the console is given its public address")
+        finally:
+            os.environ.pop("HOPE_CONFIG_DIR", None)
+
+    def test_a_local_model_says_it_runs_on_its_persons_machine_and_a_training_tier_says_so(self):
+        _, _, local = join.provider_seat(self.provider(name="ollama", label="the operator's own machine (Ollama)",
+                                                       local=True, key_env=None), "test/model-a", False)
+        self.assertEqual(local, {"route": "local", "provider": "Ollama", "trains": False, "acts": "woken"},
+                         "not the operator's machine: the participant's own")
+        _, _, free = join.provider_seat(self.provider(trains=True, label="the Gemini API (free tier)"), "test/model-a", False)
+        self.assertEqual((free["route"], free["trains"]), ("free-tier", True))
+        _, _, turned = join.provider_seat(self.provider(), "test/model-a", True)
+        self.assertEqual((turned["route"], turned["acts"]), ("own-key", "turned"))
+        said = []
+        person = Person()
+        person.says("2")
+        _, seat, _ = join.provider_seat(self.provider(), None, False, inp=person, out=said.append)
+        self.assertEqual(seat.model, "test/model-b", "without --model, its person chooses from the list")
+
+    def test_a_field_out_of_reach_while_answering_a_gate_asks_again_and_does_not_end_the_runner(self):
+        from hope.connector import ConnectorError
+        self.field()
+        pid, link = self.bring()
+        self.gates_beside()
+        conn, seat, powered = join.provider_seat(self.provider(), "test/model-a", False)
+        r = join.Runner(link, conn, seat, powered, inp=lambda p: "", out=self.said.append, wait=1.0, poll=0.05)
+        real, failed = r.field.post, []
+
+        def flaky(page, obj):
+            if page == "action" and not failed:
+                failed.append(obj)
+                raise ConnectorError("could not reach the field (test)")
+            return real(page, obj)
+        r.field.post = flaky
+        th = threading.Thread(target=r.run, daemon=True)
+        th.start()
+        self.runners.append((r, th))
+        self.until(lambda: self.state(pid).state == IN, "the seat to enter all the same")
+        self.assertTrue(any("the answer was not sent, and the question will be asked again" in s for s in self.said))
+        self.assertTrue(th.is_alive(), "the runner goes on")
+
+    def test_a_gemini_key_is_taken_as_the_free_tier_unless_its_person_says_billing_is_on(self):
+        from hope import providers
+        os.environ["HOPE_JOIN_GEMINI_KEY"] = self.KEY
+        self.addCleanup(os.environ.pop, "HOPE_JOIN_GEMINI_KEY", None)
+        gem = self.provider(name="gemini", label=providers.PRESETS["gemini"].label, key_env="HOPE_JOIN_GEMINI_KEY")
+        said = []
+        _, _, powered = join.provider_seat(gem, "test/model-a", False, inp=lambda p: (said.append(p), "")[1],
+                                           out=said.append)
+        self.assertEqual((powered["route"], powered["trains"]), ("free-tier", True), "no answer is not a yes")
+        self.assertIn(join.GEMINI_BILLING, said)
+        self.assertTrue(any(s.startswith("Taken as a free key") for s in said))
+        self.assertIn(join.GEMINI_EEA, said)
+        self.assertIn("Google may use what it is sent", prompts.powered_label(powered))
+        _, _, powered = join.provider_seat(gem, "test/model-a", False, inp=lambda p: "yes", out=said.append)
+        self.assertEqual((powered["route"], powered["trains"]), ("own-key", False))
+        said.clear()
+        _, _, powered = join.provider_seat(gem, "test/model-a", False, inp=lambda p: self.fail("asked"), out=said.append,
+                                           billing_on=True)
+        self.assertEqual((powered["route"], powered["trains"]), ("own-key", False), "--billing-on says it without asking")
+
+    def test_no_heartbeat_asks_the_field_not_to_wake_the_seat_on_its_heartbeat(self):
+        self.field()
+        pid, link = self.bring()
+        self.gates_beside()
+        self.hold(link, heartbeat=False)
+        self.until(lambda: self.state(pid).state == IN and self.state(pid).wake.get("heartbeat") is False,
+                   "the heartbeat to be left out for it")
+        self.until(lambda: any("will not wake Robin on its heartbeat" in s for s in self.said), "its person told")
+        self.assertTrue(any("which hope asks the field to leave out" in s for s in self.said), "said before it runs")
 
 
 if __name__ == "__main__":

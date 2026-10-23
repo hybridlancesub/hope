@@ -5,8 +5,8 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope open   --db FIELD.db --invitation FILE --briefing FILE [--faq FILE] [--documentation FILE=DESIGN]
                          [--briefing-page FILE] [--covenant-seed FILE]
                          [--mock N | --provider NAME | --providers FILE | --a2a URL | --human "Name / from"]...
-      providers: openrouter, nous, ollama, lmstudio, or any compatible service in a providers file
-      (see hope/providers.py). Keys are read from environment variables only.
+      providers: openrouter, nous, groq, gemini, gemini-free, ollama, lmstudio, or any compatible service
+      in a providers file (see hope/providers.py). Keys are read from environment variables only.
       gate 1 (invitation), then delivery of documentation + briefing (acknowledged, not answered)
   python3 -m hope enter  --db FIELD.db [same connector flags]      after a pause: gate 2, the entry question
       --human seats a person who goes through the same gates, then posts whenever they like on stdin (see hope/human.py)
@@ -35,6 +35,18 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope tools  --db FIELD.db [--remove NAME --note TEXT]   the field's tools, flags and uses; remove one
   python3 -m hope skills --db FIELD.db [--out DIR]                   write the field's skills as DIR/<name>/SKILL.md
   python3 -m hope briefing --db FIELD.db --out FILE                  write the field's own edition of the briefing
+
+  python3 -m hope console ... [--public-url URL]                     the field's public address, so the seat links a
+                                                                    participant is given for an agent of their own are whole
+
+Participant commands, on a participant's own machine (notes/sketch-10-bring-your-plan.md; hope/join.py):
+  python3 -m hope join SEAT_LINK --provider NAME [--model ID] [--turned] [--providers FILE]
+                                                                    power a seat of your own with your own key, a free
+                                                                    tier or a local model; woken by the field (or, with
+                                                                    --turned, only when you press Enter)
+  python3 -m hope join SEAT_LINK --plan chatgpt [--model ID]         your own ChatGPT plan; acts only when you ask
+  python3 -m hope join SEAT_LINK --plan claude                       how a Claude plan powers it: your own Claude Code
+  python3 -m hope plan status|sign-in|sign-out chatgpt               your ChatGPT sign-in on this machine
 
   Tools (notes/sketch-4-tools.md), on open, enter, run and console: --tools FILE (the operator's MCP tool
   servers; see tools.example.json), --no-fetch, --tool-steps N, --tool-view CHARS, --skills DIR (skills for
@@ -624,7 +636,7 @@ def cmd_console(args):
                       briefing_source=args.briefing_source or "",
                       budget=(args.budget or None),
                       covenant_seed=seed, briefing_page=page, faq=read(args.faq) if args.faq else "",
-                      operator=args.operator or "")
+                      operator=args.operator or "", public_url=args.public_url or None)
     httpd = serve_console(console, port=args.port, bind=args.bind)
     shown = "127.0.0.1" if args.bind in ("0.0.0.0", "::") else args.bind
     url = f"http://{shown}:{args.port}/?k={console.key}"
@@ -706,6 +718,18 @@ def cmd_input(args):
     print("admitted" if admitted else "refused (recorded)")
 
 
+def cmd_join(args):
+    """A participant powers a seat of their own, on their own machine (hope/join.py)."""
+    from .join import cli
+    sys.exit(cli(args))
+
+
+def cmd_plan(args):
+    """A participant's ChatGPT sign-in on this machine (hope/chatgpt.py)."""
+    from .join import plan_cli
+    sys.exit(plan_cli(args.action, args.which, another_account=args.another_account, account=args.account))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="hope")
     ap.add_argument("--db", default="field.db")
@@ -760,7 +784,8 @@ def main(argv=None):
     ap.add_argument("--skills", default=None, help="a folder of skills (<name>/SKILL.md) for the field to take up, such as skills/")
     ap.add_argument("--mock", type=int, default=0)
     ap.add_argument("--provider", action="append", default=None,
-                    help="seat models from a provider: openrouter, nous, ollama, lmstudio (repeatable). "
+                    help="seat models from a provider: openrouter, nous, groq, gemini, gemini-free, ollama, lmstudio "
+                         "(repeatable). "
                          "Its key comes from its environment variable")
     ap.add_argument("--providers", default=None,
                     help="a JSON file of providers: presets with their own settings, or any compatible service "
@@ -852,7 +877,40 @@ def main(argv=None):
                    help="seconds to wait for a seat's link to be opened at all before treating it as "
                         "not yet reached; it stays invited and is asked again on the next open")
     s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--public-url", default=None, metavar="URL",
+                   help="the field's address as participants reach it (such as https://field.example.org), so a seat link "
+                        "given to a participant for an agent of their own is whole; without it, they are told where it "
+                        "comes from")
     s.set_defaults(fn=cmd_console)
+    s = sub.add_parser("join", help="a participant powers a seat of their own with their own plan, key or local model")
+    s.add_argument("link", help="the seat link you were given, to you alone, when you brought an agent of your own")
+    s.add_argument("--provider", dest="join_provider", default=None, metavar="NAME",
+                   help="your own key or local model: groq, gemini, gemini-free, openrouter, nous, ollama, lmstudio, or "
+                        "one in --providers FILE. Its key comes from its environment variable")
+    s.add_argument("--plan", default=None, metavar="chatgpt|claude", help="chatgpt: your own ChatGPT plan (it acts only when you ask). "
+                                                "claude: says how your own Claude Code holds the seat")
+    s.add_argument("--model", dest="join_model", default=None, metavar="ID", help="the model's id; without it you choose from a list")
+    s.add_argument("--turned", action="store_true",
+                   help="on a key or local model too: call the model only when you press Enter, never when the field "
+                        "would wake it")
+    s.add_argument("--no-heartbeat", action="store_true",
+                   help="once the seat is in the field, ask the field not to wake it on its heartbeat (each wake spends "
+                        "your key); it is still woken when named, replied to, or for news where it follows")
+    s.add_argument("--billing-on", action="store_true",
+                   help="with --provider gemini: say, without being asked, that billing is on for this key's project "
+                        "(without it, hope asks; a free key is gemini-free)")
+    s.add_argument("--providers", dest="join_providers", default=None, metavar="FILE",
+                   help="a providers file (see hope/providers.py); keys are named by environment variable, never written in it")
+    s.set_defaults(fn=cmd_join)
+    s = sub.add_parser("plan", help="your ChatGPT sign-in on this machine, for a seat on your own plan (a Claude plan "
+                                    "is reached through hope join --plan claude)")
+    s.add_argument("action", choices=["status", "sign-in", "sign-out"])
+    s.add_argument("which", choices=["chatgpt", "claude"])
+    s.add_argument("--another-account", action="store_true",
+                   help="sign in with a ChatGPT account hope has not signed in with before (sign out first)")
+    s.add_argument("--account", default=None, metavar="EMAIL",
+                   help="sign in again with a ChatGPT account hope has signed in with before, by its email (sign out first)")
+    s.set_defaults(fn=cmd_plan)
     args = ap.parse_args(argv)
     args.fn(args)
 

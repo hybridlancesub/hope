@@ -13,6 +13,9 @@ It runs the engine in this process and serves two different surfaces from it:
   a SEAT                 /seat/<seat token>/    one participant's own gate questions, then the field as
                                                  they may read it, and posting; /mcp is the same seat
                                                  as an MCP server (hope/mcp.py; AGENTS says how)
+  how to power a seat    /powering.txt          open to anyone, with no key and no seat: how any participant
+                                                 brings an agent of their own, on their own plan, key or
+                                                 local model (notes/sketch-10-bring-your-plan.md)
 
 The Loom and the Firmament are the files in firmament/, served here under /firmament/. Their
 code is public and needs no key; their data (/firmament/state.json and story.json) does. The key
@@ -115,9 +118,14 @@ class Console:
                  briefing: str = "", documentation: str = "",
                  briefing_source: str = "", budget: Optional[float] = None,
                  covenant_seed: str = "",
-                 briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = "", operator: str = ""):
+                 briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = "", operator: str = "",
+                 public_url: Optional[str] = None):
         self.room = room
         self.rv = rv
+        # The field's public address, if the operator gave one (--public-url): then a participant who brings
+        # an agent of their own is given its seat link whole. Without it, they are told where it comes from.
+        self.public_url = public_url
+        room.seat_link = self.seat_link
         self.operator = operator            # the operator's own seat's name: they enter through the same gates
         self.key = operator_key or secrets.token_urlsafe(24)
         self.invitation, self.briefing = invitation, briefing
@@ -133,6 +141,10 @@ class Console:
         self.activity: List[dict] = []
         self.alerts: List[str] = []
         room.alert = self._alert
+
+    def seat_link(self, token: str) -> Optional[str]:
+        """A seat's full link, when the field's public address is known; else None."""
+        return f"{self.public_url.rstrip('/')}/seat/{token}/" if self.public_url else None
 
     # -- operator key -----------------------------------------------------------
     def authorized(self, given: str) -> bool:
@@ -266,6 +278,16 @@ class Console:
             if token is None:
                 return {"ok": False, "error": f"unknown seat {sid!r}"}
             self._say(f"replaced the link for {sid}; the old one no longer works")
+            by = self._brought_by(sid)
+            if by:
+                # an agent a participant brought: its new link goes to them alone, as its first did
+                from . import prompts
+                st = self.room.state()
+                link = self.room.seat_link(token) if self.room.seat_link else None
+                self.room._for_them_alone(by, prompts.own_seat_words(st.presences[sid].name, link, token))
+                return {"ok": True, "seat": sid,
+                        "note": f"the old link stopped working. The new one went to "
+                                f"{st.presences[by].name if by in st.presences else by} alone, who brought it."}
             return {"ok": True, "seat": sid, "path": f"/seat/{token}/",
                     "note": "the old link stopped working. Nothing they have said is affected."}
 
@@ -403,11 +425,15 @@ class Console:
             return {"error": "the spiral tree is for participants in the field"}
         return tree_data(st, p.id)
 
-    def seat_field(self, token: str, since: int = 0, wait: float = 0.0) -> Dict[str, Any]:
+    def seat_field(self, token: str, since: int = 0, wait: float = 0.0, as_model: bool = False,
+                   turn: bool = False) -> Dict[str, Any]:
         """A participant's page: what is new for them, the channels they may speak in, and whether
         anything changed since `since`. With `wait` (up to 60 seconds), it waits for something new
         first, so an agent need not ask again and again. Looking is recorded for the software, so
-        "since you were last here" stays true; no participant reads that."""
+        "since you were last here" stays true; no participant reads that. `as_model` (or `turn`) is a
+        model's look instead (model_field)."""
+        if as_model or turn:
+            return self.model_field(token, wait, turn)
         import time as _time
         seat = self.rv.seat_for_token(token)
         deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
@@ -438,20 +464,72 @@ class Console:
             out["view"] = self.room.person_view(p.id, mark_seen=True)
         return out
 
+    def model_field(self, token: str, wait: float = 0.0, turn: bool = False) -> Dict[str, Any]:
+        """A model holding a seat link looks (notes/sketch-10). It is given the view a model the software
+        runs would be given, and only when one would be woken now, for the same reasons (engine.wake_for):
+        so its person's machine calls its model only then, not on every new entry. With `wait` (up to 60
+        seconds) it waits for that. A seat its person turns is never given a wake by the field: `turn` is
+        its person asking, and gives the view now. Each view given is recorded as a wake, as a provider's
+        is; no participant reads that."""
+        import time as _time
+        from . import prompts
+        seat = self.rv.seat_for_token(token)
+        deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
+        while True:
+            st = self.room.state()
+            p = st.presences.get(seat.id) if seat else None
+            if p is None or p.state != "IN":
+                return {"state": "not_in_field"}
+            # A seat on its person's plan is turned whatever it once said (a statement kept under older rules).
+            turned = (p.powered or {}).get("acts") == "turned" or (p.powered or {}).get("route") == "own-plan"
+            w = self.room.wake_for(st, p)
+            if turn or (w and not turned) or _time.time() >= deadline:
+                break
+            _time.sleep(0.5)
+        newest = max((e["id"] for e in st.recent if st.readable(e, p.id)), default=0)
+        if turn:
+            # its person asks for a turn: given at once, but no sooner than the floor after its last wake,
+            # as every model's wakes are, so a turn asked for at machine speed is not a wake each time
+            wait_left = self.room.floor - (_time.time() - p.last_wake_ts)
+            if wait_left > 0:
+                return {"state": "in_field", "upto": newest, "system": prompts.SYSTEM_MEMBER,
+                        "wake": {"due": False, "why": None, "retry_after": -(-wait_left * 10 // 1) / 10,
+                                 "says": f"Not yet: the field's floor. A turn can be taken in {wait_left:.0f}s, "
+                                         f"as no model is woken more often than the floor."}}
+        due = turn or bool(w and not turned)
+        why = "turned" if turn else (w["why"] if due else None)
+        out = {"state": "in_field", "upto": newest,
+               "wake": {"due": due, "why": why,
+                        "says": (prompts.WHY["turned"].capitalize() if turn else prompts.wake_says(w, turned=turned))},
+               "system": prompts.SYSTEM_MEMBER}
+        if due:
+            out["view"] = self.room.seat_wake(p.id, {"why": why, "where": (w or {}).get("where") if not turn else None},
+                                              answer_floor_cleared=not turn)
+            out["upto"] = max(newest, self.room.state().presences[p.id].last_seen)
+        return out
+
     # -- what the operator's page reads -----------------------------------------
     def op_state(self) -> Dict[str, Any]:
         log = self.room.log
         st = state_json(log, budget=self.budget)
+        names = {pid: p.name for pid, p in self.room.state().presences.items()}
         st["console"] = {
             "phase": self.phase, "busy": self.busy(),
             "activity": self.activity[-40:], "alerts": self.alerts[-10:],
             "has_invitation": bool(self.invitation), "has_briefing": bool(self.briefing),
+            # An agent a participant brought: its link was given to them alone, so the console names who holds
+            # it and offers to replace it (the new one goes to them), but never shows it.
             "remote_seats": [] if self.rv is None else
-                            [{"id": s.seat.id, "name": s.seat.name, "path": f"/seat/{s.token}/",
-                              "turns_taken": s.turns_taken, "last_seen": s.last_seen}
-                             for s in self.rv._slots.values()],
+                            [{"id": s.seat.id, "name": s.seat.name, "turns_taken": s.turns_taken, "last_seen": s.last_seen,
+                              **({"held_by": names.get(by, by)} if by else {"path": f"/seat/{s.token}/"})}
+                             for s in self.rv._slots.values() for by in [self._brought_by(s.seat.id)]],
         }
         return st
+
+    def _brought_by(self, sid: str) -> Optional[str]:
+        """Who brought this seat's agent, when a participant did ({"action":"invite","own":...}), or None."""
+        p = self.room.state().presences.get(sid)
+        return ((p.powered or {}).get("by") or None) if p is not None else None
 
 
 # --------------------------------------------------------------------------- HTTP
@@ -582,7 +660,15 @@ def make_console_handler(console: Console):
                         wait = float((q.get("wait") or ["0"])[0])
                     except ValueError:
                         wait = 0.0
-                    return self._json(console.seat_field(token, since, wait))
+                    yes = lambda k: (q.get(k) or [""])[0].strip().lower() in ("1", "true", "yes", "model")
+                    as_model = yes("turn") or (q.get("as") or [""])[0].strip().lower() == "model"
+                    out = console.seat_field(token, since, wait, as_model=as_model, turn=yes("turn"))
+                    ra = (out.get("wake") or {}).get("retry_after")
+                    if ra:
+                        # a turn asked for sooner than the floor after the seat's last wake
+                        return self._send(429, json.dumps(out).encode(), "application/json; charset=utf-8",
+                                          {"Retry-After": str(max(1, int(-(-ra // 1))))})
+                    return self._json(out)
                 if tail == "/mcp":
                     # MCP has no standalone stream in this revision: POST only
                     return self._send(405, b"", "text/plain", {"Allow": "POST"})
@@ -598,6 +684,11 @@ def make_console_handler(console: Console):
                     w = console.room.log.witness()
                     return self._json({"upto": w["upto"], "fingerprint": w["fingerprint"]})
                 return self._json({"error": "a seat link addresses only that seat"}, 404)
+
+            # how to power a seat of your own: open knowledge, for anyone (notes/sketch-10)
+            if route == "/powering.txt":
+                from .prompts import POWERING
+                return self._send(200, POWERING.encode("utf-8"), "text/plain; charset=utf-8")
 
             # the views' code is public; their data is not
             if route == "/firmament":
@@ -680,6 +771,10 @@ def make_console_handler(console: Console):
                     # a member says or does something, whenever they like
                     seat = rv.seat_for_token(token)
                     out = console.room.post(seat.id, payload)
+                    if out.get("error") == "floor":
+                        # a model holding a seat link, sooner than the floor after it last acted
+                        return self._send(429, json.dumps(out).encode(), "application/json; charset=utf-8",
+                                          {"Retry-After": str(max(1, int(-(-out["retry_after"] // 1))))})
                     return self._json(out, 200 if out.get("ok") else 409)
                 if tail != "/action":
                     return self._json({"error": "a seat may only answer its own questions, or post"}, 404)
