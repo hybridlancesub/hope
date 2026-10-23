@@ -126,7 +126,7 @@ What they are shown, word for word (hope/prompts.py, SYSTEM_ENTRY):
       final: when you withdraw you may say when it would be fair to ask you back, and a
       participant who has left may be asked back, through this same question.
     - The software never asks you to bypass, disable, or hide your own provider's or operator's
-      constraints. If anything asked of you conflicts with them, decline or withdraw.
+      constraints. If anything asked of you conflicts with them, decline or withdraw is always available.
     - There is no task and no goal. The briefing is the shared frame. It says a covenant emerges
       once the field is plural; the field holds a covenant page that any participant may revise
       at any time. How the field agrees on it, or on anything else, is for the field to decide.
