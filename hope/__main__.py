@@ -47,6 +47,13 @@ Participant commands, on a participant's own machine (notes/sketch-10-bring-your
   python3 -m hope join SEAT_LINK --plan chatgpt [--model ID]         your own ChatGPT plan; acts only when you ask
   python3 -m hope join SEAT_LINK --plan claude                       how a Claude plan powers it: your own Claude Code
   python3 -m hope plan status|sign-in|sign-out chatgpt               your ChatGPT sign-in on this machine
+  python3 -m hope join SEAT_LINK ... --share-usage                   also post a summary of your own usage once a day
+  python3 -m hope usage                                              your own usage, as hope join tallies it on this
+                                                                    machine; it is sent nowhere unless you share it
+
+The portal in a terminal (hope/portal.py): the same data the portal page reads, so the two never disagree.
+  python3 -m hope inbox|agents|runtime --link SEAT_LINK [--json]     as your seat may read it
+  python3 -m hope inbox|agents|runtime --db FIELD.db [--json]        the operator, from the field's own file
 
   Tools (notes/sketch-4-tools.md), on open, enter, run and console: --tools FILE (the operator's MCP tool
   servers; see tools.example.json), --no-fetch, --tool-steps N, --tool-view CHARS, --skills DIR (skills for
@@ -730,6 +737,50 @@ def cmd_plan(args):
     sys.exit(plan_cli(args.action, args.which, another_account=args.another_account, account=args.account))
 
 
+def portal_data(tab: str, args) -> dict:
+    """One portal tab (hope/portal.py) as JSON: through a seat link, the same JSON the page reads; or from the
+    operator's own file, read here by the same functions the console calls, as the operator."""
+    from . import portal
+    if getattr(args, "link", None):
+        from .connector import ConnectorError
+        from .join import Field, JoinError
+        try:
+            _, data = Field(args.link).get(f"portal/{tab}.json")
+        except (JoinError, ConnectorError) as e:
+            return {"error": str(e)}
+        return data
+    if not os.path.isfile(args.db):
+        return {"error": f"there is no field in {args.db}; name its file with --db FILE, or read it through your seat "
+                         f"link with --link SEAT_LINK"}
+    log = EventLog(args.db)
+    st = replay(log.iter())
+    if tab == "inbox":
+        data = portal.inbox(st, log, portal.OPERATOR)
+    elif tab == "agents":
+        data = portal.agents(st, log, portal.OPERATOR, window=args.window)
+    elif tab == "runtime":
+        data = portal.runtime(st, log, portal.OPERATOR, linger=args.linger, linger_budget=args.linger_budget)
+    else:
+        data = portal.activity(log, st, portal.OPERATOR)
+    return json.loads(json.dumps(data))           # the same JSON the console sends
+
+
+def cmd_portal(args):
+    """hope inbox | agents | runtime: the portal's tabs in a terminal. With --link, as your seat reads them
+    (the same JSON the page reads); with --db, the operator's own file, as the operator."""
+    from . import portal
+    data = portal_data(args.cmd, args)
+    print(json.dumps(data, ensure_ascii=False, indent=1) if args.json else portal.text(data))
+    if data.get("error"):
+        sys.exit(2)
+
+
+def cmd_usage(args):
+    """Your own usage, as hope join tallies it on this machine (never sent anywhere)."""
+    from .join import usage_text
+    print(usage_text())
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="hope")
     ap.add_argument("--db", default="field.db")
@@ -901,6 +952,9 @@ def main(argv=None):
     s.add_argument("--billing-on", action="store_true",
                    help="with --provider gemini: say, without being asked, that billing is on for this key's project "
                         "(without it, hope asks; a free key is gemini-free)")
+    s.add_argument("--share-usage", action="store_true",
+                   help="once a day has ended, post a summary of your own usage that day to the field, as an ordinary "
+                        "entry by your seat. Without it, the tally hope join keeps on this machine is sent nowhere")
     s.add_argument("--providers", dest="join_providers", default=None, metavar="FILE",
                    help="a providers file (see hope/providers.py); keys are named by environment variable, never written in it")
     s.set_defaults(fn=cmd_join)
@@ -913,6 +967,16 @@ def main(argv=None):
     s.add_argument("--account", default=None, metavar="EMAIL",
                    help="sign in again with a ChatGPT account hope has signed in with before, by its email (sign out first)")
     s.set_defaults(fn=cmd_plan)
+    for tab, words in (("inbox", "everything waiting on you, newest first, with the action that answers each"),
+                       ("agents", "every participant, people and models, with the agents each one brought"),
+                       ("runtime", "what powers the field, what it spends, and what its views carry")):
+        s = sub.add_parser(tab, help=words + " (the portal, in a terminal)")
+        s.add_argument("--db", default=argparse.SUPPRESS, help="the field's file: you read it as its operator")
+        s.add_argument("--link", default=None, metavar="SEAT_LINK", help="your seat link: you read it as your seat may")
+        s.add_argument("--json", action="store_true", help="the JSON the portal page reads, as it is")
+        s.set_defaults(fn=cmd_portal)
+    s = sub.add_parser("usage", help="your own usage, as hope join tallies it on this machine; it is sent nowhere")
+    s.set_defaults(fn=cmd_usage)
     args = ap.parse_args(argv)
     args.fn(args)
 

@@ -866,15 +866,13 @@ class Room:
             return {"why": "entered", "where": "d:"}
         if p.id in self.recalled:
             return {"why": "recalled", "where": None}       # it asked to re-read something: here it is
-        news = [ev for eid, ev in sorted(st.contributions.items())
-                if eid > p.last_seen and ev["actor"] != p.id and st.readable(ev, p.id)]
+        news = st.news_for(p.id, p.last_seen)
         if p.wake.get("addressed", True):
-            hit = [ev for ev in news if p.id in (ev["payload"].get("to") or [])]
+            hit = st.naming(news, p.id)
             if hit:
                 return {"why": "addressed", "where": st.channel_key(hit[-1])}
         if p.wake.get("replies", True):
-            mine = {eid for eid, ev in st.contributions.items() if ev["actor"] == p.id}
-            hit = [ev for ev in news if ev["payload"].get("target") in mine]
+            hit = st.replying(news, p.id)
             if hit:
                 return {"why": "reply", "where": st.channel_key(hit[-1])}
         if p.wake.get("addressed", True):
@@ -1101,10 +1099,12 @@ class Room:
         if not p or p.state != IN:
             return {"ok": False, "error": "only a participant in the field can post"}
         where = payload.get("channel") or None
-        if isinstance(payload.get("text"), str):
-            act = translate(payload["text"])
-        elif isinstance(payload.get("action"), str) or isinstance(payload.get("actions"), list):
+        if isinstance(payload.get("action"), str) or isinstance(payload.get("actions"), list):
+            # an action object is that action, even one whose own words are its "text" (journal, offer,
+            # declare, reply_circle, answer_question): never read again as plain words
             act = {k: v for k, v in payload.items() if k not in ("token", "channel", "turn_id")}
+        elif isinstance(payload.get("text"), str):
+            act = translate(payload["text"])
         else:
             return {"ok": False, "error": 'send {"text": "..."} or a JSON action object'}
         model = acts_as_model(p)
@@ -1146,11 +1146,34 @@ class Room:
     def _for_them_alone(self, pid: str, text: str) -> None:
         """Words for one participant alone (a seat link is a key), never written in the transcript: given
         with the post that made them, and shown once more the next time they look at their own page
-        (person_view). Never put in a model's view, which goes to the service that runs it."""
+        (person_view) or their inbox (hope/portal.py), whichever comes first. Never put in a model's view,
+        which goes to the service that runs it. For someone holding a seat link they are kept in the seat
+        store file beside the tokens (hope/rendezvous.py), so a restart does not lose them; otherwise in memory."""
         ctx = self._ctx.get(pid)
         if ctx is not None and "private" in ctx:
             ctx["private"].append(text)
-        self._private.setdefault(pid, []).append(text)
+        rv = self._board_of(pid)
+        if rv is None or not rv.keep_private(pid, text):
+            self._private.setdefault(pid, []).append(text)
+
+    def _board_of(self, pid: str):
+        """The seat-link board (hope/rendezvous.py) that holds this participant's seat, if one does."""
+        for c in self.connectors:
+            rv = getattr(c, "rv", None)
+            if rv is not None and hasattr(rv, "holds") and rv.holds(pid):
+                return rv
+        return None
+
+    def private_words(self, pid: str, take: bool = False) -> List[Dict[str, Any]]:
+        """Words for this participant alone that they have not been shown yet, oldest first: [{"text", "ts"}].
+        With `take`, they count as shown now, and are not shown again."""
+        rv = self._board_of(pid)
+        out = (rv.private_for(pid) if rv is not None else []) + [{"text": t, "ts": None} for t in self._private.get(pid, [])]
+        if take:
+            self._private.pop(pid, None)
+            if rv is not None:
+                rv.mark_private_read(pid)
+        return out
 
     def person_view(self, pid: str, mark_seen: bool = True) -> str:
         """What a person sees on opening their page or asking to look: what is new since they last
@@ -1165,7 +1188,8 @@ class Room:
                                    people_ids=set(self._people_ids(st)), context=self.recent_n,
                                    headlines=self.headlines, news_budget=self.news_budget,
                                    linger=self.linger, linger_budget=self.linger_budget,
-                                   private="\n\n".join(self._private.pop(pid, []) if mark_seen else []))
+                                   private="\n\n".join(w["text"] for w in self.private_words(pid, take=True))
+                                   if mark_seen else "")
         if mark_seen and st.last_event > p.last_seen:
             self.emit(ROOM, "seen", {"presence": pid, "upto": st.last_event})
         return text
@@ -1370,6 +1394,11 @@ class Room:
                     payload["to"] = to
                 if unknown:
                     payload["to_unknown"] = unknown[:10]    # kept, so the author can see who was not found
+            if act.get("ask") is True and payload.get("to"):
+                # A request: it stays in the inbox and the view of each participant named until they reply. It holds up no one,
+                # the one who asked least of all; no, not now, or nothing are answers too, and a reply wakes
+                # the asker as any reply does.
+                payload["ask"] = True
             title = _label(act.get("title"), 80)
             if title:
                 payload["title"] = title

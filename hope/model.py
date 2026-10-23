@@ -669,6 +669,31 @@ class RoomState:
             return True
         return any(leave is not None and ev["id"] < leave for _, leave in c["spans"].get(pid, []))
 
+    def news_for(self, pid: str, since: int) -> List[Dict[str, Any]]:
+        """Contributions after `since` that a participant may read and did not write, oldest first."""
+        return [ev for eid, ev in sorted(self.contributions.items())
+                if eid > since and ev["actor"] != pid and self.readable(ev, pid)]
+
+    @staticmethod
+    def naming(evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones that name a participant in "to"."""
+        return [ev for ev in evs if pid in (ev["payload"].get("to") or [])]
+
+    def replying(self, evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones that reply to something a participant wrote."""
+        mine = {eid for eid, ev in self.contributions.items() if ev["actor"] == pid}
+        return [ev for ev in evs if ev["payload"].get("target") in mine]
+
+    def unanswered(self, evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones a participant has not replied to."""
+        answered = {ev["payload"].get("target") for ev in self.contributions.values() if ev["actor"] == pid}
+        return [ev for ev in evs if ev["id"] not in answered]
+
+    def requests_for(self, pid: str) -> List[Dict[str, Any]]:
+        """Requests naming a participant ("to" with "ask") that they may read and have not replied to, oldest
+        first. A request holds up no one: it only waits, and silence is never a yes."""
+        return self.unanswered([ev for ev in self.naming(self.news_for(pid, 0), pid) if ev["payload"].get("ask")], pid)
+
     def follows(self, p: Presence, ev: Dict[str, Any]) -> bool:
         """Whether an entry is in something a participant follows, by choice or by having written there."""
         keys = list(p.follows) + (list(p.written_in) if p.wake.get("written", True) else [])

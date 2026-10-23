@@ -387,3 +387,28 @@ class EventLog:
                 "select presence, model, sum(prompt_tokens), sum(completion_tokens), sum(cost_usd), count(*) "
                 "from ledger group by presence order by sum(cost_usd) desc"
             ).fetchall()
+
+    def cost_by_model(self):
+        """(model, prompt tokens, completion tokens, USD, calls) for each model the field has paid for, most
+        spent first. Together they add up to total_cost."""
+        with self.lock:
+            return self.conn.execute(
+                "select model, sum(prompt_tokens), sum(completion_tokens), sum(cost_usd), count(*) "
+                "from ledger group by model order by sum(cost_usd) desc, model"
+            ).fetchall()
+
+    def cost_by_presence_and_model(self):
+        """(presence, model, prompt tokens, completion tokens, USD, calls): who was run on which model."""
+        with self.lock:
+            return self.conn.execute(
+                "select presence, model, sum(prompt_tokens), sum(completion_tokens), sum(cost_usd), count(*) "
+                "from ledger group by presence, model order by presence, sum(cost_usd) desc"
+            ).fetchall()
+
+    def first_call_since(self, presence: str, ts: float):
+        """(model, prompt tokens, completion tokens) of a presence's first call at or after `ts`, or None:
+        how large a wake's view was, as its provider counted it."""
+        with self.lock:
+            return self.conn.execute(
+                "select model, prompt_tokens, completion_tokens from ledger where presence = ? and ts >= ? "
+                "order by id limit 1", (presence, ts)).fetchone()

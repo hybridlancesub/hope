@@ -13,6 +13,10 @@ It runs the engine in this process and serves two different surfaces from it:
   a SEAT                 /seat/<seat token>/    one participant's own gate questions, then the field as
                                                  they may read it, and posting; /mcp is the same seat
                                                  as an MCP server (hope/mcp.py; AGENTS says how)
+  the portal's data      /seat/<seat token>/portal/<tab>.json and /op/portal/<tab>.json (the operator key):
+                                                 inbox, agents, runtime and activity (hope/portal.py), each as
+                                                 its reader may read it, with ?wait= as field.json has. They
+                                                 only read; answering goes through /post, /action and /op/*
   how to power a seat    /powering.txt          open to anyone, with no key and no seat: how any participant
                                                  brings an agent of their own, on their own plan, key or
                                                  local model (notes/sketch-10-bring-your-plan.md)
@@ -24,7 +28,9 @@ travels once in the link, and the page then keeps it as a cookie this server alo
 address.
 
 They are not the same surface and must never become so. A seat token shows that seat's own
-parked question and nothing else -- not the record, not the roster, not the spend. The field
+parked question, and, once its holder is in the field, what any participant may read (the
+portal adds the roster and what the field spends, which every participant may know) -- never
+another's private words, nor the notes the software keeps for itself about anyone else. The field
 has no "watching from outside" state, and a link that let someone watch would be one. The
 operator key is the only thing that opens the record, and it is required even on localhost so
 that putting this behind a public address changes nothing about who can read.
@@ -508,6 +514,49 @@ class Console:
             out["upto"] = max(newest, self.room.state().presences[p.id].last_seen)
         return out
 
+    # -- the portal: one view for everyone, each reading only what they may --------
+    def portal(self, tab: str, token: Optional[str] = None, since: int = 0, wait: float = 0.0,
+               turn: str = "", days: int = 365) -> Dict[str, Any]:
+        """One tab of the portal (hope/portal.py): for a seat's holder, by its token, or for the operator
+        (no token), who reads as their own seat does plus what waits on them as operator. With `wait` (up to
+        60 seconds) it first waits for something new after entry `since` (or, for a seat, a gate question
+        other than `turn`, or words for them alone), as field.json does, so a page need not ask again and
+        again. It only reads: answering goes through /post, /action and /op/*, as before. Words for a seat's
+        holder alone are shown in its inbox once, and then count as read."""
+        import time as _time
+        from . import portal
+        if tab not in portal.TABS:
+            return {"error": f"no such tab {tab!r}; the tabs are {', '.join(portal.TABS)}"}
+        seat = self.rv.seat_for_token(token) if (token is not None and self.rv is not None) else None
+        if token is not None and seat is None:
+            return {"error": "this link is not a seat"}
+        viewer = seat.id if seat else portal.OPERATOR
+
+        def news() -> bool:
+            if self.room.log.last_id() > since:
+                return True
+            if seat is None or tab != "inbox":
+                return False
+            g = self.rv.pending(seat.id)
+            return bool((g and g["turn_id"] != turn) or self.room.private_words(seat.id))
+
+        deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
+        while _time.time() < deadline and not news():
+            _time.sleep(0.5)
+        st, log = self.room.state(), self.room.log
+        if tab == "inbox":
+            if seat is None:
+                return portal.inbox(st, log, viewer)
+            return portal.inbox(st, log, viewer, gate=self.rv.pending(seat.id),
+                                private=self.room.private_words(seat.id, take=True))
+        if tab == "agents":
+            return portal.agents(st, log, viewer, polled=self.rv.polled() if self.rv is not None else None,
+                                 window=self.room.window)
+        if tab == "runtime":
+            return portal.runtime(st, log, viewer, linger=self.room.linger, linger_budget=self.room.linger_budget,
+                                  operator=None if seat else {"phase": self.phase, "busy": self.busy()})
+        return portal.activity(log, st, viewer, days=days)
+
     # -- what the operator's page reads -----------------------------------------
     def op_state(self) -> Dict[str, Any]:
         log = self.room.log
@@ -619,11 +668,26 @@ def make_console_handler(console: Console):
         def log_message(self, *a):
             pass
 
+        def _portal(self, tab: str, token: Optional[str]):
+            """GET one portal tab: ?since=<entry>&wait=<seconds> waits for something new, as field.json does;
+            ?turn=<a gate question's id> says which one the page already shows; ?days=N for activity."""
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            one = lambda k, d="": (q.get(k) or [d])[0].strip()
+            try:
+                wait = float(one("wait", "0"))
+            except ValueError:
+                wait = 0.0
+            out = console.portal(tab, token, since=_int(one("since", "0")) or 0, wait=wait, turn=one("turn"),
+                                 days=_int(one("days", "365")) or 365)
+            return self._json(out, 403 if out.get("state") == "not_in_field" else 404 if out.get("error") else 200)
+
         def _mcp(self, token: str):
             from urllib.parse import urlparse
             from . import mcp
             if rv is None or rv.seat_for_token(token) is None:
                 return self._json({"jsonrpc": "2.0", "error": {"code": -32001, "message": "this address is not a seat"}}, 404)
+            rv.saw(token)
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc != (self.headers.get("Host") or ""):
                 return self._json({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Origin not allowed"}}, 403)
@@ -648,8 +712,12 @@ def make_console_handler(console: Console):
                 if rv is None or rv.seat_for_token(token) is None:
                     return self._refuse(404, "this link is not a seat", _NOT_A_SEAT)
                 tail = route.split(token, 1)[1]
+                rv.saw(token)                       # its holder looked: for "active" in the portal's agents
                 if tail in ("", "/"):
                     return self._static("seat.html")
+                if tail.startswith("/portal/") and tail.endswith(".json"):
+                    # the portal (hope/portal.py), as this seat's participant may read it
+                    return self._portal(tail[len("/portal/"):-len(".json")], token)
                 if tail == "/turn.json":
                     return self._json(console.seat_turn(token))
                 if tail == "/field.json":
@@ -716,6 +784,9 @@ def make_console_handler(console: Console):
                 return self._static("console.html", cookie)
             if route == "/op/state.json":
                 return self._json(console.op_state())
+            if route.startswith("/op/portal/") and route.endswith(".json"):
+                # the portal as the operator reads it: their own seat's view, and what waits on them as operator
+                return self._portal(route[len("/op/portal/"):-len(".json")], None)
             if route == "/op/witness.json":
                 return self._json(console.room.log.verify())
             if route == "/spend.json":
@@ -751,6 +822,7 @@ def make_console_handler(console: Console):
             if token is not None:
                 if rv is None or rv.seat_for_token(token) is None:
                     return self._json({"error": "this link is not a seat"}, 404)
+                rv.saw(token)
                 tail = route.split(token, 1)[1]
                 if tail == "/return":
                     # Someone who left asks to come back. They are asked again, and answer like anyone.

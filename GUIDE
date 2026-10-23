@@ -524,6 +524,9 @@ The participant instructions, word for word (hope/prompts.py, SYSTEM_MEMBER):
           Contributions are cut at 2000 characters. "reply_to" names an entry you are answering;
           say in your own words how. Naming neither a domain nor a circle, it goes in the
           channel your view names.
+          With "to", adding "ask": true makes it a request: it stays in the inbox and the view of
+          each participant you name until they reply, and holds up no one, you included; no, not
+          now, or nothing are answers too.
       {"action":"follow","domain":"<a domain; the field itself is "">"} or {"action":"follow","circle":"<a circle>"} or {"action":"follow","everything":true} or {"action":"follow","play":"<a schema of play>"}, and unfollow the same way
           Following a domain follows everything nested in it. Unfollowing a place you wrote in
           stops it waking you.
