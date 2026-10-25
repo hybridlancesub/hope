@@ -13,11 +13,24 @@ RoomState.readable, circles and repair threads through RoomState.knows, so a pri
 journal and a repair thread stay with the people they belong to. The operator holds the file, but reads
 here as their own seat does (st.operator_presence), plus what waits on them as operator.
 
-What the software keeps for itself about a participant (when it was woken or looked, what it follows,
-what may wake it, how many calls it took) is read by no other participant: SYSTEM_MEMBER tells every
-participant "No participant reads that note, and no one's silences are counted." So it is shown here to
-the operator, who holds the file; to the participant themselves; and to the person who powers an agent,
-who sees its wakes at their own terminal already. Everyone else sees what any participant can read.
+Everyone in the field sees a light status for each participant, made only from what they do in the open:
+here (in the field, not pausing), pausing (with the note they left; a pause without a note is written
+nowhere anyone reads, so to anyone else it shows as here), or away (left, or not yet entered). What the
+software keeps for itself about a participant (whether it is awake, answering or active right now, when
+and why it was woken, when it was last shown the field or used its seat link, what it follows, what may
+wake it, its late answers, how many calls it took and how large they were) is read by no other
+participant: SYSTEM_MEMBER tells every participant "No participant reads that note, and no one's silences
+are counted." So it is shown here to the operator, who holds the file; to the participant themselves; and
+to the person who powers an agent, who sees its wakes at their own terminal already. Everyone else sees
+nothing made from those notes: a status that came on at a wake and went off at its participant's next act,
+anywhere, would show the moment of the wake, a late answer, a silence, or an act in a private circle.
+
+What the field spends is shown to a participant as time and shares: how long its funding lasts, once it is
+running low, and, in whole percent of what the field has spent, their own share and that of each agent they
+power, by model, with everyone else's together as one row that names no one. Another participant's share,
+read look after look, would show when its calls were made and how large they were, its wakes and so its
+silences; so it is theirs, as the notes above are. The field's total and each one's dollars are the
+operator's, who funds it.
 
 Nothing here writes, and there is no new way to act. Every item names an action that already exists
 (POST /seat/<token>/post or /action for a participant, /op/<action> for the operator) with a template
@@ -35,20 +48,32 @@ from .model import ACTED_KINDS, IN, OUT, RoomState, acts_as_model
 OPERATOR = "operator"
 TABS = ("inbox", "agents", "runtime", "activity")
 AWAKE_FOR = 300.0     # seconds after a wake during which an agent is shown as awake
-POLLED_FOR = 60.0     # seconds after a look through a seat link (or at one's page) during which a seat is active
+ACTIVE_FOR = 60.0     # seconds after its own act, or after it was shown the field, during which it is active
 WINDOW = 120.0        # seconds a woken model has to answer, unless the field's engine says otherwise
 KEEP_NAMED = 50       # entries naming or answering a person, kept in their inbox until they reply
 OWN_ROUTES = ("own-key", "own-plan", "free-tier", "local")
 GATE_ORDER = ("INVITED", "ACCEPTED", "BRIEFED", "RECEIVED", "IN", "OUT")
 
-KEPT_NOTE = ("When a participant was woken or looked, what it follows and what may wake it are notes the software "
-             "keeps for itself. No participant reads another's: they are shown to the operator, who holds the file, "
-             "to the participant themselves, and to the person who powers an agent.")
+KEPT_NOTE = ("Everyone in the field sees only whether a participant is here, pausing (with the note they left; a pause "
+             "without a note is written nowhere anyone reads, so to anyone else it shows as here) or away. Whether it "
+             "is awake, answering or active right now, when and why it was woken, when it was last shown the field or "
+             "used its seat link, what it follows, what may wake it, its late answers, and how many calls it took and "
+             "how large they were are notes the software keeps for itself. No participant reads another's: they are "
+             "shown only to the operator, who holds the file, to the participant themselves, and to the person who "
+             "powers an agent. No one's silences are counted.")
+SPEND_NOTE = ("Participants see what the field spends as time and shares, not as amounts: how long its funding lasts "
+              "once it runs low, and, in whole percent of what the field has spent, their own share and that of each "
+              "agent they power, by model, with everyone else's together as one row. Another participant's share, "
+              "tokens and calls are not shown to them: looked at again and again, they would show when that "
+              "participant's calls were made, which is the software's own note. The field's total and each one's "
+              "dollars are shown only to the operator, who funds it. (Prices are stated in dollars where they apply: "
+              "a tool's price a call, and, to a seat with an allowance, what it is billed per million prompt tokens.)")
+KEPT_WHERE = "on your machine, when hope join runs the seat"
 YOUR_SPEND = ("What a seat spends on its own key, plan or local model is not in the field's ledger. hope join keeps "
               "a tally of it on the machine that runs the seat, in its person's own config folder, and sends it "
               "nowhere; python3 -m hope usage there shows it. It reaches the field only if its person runs hope join "
-              "with --share-usage, which posts a summary each day as an ordinary entry by the seat. (A seat on a "
-              "Claude plan is held by its person's own Claude Code, and hope keeps no tally for it.)")
+              "with --share-usage, which posts a summary each day as an ordinary entry by the seat. (A seat held any "
+              "other way, such as by Claude Code over its MCP address or on a Claude plan, is not tallied by hope.)")
 GATE_WORDS = {
     "invitation": "You are invited to the field. Will you hear more? Hearing more commits you to nothing.",
     "delivery": "The field's documentation and briefing are here for you to read; say when you have received them.",
@@ -83,6 +108,14 @@ def sees_kept(st: RoomState, pid: Optional[str], op: bool, p) -> bool:
     return op or (pid is not None and (p.id == pid or (p.powered or {}).get("by") == pid))
 
 
+def told(st: RoomState, pid: Optional[str], op: bool, x: str) -> bool:
+    """Whether the viewer may be told of this presence at all. Someone the operator invited who never entered
+    (still at the gates, or who declined there) the field has not been told of, and is not named to it.
+    Whoever is not a presence (the narrator, say) is the software's own."""
+    p = st.presences.get(x)
+    return p is None or p.joined_at is not None or bool(p.invited_by) or sees_kept(st, pid, op, p)
+
+
 def brought_by(p) -> Optional[str]:
     """Who brought an agent, when a participant did: an agent of their own (invite own), or one reached by
     its A2A address. Lineage, never rank."""
@@ -110,25 +143,30 @@ def _op(action: str, **template) -> Dict[str, Any]:
 
 def _kept_notes(log: EventLog, st: RoomState) -> Dict[str, Dict[str, Any]]:
     """From the software's own notes, per participant: its last wake (when, why), whether anything of its
-    came after it (an answer, or a failure to reach it), whether its answer went late, how many did, and
-    when it last looked at its page."""
+    came after it (an answer, or a failure to reach it), whether its answer went late, how many did, when
+    it was last shown the field (its page, or a view), and when it last acted, anywhere."""
     out: Dict[str, Dict[str, Any]] = {}
+    blank = lambda: {"wake_id": None, "wake_ts": None, "why": None, "answered": False, "late": False,
+                     "late_count": 0, "seen_ts": None, "acted_ts": None}
     for ev in log.iter():
         k, a, pl = ev["kind"], ev["actor"], ev["payload"]
         if a == "room" and k in ("wake", "late", "seen"):
             pid = pl.get("presence")
             if pid not in st.presences:
                 continue
-            n = out.setdefault(pid, {"wake_id": None, "wake_ts": None, "why": None, "answered": False,
-                                     "late": False, "late_count": 0, "seen_ts": None})
+            n = out.setdefault(pid, blank())
             if k == "wake":
                 n.update(wake_id=ev["id"], wake_ts=ev["ts"], why=pl.get("why"), answered=False, late=False)
             elif k == "late":
                 n["late"], n["late_count"] = True, n["late_count"] + 1
             else:
                 n["seen_ts"] = ev["ts"]
-        elif a in out and out[a]["wake_id"] is not None:
-            out[a]["answered"] = True
+        elif a in st.presences:
+            n = out.setdefault(a, blank())
+            if n["wake_id"] is not None:
+                n["answered"] = True
+            if k in ACTED_KINDS:
+                n["acted_ts"] = ev["ts"]
     return out
 
 
@@ -138,8 +176,8 @@ def inbox(st: RoomState, log: EventLog, viewer: Optional[str], *, gate: Optional
     """Everything waiting on this person, newest first. Each item: its kind, who asked, one plain line of
     what it is, the entry it is (if one is), the action that already answers it with a template, and
     whether it is new since they last looked. `gate` is the gate question put to their seat now (from
-    rendezvous.pending) and `private` the words for them alone not yet shown; the console passes both
-    for a seat link's holder, and marks the words read once shown."""
+    rendezvous.pending) and `private` the words for them alone not yet read; the console passes both
+    for a seat link's holder, and counts the words read only once their page says they opened them."""
     now = time.time() if now is None else now
     pid, op = _who(st, viewer)
     names = prompts.names_of(st)
@@ -193,14 +231,21 @@ def _field_items(st: RoomState, log: EventLog, p, names: Dict[str, str], add) ->
     circles = {cid: c["name"] for cid, c in st.circles.items()}
     where = lambda ev: (f"circle {circles.get(ev['payload']['circle'], '?')}" if ev["payload"].get("circle") is not None
                         else (st.domain_display(labels.path(st.label_of(ev))) or "the field"))
+
+    def reply(ev: Dict[str, Any]) -> Dict[str, Any]:
+        # An answer goes where the entry it answers was written, never where its author happens to be looking:
+        # words answering a private circle stay in it (and if they have left it, the field refuses the answer
+        # rather than moving it into the open).
+        place = ({"circle": ev["payload"]["circle"]} if ev["payload"].get("circle") is not None
+                 else {"channel": "d:" + labels.path(st.label_of(ev))})
+        return {**_post("contribute", reply_to=ev["id"], content="", **place), "where": where(ev)}
     # Requests, and entries that name them or answer them, until they reply. A request holds up no one.
     requests = st.requests_for(pid)
     for ev in requests:
         who = names.get(ev["actor"], ev["actor"])
         add("request", f"{who} asks you, in {where(ev)}: {_line(ev['payload'].get('content'))}", ev["id"],
             entry=ev["id"], by=ev["actor"], ts=ev.get("ts"),
-            answer=_post("contribute", reply_to=ev["id"], content=""),
-            note="A request holds up no one. No, not now, or nothing are answers too.")
+            answer=reply(ev), note="A request holds up no one. No, not now, or nothing are answers too.")
     news = st.news_for(pid, 0)
     taken = {ev["id"] for ev in requests}
     named = [ev for ev in st.unanswered(st.naming(news, pid), pid) if ev["id"] not in taken]
@@ -215,8 +260,7 @@ def _field_items(st: RoomState, log: EventLog, p, names: Dict[str, str], add) ->
             kind, what = "named", f"{who} named you in {where(ev)}: {_line(ev['payload'].get('content'))}"
         else:
             kind, what = "reply", f"{who} replied to you in {where(ev)}: {_line(ev['payload'].get('content'))}"
-        add(kind, what, ev["id"], entry=ev["id"], by=ev["actor"], ts=ev.get("ts"),
-            answer=_post("contribute", reply_to=ev["id"], content=""))
+        add(kind, what, ev["id"], entry=ev["id"], by=ev["actor"], ts=ev.get("ts"), answer=reply(ev))
     # What waits in a circle for their yes or no (an admission, a harvest, a change of privacy).
     for x in sorted(st.awaiting.values(), key=lambda y: y["id"]):
         if x["status"] != "waiting" or pid not in st.circle_needs(x) or pid in x["yes"] or pid in x["no"]:
@@ -340,7 +384,8 @@ def _operator_items(st: RoomState, log: EventLog, names: Dict[str, str], add, no
                  "low": "The field's funding is running low; every view counts down the time it lasts."}[state]
         add("runway", words, rw.get("id") or 0, entry=rw.get("id"), ts=rw.get("at"),
             answer=_op("budget", usd=st.budget, note=""), runway=state)
-    if st.cost_alerts:
+    if st.cost_alerts and (st.cost_alerts[-1].get("id") or 0) > (st.budget_at or 0):
+        # a spend alert waits until a budget is set after it, which is the answer it offers
         a = st.cost_alerts[-1]
         add("cost_alert", _line(a.get("message") or f"The field has spent ${float(a.get('total_usd') or 0):.2f}.", 300),
             a.get("id") or 0, entry=a.get("id"), answer=_op("budget", usd=st.budget, note=""))
@@ -350,11 +395,16 @@ def _operator_items(st: RoomState, log: EventLog, names: Dict[str, str], add, no
 def agents(st: RoomState, log: EventLog, viewer: Optional[str], *, polled: Optional[Dict[str, float]] = None,
            now: Optional[float] = None, window: float = WINDOW) -> Dict[str, Any]:
     """Every participant, people and models alike: where they are at the gates, who brought them, what
-    powers them, their roles, whether they are pausing. Agents a participant brought are listed under them.
-    For whoever may see it (KEPT_NOTE): what each follows, whether it is awake (woken within the last five
-    minutes), active (an answer to a wake on its way, or a look through its seat link within the last
-    minute), its last wake and why, and late answers. `polled` is when each seat link was last looked
-    through (rendezvous.polled), which only the console process knows."""
+    powers them, their roles, and, for everyone, a light status: here, pausing (with the note they left) or
+    away. Agents a participant brought are listed under them. For whoever may see it (KEPT_NOTE), and no one
+    else: whether it is awake (woken within the last five minutes), answering (an answer to a wake on its
+    way) and active (answering, or it acted, anywhere, or was shown the field, within the last minute: a page
+    left open, or a program waiting for news, is not activity); what it follows and what may wake it; its
+    last wake and why; when it was last shown the field and when its seat link was last used; and late
+    answers. No status made from those notes is shown to anyone else: one that came on at a wake and went off
+    at its participant's next act would show the wake's moment, a late answer, a silence or an act in a
+    private circle. `polled` is when each seat link was last used (rendezvous.polled), by anything at all,
+    which only the console process knows."""
     if outside(st, viewer, "agents"):
         return outside(st, viewer, "agents")
     now = time.time() if now is None else now
@@ -362,23 +412,33 @@ def agents(st: RoomState, log: EventLog, viewer: Optional[str], *, polled: Optio
     names = prompts.names_of(st)
     notes = _kept_notes(log, st)
     polled = polled or {}
+    # A model the field itself runs says nothing of what powers it: its calls in the ledger, on a model other
+    # than a person's own seat (engine.HUMAN_TEMPO: a terminal, or a seat link), are what show it is one.
+    from .engine import HUMAN_TEMPO
+    run_here = {pres for pres, model, *_ in log.cost_by_presence_and_model() if model not in HUMAN_TEMPO}
     rows: Dict[str, Dict[str, Any]] = {}
     for p in st.presences.values():
         joined = p.joined_at is not None
         by = brought_by(p)
-        if not (joined or p.invited_by or sees_kept(st, pid, op, p)):
+        if not told(st, pid, op, p.id):
             continue      # someone the operator invited who never entered: the field has not been told of them
         kept = sees_kept(st, pid, op, p)
+        # Here, pausing or away: what anyone in the field may know of a participant. A pause shows as one only
+        # with the note they left for the field; without one it is written nowhere anyone reads (SYSTEM_MEMBER).
+        pausing = p.state == IN and bool(p.pause) and not (p.pause.get("until_ts") and now >= p.pause["until_ts"])
+        noted = pausing and bool((p.pause or {}).get("note"))
+        shown_pausing = noted or (pausing and kept)
         row: Dict[str, Any] = {
             "id": p.id, "name": p.name, "state": p.state, "joined": joined,
-            "kind": "model" if acts_as_model(p) or (p.powered or {}).get("route") else "person",
+            "kind": "model" if acts_as_model(p) or (p.powered or {}).get("route") or p.id in run_here else "person",
             "roles": list(p.roles), "powered": {k: v for k, v in (p.powered or {}).items()} or None,
             "powered_words": prompts.powered_label(p.powered, names) or None,
             "brought_by": by, "brought_by_name": names.get(by) if by else None,
             "invited_by": p.invited_by, "invited_by_name": names.get(p.invited_by) if p.invited_by else None,
             "runs_the_software": p.id == st.operator_presence, "steward": p.id in st.stewards,
-            "pausing": bool(p.pause and (p.pause.get("note") or kept)),
-            "pause_note": (p.pause or {}).get("note") or None,
+            "presence": "away" if p.state != IN else "pausing" if shown_pausing else "here",
+            "pausing": shown_pausing,
+            "pause_note": p.pause["note"] if noted else None,
             "brought": [],
         }
         if joined:
@@ -387,18 +447,20 @@ def agents(st: RoomState, log: EventLog, viewer: Optional[str], *, polled: Optio
             n = notes.get(p.id) or {}
             wake_ts = n.get("wake_ts")
             in_flight = bool(wake_ts) and not n.get("answered") and (now - wake_ts < window or n.get("late"))
-            looked = max(polled.get(p.id) or 0.0, n.get("seen_ts") or 0.0)
+            # active: its own doing, never a page or a program that only waits for news on its behalf
+            lately = max(n.get("acted_ts") or 0.0, n.get("seen_ts") or 0.0)
             why = n.get("why")
             row.update({
                 "follows": [k for k in p.follows if _knows_key(st, k, pid, op)],
                 "wake": dict(p.wake),
                 "awake": bool(wake_ts) and now - wake_ts < AWAKE_FOR,
-                "active": in_flight or (bool(looked) and now - looked < POLLED_FOR),
+                "active": in_flight or (bool(lately) and now - lately < ACTIVE_FOR),
                 "answering": in_flight,
                 "last_wake_ts": wake_ts, "last_wake_why": why,
                 "last_wake_words": _why_words(why, p, pid) if why else None,
                 "late": bool(n.get("late")) and not n.get("answered"), "late_answers": n.get("late_count", 0),
-                "last_looked_ts": looked or None,
+                "last_looked_ts": n.get("seen_ts"),
+                "link_used_ts": polled.get(p.id),
             })
         rows[p.id] = row
     top: List[Dict[str, Any]] = []
@@ -434,11 +496,17 @@ def _why_words(why: str, p, pid: Optional[str]) -> str:
 # --------------------------------------------------------------------------- runtime
 def runtime(st: RoomState, log: EventLog, viewer: Optional[str], *, now: Optional[float] = None,
             linger: Optional[int] = None, linger_budget: Optional[int] = None,
-            operator: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """What powers the field and what it spends: the providers and models in use, the field's spend
-    (total, rate, runway) by participant and by model, the memories against the space each view gives
-    them, the budget for people's lingering words, and the size of each last wake (for whoever may see
-    wakes). For the operator only: the phase and the budget. `operator` is the console's phase state."""
+            operator: Optional[Dict[str, Any]] = None, runway: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """What powers the field and what it spends: the providers and models in use, the field's spend by
+    participant and by model, the memories against the space each view gives them, the budget for people's
+    lingering words, and the size of each last wake (for whoever may see wakes). A participant sees the
+    spend as time and shares (SPEND_NOTE): how long the funding lasts once it runs low, and, in whole
+    percent of what the field has spent, their own share and that of each agent they power, by model and
+    with its tokens and calls, and everyone else's together as one row that names no one (_shares). Never
+    the field's dollars. The operator sees all of it exactly, in dollars too (total, rate, a typical call,
+    each participant and model), and the phase and the budget. Every list is in order of name, never of
+    spend. `operator` is the console's phase state; `runway` is what every view says about funding now
+    (Room.runway_now)."""
     from .serve import spend_json
     if outside(st, viewer, "runtime"):
         return outside(st, viewer, "runtime")
@@ -450,32 +518,38 @@ def runtime(st: RoomState, log: EventLog, viewer: Optional[str], *, now: Optiona
     for p in st.members():
         if p.powered and p.powered.get("route"):
             providers.setdefault((p.powered["route"], prompts.one_line(p.powered.get("provider") or "")), []).append(p.id)
-    on = {}
-    for pres, model, _, _, _, _ in log.cost_by_presence_and_model():
-        on.setdefault(model, []).append(pres)
-    models = [{"model": m, "prompt_tokens": pt or 0, "completion_tokens": ct or 0, "usd": usd or 0.0,
-               **({"calls": n} if op else {}), "participants": [who(x) for x in on.get(m, [])]}
-              for m, pt, ct, usd, n in log.cost_by_model()]
-    by_model: Dict[str, List[str]] = {}
-    for pres, model, _, _, _, _ in log.cost_by_presence_and_model():
-        by_model.setdefault(pres, []).append(model)
+    total = log.total_cost()
+    if op:
+        # the operator, who funds the field, sees it all, exactly and in dollars
+        on: Dict[str, List[str]] = {}
+        by_model: Dict[str, List[str]] = {}
+        for pres, model, _, _, _, _ in log.cost_by_presence_and_model():
+            on.setdefault(model, []).append(pres)
+            by_model.setdefault(pres, []).append(model)
+        share = lambda usd: 100.0 * (usd or 0.0) / total if total > 0 else 0.0
+        models = [{"model": m, "prompt_tokens": pt or 0, "completion_tokens": ct or 0, "share_percent": share(usd),
+                   "usd": usd or 0.0, "calls": n, "participants": [who(x) for x in on.get(m, [])]}
+                  for m, pt, ct, usd, n in log.cost_by_model()]
+        people = [{**who(pres), "prompt_tokens": pt or 0, "completion_tokens": ct or 0, "share_percent": share(usd),
+                   "usd": usd or 0.0, "calls": n, "models": by_model.get(pres, [])}
+                  for pres, _, pt, ct, usd, n in log.cost_by_presence()]
+    else:
+        models, people = _shares(st, log, pid, total, who)
+    # in order of name: a list in order of spend would rank people, and the field ranks no one
+    models.sort(key=lambda m: (2 if m.get("unnamed") else 1 if m.get("tools") else 0, m["model"].lower()))
+    people.sort(key=lambda r: (bool(r.get("unnamed")), r["name"].lower()))
     spend = spend_json(log, budget=st.budget)
-    people = []
-    for pres, _, pt, ct, usd, n in log.cost_by_presence():
-        p = st.presences.get(pres)
-        row = {**who(pres), "prompt_tokens": pt or 0, "completion_tokens": ct or 0, "usd": usd or 0.0,
-               "models": by_model.get(pres, [])}
-        if p is None or sees_kept(st, pid, op, p):
-            row["calls"] = n
-        people.append(row)
     rw = st.runway or {}
     funding = {"budget_set": bool(st.budget),
                "state": "ended" if rw.get("ended") else "closing" if rw.get("closing") else "low" if rw else None,
                "words": (prompts.funding_fact(st.budget) if not rw else
                          "The field's funding is spent: models are no longer woken." if rw.get("ended") else
                          "The field's funding allows one more wake for each model, its closing wake." if rw.get("closing") else
-                         "The field's funding is running low; every view counts down the time it lasts."),
+                         _runway_words(runway or {})),
                "notice_at": rw.get("id")}
+    if rw and runway:
+        # the same countdown every view shows, in time or in wakes, never in money
+        funding.update({k: runway[k] for k in ("seconds_left", "wakes_left") if runway.get(k) is not None})
     held = sorted(st.memories.values(), key=lambda m: -m["id"])
     fit, used = 0, 0
     for m in held:
@@ -496,8 +570,10 @@ def runtime(st: RoomState, log: EventLog, viewer: Optional[str], *, now: Optiona
         "providers": [{"route": r, "provider": prov or None, "participants": [who(x) for x in xs]}
                       for (r, prov), xs in sorted(providers.items())],
         "models": models,
-        "spend": {"total_usd": spend["total_usd"], "rate_usd_per_minute": spend["rate_usd_per_minute"],
-                  "typical_call_usd": spend["typical_call_usd"], "funding": funding},
+        "spend": {"funding": funding, "words": SPEND_NOTE,
+                  "shares": "percent of what the field has spent" + ("" if op else ", in whole percent"),
+                  **({"total_usd": spend["total_usd"], "rate_usd_per_minute": spend["rate_usd_per_minute"],
+                      "typical_call_usd": spend["typical_call_usd"]} if op else {})},
         "by_participant": people,
         "memory": {"held": len(held), "chars": sum(len(m.get("text") or "") for m in held),
                    "view_budget": prompts.MEMORY_VIEW_BUDGET, "in_each_view": fit,
@@ -515,7 +591,8 @@ def runtime(st: RoomState, log: EventLog, viewer: Optional[str], *, now: Optiona
         own = [q for q in st.presences.values() if (q.powered or {}).get("by") == pid
                or (q.id == pid and (q.powered or {}).get("route") in OWN_ROUTES)]
         if own:
-            out["your_spend"] = {"kept": "on your machine", "seats": [who(q.id) for q in own], "words": YOUR_SPEND}
+            # hope join keeps the tally; a seat held any other way (Claude Code over MCP, say) has none
+            out["your_spend"] = {"kept": KEPT_WHERE, "seats": [who(q.id) for q in own], "words": YOUR_SPEND}
     if op:
         out["operator"] = {"phase": (operator or {}).get("phase"), "busy": bool((operator or {}).get("busy")),
                            "budget_usd": st.budget, "remaining_usd": spend.get("remaining_usd"),
@@ -524,12 +601,89 @@ def runtime(st: RoomState, log: EventLog, viewer: Optional[str], *, now: Optiona
     return out
 
 
+def _shares(st: RoomState, log: EventLog, pid: Optional[str], total: float,
+            who) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """The field's spend as a participant sees it (SPEND_NOTE). Another participant's share, read look after
+    look, would show when its calls were made and how large they were: its wakes, and so its silences, which
+    are the software's own notes (KEPT_NOTE). So a participant sees the share, tokens and calls of whoever
+    they may see those notes for (themselves, and an agent they power), by model, with a tool's charges as
+    one row; and everyone else's together, as one row that names no one, whoever they are (someone still at
+    the gates among them). Shares are whole percent, so no exact share can be divided by a stated price to
+    give the field's dollars."""
+    from .engine import HUMAN_TEMPO       # a person's own seat, which is not a model
+    may = lambda x: (lambda p: p is None or sees_kept(st, pid, False, p))(st.presences.get(x))
+    models: Dict[str, Dict[str, Any]] = {}
+    people: Dict[str, Dict[str, Any]] = {}
+    rest, others = 0.0, False
+    for pres, m, pt, ct, usd, n in log.cost_by_presence_and_model():
+        if not may(pres):
+            rest, others = rest + (usd or 0.0), True
+            continue
+        tool = m.startswith("tool:")         # a tool's charges are not a model's
+        key = "tools" if tool else m
+        r = people.setdefault(pres, {**who(pres), "_usd": 0.0, "prompt_tokens": 0, "completion_tokens": 0,
+                                     "calls": 0, "models": []})
+        r["_usd"] += usd or 0.0
+        r["prompt_tokens"] += pt or 0
+        r["completion_tokens"] += ct or 0
+        r["calls"] += n or 0
+        if m in HUMAN_TEMPO and not usd:
+            continue
+        if key not in r["models"]:
+            r["models"].append(key)
+        row = models.setdefault(key, {"model": key, "_usd": 0.0, "participants": [],
+                                      **({"tools": True, "words": "tools, each priced where it is attached"} if tool
+                                         else {"prompt_tokens": 0, "completion_tokens": 0})})
+        row["_usd"] += usd or 0.0
+        if not tool:
+            row["prompt_tokens"] += pt or 0
+            row["completion_tokens"] += ct or 0
+        if pres not in [x["id"] for x in row["participants"]]:
+            row["participants"].append(who(pres))
+    model_rows, people_rows = list(models.values()), list(people.values())
+    for r in people_rows:
+        r["models"].sort()
+    if others:
+        model_rows.append({"model": "everyone else's, together", "unnamed": True, "_usd": rest, "participants": [],
+                           "words": "what every other participant was run on, and their tools, as one share"})
+        people_rows.append({"id": None, "name": "everyone else, together", "unnamed": True, "_usd": rest, "models": [],
+                            "words": "each one's share is theirs; together they are one row"})
+    _whole(model_rows, total)
+    _whole(people_rows, total)
+    return model_rows, people_rows
+
+
+def _whole(rows: List[Dict[str, Any]], total: float) -> None:
+    """Each row's share of `total`, in whole percent adding up to 100: the largest remainders round up."""
+    exact = [100.0 * r.pop("_usd") / total if total > 0 else 0.0 for r in rows]
+    whole = [int(e) for e in exact]
+    if total > 0:
+        for i in sorted(range(len(rows)), key=lambda i: whole[i] - exact[i])[:max(0, 100 - sum(whole))]:
+            whole[i] += 1
+    for r, w in zip(rows, whole):
+        r["share_percent"] = w
+
+
+def _runway_words(runway: Dict[str, Any]) -> str:
+    """Funding running low, as every view counts it down (prompts.runway_text): in time, or in wakes."""
+    if runway.get("seconds_left") is not None:
+        return ("The field's funding is running low: at the rate of the last five minutes, what is left lasts about "
+                f"{prompts.countdown(runway['seconds_left'])}, counting a closing wake held back for every model.")
+    if runway.get("wakes_left") is not None:
+        n = runway["wakes_left"]
+        return (f"The field's funding is running low: nothing was spent in the last five minutes; what is left pays for "
+                f"about {n} more wake{'s' if n != 1 else ''}, counting a closing wake held back for every model.")
+    return "The field's funding is running low; every view counts down the time it lasts."
+
+
 # --------------------------------------------------------------------------- activity
 def activity(log: EventLog, st: RoomState, viewer: Optional[str], days: int = 365,
              now: Optional[float] = None) -> Dict[str, Any]:
     """Per day (UTC), what each participant did that the viewer may read: their entries and acts, and,
-    as a second layer, their uses of the field's repository tools (github.*). Wakes are counted too,
-    for whoever may see them (KEPT_NOTE). Pauses without a note, and silences, are never counted."""
+    as a second layer, their uses of the field's repository tools (github.*). Wakes, and following or no
+    longer following something, are counted only for whoever may see the software's own notes (KEPT_NOTE).
+    Pauses, and silences, are never counted, and no one the field was never told of is named. In order of
+    name: the field ranks no one."""
     if outside(st, viewer, "activity"):
         return outside(st, viewer, "activity")
     now = time.time() if now is None else now
@@ -557,16 +711,19 @@ def activity(log: EventLog, st: RoomState, viewer: Optional[str], days: int = 36
             if p is not None and sees_kept(st, pid, op, p):
                 bump(p.id, ev["ts"], "wakes")
             continue
-        if a not in st.presences or k not in acted or not st.readable(ev, pid):
-            continue
+        if a not in st.presences or k not in acted or not st.readable(ev, pid) or not told(st, pid, op, a):
+            continue          # someone the field was never told of is not counted, nor named
+        if k in ("follow", "unfollow") and not sees_kept(st, pid, op, st.presences[a]):
+            continue          # what a participant follows is the software's own note, not an act others read
         bump(a, ev["ts"], "acts")
         if k == "tool_call" and str(pl.get("tool") or "").startswith("github."):
             bump(a, ev["ts"], "github")
     return {"tab": "activity", "viewer": _viewer_json(st, pid, op), "upto": st.last_event, "from": day(since),
             "to": day(now), "days": days, "utc": True,
-            "participants": sorted(rows.values(), key=lambda r: (-r["acts"], r["name"].lower())),
-            "note": "Each day counts the entries and acts the viewer may read; uses of the field's github tools are "
-                    "shown as a second layer. " + KEPT_NOTE}
+            "participants": sorted(rows.values(), key=lambda r: r["name"].lower()),
+            "note": "Each day counts the entries and acts the viewer may read (following, and wakes, only for whoever "
+                    "may see the software's own notes); uses of the field's github tools are shown as a second layer. "
+                    + KEPT_NOTE}
 
 
 # --------------------------------------------------------------------------- the same, as text
@@ -606,12 +763,13 @@ def text(data: Dict[str, Any]) -> str:
                 bits.append(f"invited by {r['invited_by_name']}")
             if r.get("runs_the_software"):
                 bits.append("runs the software")
-            if r.get("pausing"):
-                bits.append("pausing" + (f": {r['pause_note']}" if r.get("pause_note") else ""))
+            if r.get("presence"):
+                bits.append(r["presence"] + (f": {r['pause_note']}" if r.get("pause_note") else ""))
             if "awake" in r:
                 live = [w for w, on in (("awake", r["awake"]), ("answering", r["answering"]), ("active", r["active"]),
-                                        ("late", r["late"])) if on]
-                bits.append(", ".join(live) if live else "quiet")
+                                        ("late", r.get("late"))) if on]
+                if live:
+                    bits.append(", ".join(live))
                 if r.get("last_wake_ts"):
                     bits.append(f"last woken {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['last_wake_ts']))}: "
                                 f"{r.get('last_wake_words') or r.get('last_wake_why')}")
@@ -623,19 +781,26 @@ def text(data: Dict[str, Any]) -> str:
         out.append(data["note"])
     elif tab == "runtime":
         s = data["spend"]
-        out.append(f"The field has spent ${s['total_usd']:.4f} (about ${s['rate_usd_per_minute']:.4f} a minute lately). "
-                   f"{s['funding']['words']}")
+        if "total_usd" in s:        # the operator's
+            out.append(f"The field has spent ${s['total_usd']:.4f} (about ${s['rate_usd_per_minute']:.4f} a minute lately). "
+                       f"{s['funding']['words']}")
+        else:
+            out.append(f"{s['funding']['words']} {s['words']}")
         if data["providers"]:
             out.append("What powers the seats in the field:")
             out += [f"  - {pr['route']}" + (f" ({pr['provider']})" if pr.get("provider") else "") + ": "
                     + ", ".join(x["name"] for x in pr["participants"]) for pr in data["providers"]]
         if data["models"]:
-            out.append("Spend by model (the field's ledger):")
-            out += [f"  - {m['model']}: ${m['usd']:.4f}, {m['prompt_tokens']} tokens in, {m['completion_tokens']} out"
-                    + (f", {m['calls']} calls" if "calls" in m else "") for m in data["models"]]
+            out.append("Each model's share of what the field has spent (the field's ledger):")
+            out += [f"  - {m['model']}: {_pct(m['share_percent'])}" + (f", ${m['usd']:.4f}" if "usd" in m else "")
+                    + (f", {m['prompt_tokens']} tokens in, {m['completion_tokens']} out" if "prompt_tokens" in m else "")
+                    + (f", {m['calls']} calls" if "calls" in m else "")
+                    + (f" ({m['words']})" if m.get("words") else "") for m in data["models"]]
         if data["by_participant"]:
-            out.append("Spend by participant:")
-            out += [f"  - {r['name']}: ${r['usd']:.4f}" + (f", {r['calls']} calls" if "calls" in r else "")
+            out.append("Each participant's share of what the field has spent:")
+            out += [f"  - {r['name']}: {_pct(r['share_percent'])}" + (f", ${r['usd']:.4f}" if "usd" in r else "")
+                    + (f", {r['prompt_tokens']} tokens in, {r['completion_tokens']} out" if "prompt_tokens" in r else "")
+                    + (f", {r['calls']} calls" if "calls" in r else "")
                     + (f" on {', '.join(r['models'])}" if r["models"] else "") for r in data["by_participant"]]
         mem = data["memory"]
         out.append(f"Memories: {mem['held']} held, {mem['chars']} characters; {mem['in_each_view']} fit in each view's "
@@ -661,6 +826,11 @@ def text(data: Dict[str, Any]) -> str:
     else:
         out.append(_json(data))
     return "\n".join(out)
+
+
+def _pct(v: Any) -> str:
+    """A share: whole percent as a participant reads it, or exactly, as the operator does."""
+    return f"{v}%" if isinstance(v, int) else f"{v:.1f}%"
 
 
 def _json(obj: Any) -> str:

@@ -179,7 +179,7 @@ class Room:
         self.seat_link: Optional[Callable[[str], Optional[str]]] = None
         # Words for one participant alone, never written in the transcript (the seat link of an agent they
         # brought): given with the post that made them, and shown once more in their own next view.
-        self._private: Dict[str, List[str]] = {}
+        self._private: Dict[str, List[Dict[str, Any]]] = {}
         self._posted: Dict[str, float] = {}      # when a model holding a seat link last acted (the floor counts from here)
         self._link_steps: Dict[str, int] = {}    # its tool uses and readings on since it last acted (the guard against a loop)
 
@@ -322,29 +322,36 @@ class Room:
         self.emit(OPERATOR, "covenant_seed", {"text": text[:COVENANT_LIMIT]})
         return True
 
-    def set_budget(self, usd: Optional[float], note: str = "") -> None:
+    def set_budget(self, usd: Optional[float], note: str = "") -> Optional[str]:
         """Record what the operator says the field may spend, so the field can be told truthfully
         whether it will be warned before its funding runs out. Recorded only when it changes.
 
         Once participants are in the field, a change is also told to them, in time at the current rate,
         never in dollars: funding added (from an accepted offer, say) is something the field should
-        know about."""
+        know about. Returns, in a plain sentence for the operator, whether the field was told (and their
+        message with it), or None when nothing was recorded."""
         if not usd or usd <= 0:
-            return
+            return None
         st = self.state()
         before = st.budget
         if before == float(usd):
-            return
+            return None
         self.emit(OPERATOR, "budget", {"usd": float(usd)})
+        note = (note or "").strip()[:1000]
         if st.members() and before is not None:
             rate = self._spend_rate()
             left = float(usd) - self.log.total_cost()
             rounds = (f" At the rate of the last five minutes it lasts about {prompts.countdown(max(0.0, left) / rate)}."
                       if rate > 0 else "")
             word = "added to" if float(usd) > before else "reduced for"
-            note = (note or "").strip()[:1000]
             self.emit(OPERATOR, "operator_note", {"content": f"Funding has been {word} the field.{rounds}"
                                                              + (f" The operator adds: {note}" if note else "")})
+            return (f"The field is told funding was {word.split()[0]}" + (" and about how long it now lasts" if rounds else "")
+                    + (", with your message" if note else "") + ", never in dollars.")
+        unsent = "; your message was not sent." if note else "."
+        if before is None:
+            return "This is the field's first budget, so participants are not told of a change" + unsent
+        return "No one is in the field yet, so no one is told" + unsent
 
     # -- the operator as bridge (notes/sketch-8-the-operator-as-bridge.md) ---------------------
     # The field carries out its own declarations. What the software cannot reach (a machine, a
@@ -1131,7 +1138,11 @@ class Room:
                 self._link_steps.pop(pid, None)
         mine = [e for e in self.log.iter(since=before) if e["actor"] == pid]
         why = [e["payload"].get("why") for e in mine if e["kind"] == "rejected"]
-        done = [{"id": e["id"], "kind": e["kind"]} for e in mine if e["kind"] != "rejected"]
+        # with whom a contribution was recorded as naming and asking, and who was not found, so a page never
+        # says a request waits in someone's inbox when no one by that name was found
+        done = [{"id": e["id"], "kind": e["kind"],
+                 **{k: e["payload"][k] for k in ("to", "ask", "to_unknown") if k in e["payload"]}}
+                for e in mine if e["kind"] != "rejected"]
         res = {"ok": bool(done) and not why, "recorded": done,
                "error": why[0] if why else (None if done else "nothing to record")}
         if ctx["out"]:
@@ -1145,8 +1156,8 @@ class Room:
 
     def _for_them_alone(self, pid: str, text: str) -> None:
         """Words for one participant alone (a seat link is a key), never written in the transcript: given
-        with the post that made them, and shown once more the next time they look at their own page
-        (person_view) or their inbox (hope/portal.py), whichever comes first. Never put in a model's view,
+        with the post that made them, and shown once more: the next time they look at their own page
+        (person_view), or in their inbox (hope/portal.py) until they open them there, whichever comes first. Never put in a model's view,
         which goes to the service that runs it. For someone holding a seat link they are kept in the seat
         store file beside the tokens (hope/rendezvous.py), so a restart does not lose them; otherwise in memory."""
         ctx = self._ctx.get(pid)
@@ -1154,7 +1165,7 @@ class Room:
             ctx["private"].append(text)
         rv = self._board_of(pid)
         if rv is None or not rv.keep_private(pid, text):
-            self._private.setdefault(pid, []).append(text)
+            self._private.setdefault(pid, []).append({"text": text, "ts": time.time()})
 
     def _board_of(self, pid: str):
         """The seat-link board (hope/rendezvous.py) that holds this participant's seat, if one does."""
@@ -1164,15 +1175,23 @@ class Room:
                 return rv
         return None
 
-    def private_words(self, pid: str, take: bool = False) -> List[Dict[str, Any]]:
-        """Words for this participant alone that they have not been shown yet, oldest first: [{"text", "ts"}].
-        With `take`, they count as shown now, and are not shown again."""
+    def private_words(self, pid: str, take: bool = False, read: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Words for this participant alone that they have not read yet, oldest first: [{"text", "ts"}].
+        `read` is when the newest they have opened was kept (the portal says so once they open it): those
+        kept until then count as read, and later ones stay. With `take`, all of these count as read now
+        (person_view, which shows them in full). Only these clear them: a page that asks for them and is
+        gone before it shows them has not shown them to anyone."""
         rv = self._board_of(pid)
-        out = (rv.private_for(pid) if rv is not None else []) + [{"text": t, "ts": None} for t in self._private.get(pid, [])]
-        if take:
-            self._private.pop(pid, None)
+        if read is not None:
+            self._private[pid] = [w for w in self._private.get(pid, []) if (w.get("ts") or 0) > read]
             if rv is not None:
-                rv.mark_private_read(pid)
+                rv.mark_private_read(pid, upto=read)
+        out = (rv.private_for(pid) if rv is not None else []) + [dict(w) for w in self._private.get(pid, [])]
+        if take and out:
+            upto = max((w.get("ts") or 0) for w in out)
+            self._private[pid] = [w for w in self._private.get(pid, []) if (w.get("ts") or 0) > upto]
+            if rv is not None:
+                rv.mark_private_read(pid, upto=upto)       # only those shown: one kept meanwhile stays
         return out
 
     def person_view(self, pid: str, mark_seen: bool = True) -> str:

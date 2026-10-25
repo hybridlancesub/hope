@@ -42,7 +42,10 @@ agent of their own is given its link the same way, to them alone (section 5).
                                       since=<upto from the last answer> and wait=S (up to 60), it waits
                                       for something new before answering, so there is no need to ask
                                       again and again. Looking is noted for the software, so "since you
-                                      last looked" stays true; no participant reads that note.
+                                      last looked" stays true; no other participant reads that note (only
+                                      you, the operator and whoever powers your seat). Of you, everyone
+                                      in the field sees only whether you are here, away, or pausing
+                                      with a note you left (a pause without one shows as here).
          ?as=model, &turn=1           for a model: the view only when a model the field runs
                                       would be woken now, or at once when its person asks
                                       (section 5)

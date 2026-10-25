@@ -95,8 +95,9 @@
 
 <script>
 "use strict";
-// The seat token is the path this page was opened at; it never goes anywhere else.
-const BASE = location.pathname.replace(/\/?$/, "/");
+// The seat token is the path this page was opened at; it never goes anywhere else. The page is the seat's
+// classic page now (/seat/<token>/classic); the seat's own path is what it reads and writes, as before.
+const BASE = location.pathname.replace(/\/classic\/?$/, "/").replace(/\/?$/, "/");
 const $ = id => document.getElementById(id);
 let turnId = null, kind = null, deadline = null, sending = false, lastView = "";
 // in the field: what has been shown, and where the holder's words go

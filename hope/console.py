@@ -3,16 +3,20 @@
 
     python3 -m hope console --db R.db --invitation FILE --briefing FILE
 
-It runs the engine in this process and serves two different surfaces from it:
+It runs the engine in this process and serves two different surfaces from it, through one page,
+the portal (hope/static/portal.html), which shows each reader only what they may read:
 
-  the OPERATOR's window  /?k=<operator key>     one page with three views: the Console (what you
-                                                are paying, who is at which gate, the raw stream,
-                                                the covenant page, what waits on you), the Loom
-                                                (what is happening now, with the tellings) and
-                                                the Firmament (the whole field as a sky)
-  a SEAT                 /seat/<seat token>/    one participant's own gate questions, then the field as
-                                                 they may read it, and posting; /mcp is the same seat
-                                                 as an MCP server (hope/mcp.py; AGENTS says how)
+  the OPERATOR's window  /?k=<operator key>     the portal as the operator reads it: their Inbox (what
+                                                waits on them), Agents, Runtime with an Operator section
+                                                (phases, budget, stop, seats, gates, private circles,
+                                                tools, the record), and the Firmament (the whole field
+                                                as a sky). /console is the classic console, with the
+                                                covenant page and the Loom, kept while the portal grows
+  a SEAT                 /seat/<seat token>/    the portal as one participant reads it: their own gate
+                                                 questions in their Inbox, then the field as they may read
+                                                 it, and posting; /seat/<token>/classic is the classic seat
+                                                 page. /mcp is the same seat as an MCP server (hope/mcp.py;
+                                                 AGENTS says how)
   the portal's data      /seat/<seat token>/portal/<tab>.json and /op/portal/<tab>.json (the operator key):
                                                  inbox, agents, runtime and activity (hope/portal.py), each as
                                                  its reader may read it, with ?wait= as field.json has. They
@@ -29,11 +33,13 @@ address.
 
 They are not the same surface and must never become so. A seat token shows that seat's own
 parked question, and, once its holder is in the field, what any participant may read (the
-portal adds the roster and what the field spends, which every participant may know) -- never
-another's private words, nor the notes the software keeps for itself about anyone else. The field
-has no "watching from outside" state, and a link that let someone watch would be one. The
-operator key is the only thing that opens the record, and it is required even on localhost so
-that putting this behind a public address changes nothing about who can read.
+portal adds the roster, with whether each one is here, pausing or away, and their own share of what
+the field spends, as time and whole percent) -- never another's private words, nor the notes the
+software keeps for itself about anyone else (whether they are awake, answering or active, when and
+why they were woken, what they follow, when they looked, how much their calls took). The field has
+no "watching from outside" state, and a link that let someone watch would be one. The operator
+key is the only thing that opens the record, and it is required even on localhost so that putting
+this behind a public address changes nothing about who can read.
 
 What the operator can do here is deliberately smaller than what a terminal can do:
 
@@ -82,6 +88,11 @@ VIEWER_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 # files in firmament/ that hold participants' words, which only the operator key opens
 VIEWER_DATA = ("state.json", "story.json")
 MAX_BODY = 1 << 20
+# The portal page's own scripts and styles are written inside it; it reads and writes only this server, and
+# shows the Firmament from here in a frame. Nothing from another site may run in it.
+PORTAL_POLICY = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                 "img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; "
+                 "base-uri 'none'; form-action 'self'")
 
 # A browser that arrives without a key gets a page, not a JSON error. Dropping the ?k= part of
 # a pasted link is the ordinary way to arrive here, and {"error": ...} tells a reader nothing
@@ -283,7 +294,10 @@ class Console:
             token = self.rv.rotate_token(sid)
             if token is None:
                 return {"ok": False, "error": f"unknown seat {sid!r}"}
-            self._say(f"replaced the link for {sid}; the old one no longer works")
+            # the operator's own note of why, if they wrote one: kept in their activity list, never sent to the field
+            from . import prompts
+            why = prompts.one_line(payload.get("note") or "")[:300]
+            self._say(f"replaced the link for {sid}; the old one no longer works" + (f" (why: {why})" if why else ""))
             by = self._brought_by(sid)
             if by:
                 # an agent a participant brought: its new link goes to them alone, as its first did
@@ -337,10 +351,12 @@ class Console:
                 return {"ok": False, "error": "a budget is a number of US dollars"}
             if usd <= 0:
                 return {"ok": False, "error": "a budget must be more than zero"}
-            self.room.set_budget(usd, payload.get("note") or "")
+            told = self.room.set_budget(usd, payload.get("note") or "")
             self.budget = usd
             self._say(f"budget set to ${usd:.2f}")
-            return {"ok": True, "budget": usd}
+            # what the field was told, in the engine's own words, so the operator's page never says more
+            return {"ok": True, "budget": usd,
+                    "note": told or f"The budget was already ${usd:.2f}: nothing changed, and no one is told."}
 
         if action == "reopen":
             out = self.room.reopen(payload.get("note") or "")
@@ -516,13 +532,17 @@ class Console:
 
     # -- the portal: one view for everyone, each reading only what they may --------
     def portal(self, tab: str, token: Optional[str] = None, since: int = 0, wait: float = 0.0,
-               turn: str = "", days: int = 365) -> Dict[str, Any]:
+               turn: str = "", days: int = 365, read: Optional[float] = None,
+               have: Optional[float] = None) -> Dict[str, Any]:
         """One tab of the portal (hope/portal.py): for a seat's holder, by its token, or for the operator
         (no token), who reads as their own seat does plus what waits on them as operator. With `wait` (up to
         60 seconds) it first waits for something new after entry `since` (or, for a seat, a gate question
         other than `turn`, or words for them alone), as field.json does, so a page need not ask again and
         again. It only reads: answering goes through /post, /action and /op/*, as before. Words for a seat's
-        holder alone are shown in its inbox once, and then count as read."""
+        holder alone stay in its inbox until they open them on any page of the seat: the page then says so
+        with `read` (when the newest one it opened was kept), and only then do they count as read. A page that
+        asked and was gone before showing them took nothing. `have` is the newest the page already holds, so
+        words it has are not news to it."""
         import time as _time
         from . import portal
         if tab not in portal.TABS:
@@ -531,6 +551,8 @@ class Console:
         if token is not None and seat is None:
             return {"error": "this link is not a seat"}
         viewer = seat.id if seat else portal.OPERATOR
+        if seat is not None and tab == "inbox" and read is not None:
+            self.room.private_words(seat.id, read=read)
 
         def news() -> bool:
             if self.room.log.last_id() > since:
@@ -538,7 +560,8 @@ class Console:
             if seat is None or tab != "inbox":
                 return False
             g = self.rv.pending(seat.id)
-            return bool((g and g["turn_id"] != turn) or self.room.private_words(seat.id))
+            return bool((g and g["turn_id"] != turn)
+                        or any((w.get("ts") or 0) > (have or 0) for w in self.room.private_words(seat.id)))
 
         deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
         while _time.time() < deadline and not news():
@@ -548,13 +571,14 @@ class Console:
             if seat is None:
                 return portal.inbox(st, log, viewer)
             return portal.inbox(st, log, viewer, gate=self.rv.pending(seat.id),
-                                private=self.room.private_words(seat.id, take=True))
+                                private=self.room.private_words(seat.id))
         if tab == "agents":
             return portal.agents(st, log, viewer, polled=self.rv.polled() if self.rv is not None else None,
                                  window=self.room.window)
         if tab == "runtime":
             return portal.runtime(st, log, viewer, linger=self.room.linger, linger_budget=self.room.linger_budget,
-                                  operator=None if seat else {"phase": self.phase, "busy": self.busy()})
+                                  operator=None if seat else {"phase": self.phase, "busy": self.busy()},
+                                  runway=self.room.runway_now(st))
         return portal.activity(log, st, viewer, days=days)
 
     # -- what the operator's page reads -----------------------------------------
@@ -606,6 +630,9 @@ def make_console_handler(console: Console):
             self._send(code, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
         def _static(self, name: str, headers: Optional[dict] = None):
+            if name == "portal.html":
+                # the portal loads no code from other sites, and the browser is told to refuse any
+                headers = {**(headers or {}), "Content-Security-Policy": PORTAL_POLICY}
             path = os.path.join(STATIC, name)
             if not os.path.isfile(path):
                 return self._json({"error": f"{name} is missing"}, 404)
@@ -670,7 +697,9 @@ def make_console_handler(console: Console):
 
         def _portal(self, tab: str, token: Optional[str]):
             """GET one portal tab: ?since=<entry>&wait=<seconds> waits for something new, as field.json does;
-            ?turn=<a gate question's id> says which one the page already shows; ?days=N for activity."""
+            ?turn=<a gate question's id> says which one the page already shows; ?days=N for activity; for the
+            inbox, ?read=<ts> says its holder opened the words for them alone kept until then, and ?have=<ts>
+            the newest the page already holds."""
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
             one = lambda k, d="": (q.get(k) or [d])[0].strip()
@@ -678,8 +707,13 @@ def make_console_handler(console: Console):
                 wait = float(one("wait", "0"))
             except ValueError:
                 wait = 0.0
+            def when(k: str) -> Optional[float]:
+                try:
+                    return float(one(k)) if one(k) else None
+                except ValueError:
+                    return None
             out = console.portal(tab, token, since=_int(one("since", "0")) or 0, wait=wait, turn=one("turn"),
-                                 days=_int(one("days", "365")) or 365)
+                                 days=_int(one("days", "365")) or 365, read=when("read"), have=when("have"))
             return self._json(out, 403 if out.get("state") == "not_in_field" else 404 if out.get("error") else 200)
 
         def _mcp(self, token: str):
@@ -712,8 +746,11 @@ def make_console_handler(console: Console):
                 if rv is None or rv.seat_for_token(token) is None:
                     return self._refuse(404, "this link is not a seat", _NOT_A_SEAT)
                 tail = route.split(token, 1)[1]
-                rv.saw(token)                       # its holder looked: for "active" in the portal's agents
+                rv.saw(token)                       # the link was used, by a person, a page or a program: never "active"
                 if tail in ("", "/"):
+                    return self._static("portal.html")
+                if tail == "/classic":
+                    # the classic seat page, kept while the portal grows (Circles, Threads and Skills come next)
                     return self._static("seat.html")
                 if tail.startswith("/portal/") and tail.endswith(".json"):
                     # the portal (hope/portal.py), as this seat's participant may read it
@@ -777,11 +814,13 @@ def make_console_handler(console: Console):
                     return self._json({"error": "no story has been written"}, 404)
                 with open(story, "rb") as f:
                     return self._send(200, f.read(), "application/json; charset=utf-8")
-            if route in ("/", "/index.html"):
+            if route in ("/", "/index.html", "/console"):
+                # the key travels once in the link, then as a cookie only this server reads; the portal takes it out
+                # of the address bar. /console is the classic console, kept while the portal grows
                 given = self._query_key()
                 cookie = ({"Set-Cookie": f"{COOKIE}={given}; HttpOnly; SameSite=Strict; Path=/"}
                           if given and console.authorized(given) else None)
-                return self._static("console.html", cookie)
+                return self._static("console.html" if route == "/console" else "portal.html", cookie)
             if route == "/op/state.json":
                 return self._json(console.op_state())
             if route.startswith("/op/portal/") and route.endswith(".json"):

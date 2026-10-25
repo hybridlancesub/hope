@@ -386,6 +386,7 @@ class RoomState:
     round_at: int = 0                        # the event that began it
     clocks: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {c: {} for c in CLOCKS})  # members' settings only
     budget: Optional[float] = None           # USD the operator has said this field may spend, if they said
+    budget_at: Optional[int] = None          # the event that set it: a spend alert before it has been answered
     runway: Optional[Dict[str, Any]] = None  # the latest runway notice, if the budget is running low
     declarations: Dict[int, Dict[str, Any]] = field(default_factory=dict)  # by event id: what, when, answers, status
     bridges: Dict[int, Dict[str, Any]] = field(default_factory=dict)       # what the field asked the operator's help with
@@ -1319,6 +1320,7 @@ class RoomState:
             self.round_at = eid
         elif k == "budget":
             self.budget = float(p["usd"]) if p.get("usd") else None
+            self.budget_at = eid
             self.runway = None               # a new budget starts the runway over
         elif k == "runway":
             self.runway = {"id": eid, **p}

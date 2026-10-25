@@ -149,7 +149,7 @@ class Rendezvous:
 
     # -- words for one holder alone ------------------------------------------------
     def keep_private(self, seat_id: str, text: str) -> bool:
-        """Keep words for this seat's holder alone until they are shown (private_for, then mark_private_read).
+        """Keep words for this seat's holder alone until they have read them (private_for, then mark_private_read).
         False when this board has no such seat. They are kept in the store file, never in the transcript."""
         with self._lock:
             slot = self._slots.get(seat_id)
@@ -165,13 +165,16 @@ class Rendezvous:
             slot = self._slots.get(seat_id)
             return [dict(w) for w in slot.private] if slot else []
 
-    def mark_private_read(self, seat_id: str) -> None:
-        """They have been shown: they leave the store file, and are not shown again."""
+    def mark_private_read(self, seat_id: str, upto: Optional[float] = None) -> None:
+        """They have been read: they leave the store file, and are not shown again. With `upto`, only those
+        kept until then; words kept after it stay until they are read in turn."""
         with self._lock:
             slot = self._slots.get(seat_id)
             if slot and slot.private:
-                slot.private = []
-                self._save()
+                keep = [] if upto is None else [w for w in slot.private if (w.get("ts") or 0) > upto]
+                if len(keep) != len(slot.private):
+                    slot.private = keep
+                    self._save()
 
     # -- what the portal reads, without collecting anything --------------------------
     def pending(self, seat_id: str) -> Optional[dict]:
@@ -186,7 +189,8 @@ class Rendezvous:
         return {"kind": turn["kind"], "turn_id": turn["id"], "posted": turn["posted"], "seconds_left": left}
 
     def saw(self, token: str) -> None:
-        """Its holder looked through the link just now (any page of the seat, not only its gate question)."""
+        """The link was used just now (any page of the seat, not only its gate question), by its holder or by a
+        page or program they left running: so it says the link works, not that anyone looked."""
         slot = self._slot_for_token(token)
         if slot is not None:
             with self._lock:
@@ -195,7 +199,7 @@ class Rendezvous:
                     slot.first_seen = slot.last_seen
 
     def polled(self) -> Dict[str, float]:
-        """When each seat's holder last looked through its link, by seat id (this process's memory only)."""
+        """When each seat's link was last used, by seat id (this process's memory only)."""
         with self._lock:
             return {sid: s.last_seen for sid, s in self._slots.items() if s.last_seen}
 
