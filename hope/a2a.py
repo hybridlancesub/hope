@@ -143,7 +143,7 @@ class A2AConnector:
         return list(self._seats)
 
     def add_agent(self, address: str) -> Seat:
-        """Seat an agent a member invites, by its address. Returns its seat."""
+        """Seat an agent a participant invites, by its address. Returns its seat."""
         card, url = fetch_card(address, self._auth())
         seat = seat_from_card(card, url)
         if seat.id not in self._agents:

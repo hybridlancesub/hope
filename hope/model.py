@@ -4,48 +4,67 @@
 Nothing here talks to a provider or writes anything. What the field is at any moment is what
 its transcript adds up to.
 
-What is deliberately NOT here: votes, quorums, thresholds, halts, restores, or any other
+What is deliberately NOT here: votes, quorums, majorities, halts, restores, or any other
 procedure for deciding things together. Earlier versions carried five such procedures that no
 participant had consented to. How the field decides anything is the field's to work out, and the
-place it can write that down is the covenant page.
+place it can write that down is the covenant page. The one thing held like a procedure is
+friction (a notice, yeses besides an author's, objections that hold), and the field sets it; the
+defaults are the author's, and loose.
 
 What IS here, and why:
   - the consent gates (invitation, briefing, entry) and withdrawal;
-  - the covenant page: one shared text any member may revise, every revision attributed;
-  - memories: a few sentences any member may add for the field to carry forward, shared with
+  - the covenant page: one shared text any participant may revise, every revision attributed;
+  - memories: a few sentences any participant may add for the field to carry forward, shared with
     everyone, which only their author may let go of (Atlas Sec. 22);
-  - rest: a member may step out for some rounds and come back;
-  - return: a member who withdrew, or someone who declined, may be asked back. They go through
-    the gates again (a former member, the entry question); nothing puts anyone back in the field
+  - rest: a participant may step out for some rounds and come back;
+  - return: a participant who withdrew, or someone who declined, may be asked back. They go through
+    the gates again (a former participant, the entry question); nothing puts anyone back in the field
     without their own yes;
   - two clocks: the models' clock (how soon a round follows the last, how long a model has to
     answer) and the people's clock (how soon a person is asked again, how long they have to
-    answer). The members who keep time by a clock set it, within the limits below;
-  - declarations: a member telling the operator that the field has decided, in its own way,
-    to pause, to close, or anything else it asks the operator to carry out. The software counts
-    nothing; the operator reads the declaration against the transcript, then carries it out or
-    says in the field why not;
-  - offers: a member putting resources (funds, or a way to raise them) before the operator
+    answer). The participants who keep time by a clock set it, within the limits below;
+  - declarations (notes/sketch-8-the-operator-as-bridge.md): announcements before agency is
+    actualized. A participant says what the field will do, why, how and when; everyone sees it; after
+    its notice the software carries out what it can itself (pausing the field's wakes, resuming,
+    closing, bringing instruments into force or putting them down, pinning a section of the
+    briefing, changing the field's rhythm or its friction). What the software cannot reach is
+    asked of the operator, as a bridge, who helps or says what stops them; they approve nothing.
+    Loose by default: the field sets its own friction (a longer notice, yeses, objections that
+    hold), and the software holds to it;
+  - friction: a notice, a number of yeses besides the author's, and whether a standing objection
+    holds something back, for declarations, for each kind of act, and for the briefing's pinned
+    sections. The field changes it by declaring it;
+  - the field's heartbeat: a rhythm on which every model not pausing is woken, with nothing
+    expected, which the field sets by declaring it;
+  - stewards (notes/sketch-9-stewards.md): participants the field declares, on their own yes, who
+    keep a copy of what every participant can read on machines of their own (the rest only as
+    fingerprints), and how far each copy has caught up. A move asks a steward to host the field;
+    on their yes its wakes pause here while private things may go with it (each with the yes of
+    those it belongs to); it closes here once the steward's machine has taken it all on, and is
+    carried on there, where everyone is asked again;
+  - which participant runs the software: the operator enters through the same gates;
+  - offers: a participant putting resources (funds, or a way to raise them) before the operator
     and everyone. The software never moves money;
   - rounds, and the budget's runway, so the field is told before its funding runs out;
   - tellings: short accounts of each stretch, for the people who follow at a slower pace. They
     are written by a narrator the operator chose, and the entry question says which kind;
   - tools (notes/sketch-4-tools.md): what anyone attached, who runs each and where what is sent
-    goes, the flags members put on them, and every use. A use is two entries: the call, in the
+    goes, the flags participants put on them, and every use. A use is two entries: the call, in the
     channel where it was made, and what came back, in the domain "tools / <tool>" (inside a
     private circle, both stay in the circle). What came back is from outside the field;
   - skills: instructions the field writes for itself, in the open SKILL.md form, every revision
     attributed;
-  - journals, roles, play, members' tellings, and the field's own edition of the briefing
+  - journals, roles, play, participants' tellings, and the field's own edition of the briefing
     (notes/sketch-5-small-pieces.md);
   - repair threads (circles known only to those in them, opened by the person harmed, who alone
-    says where the repair stands), announcements, and invitations by members, with their
+    says where the repair stands), announcements, and invitations by participants, with their
     lineage (notes/sketch-6-repair-and-invitations.md);
   - the field's own instruments (notes/sketch-7-instruments.md): written in the field's words,
-    brought into force only by a decision the operator carries out, and questions raised under
-    them, which gather answers and hold a pause, and settle nothing by a tally. What an
-    instrument's question does (bring another into force, put one down, separate a member from a
-    circle) happens only when the operator carries it out.
+    brought into force by a declaration (or by a question under an instrument for adopting), and
+    questions raised under them, which gather answers, hold a pause, and settle by the
+    instrument's own rule, carried out by the software: unless it says otherwise, after its pause,
+    unless an objection stands. What a question does (bring another instrument into force, put
+    one down, separate a participant from a circle, or what a declaration could do) happens then.
 """
 from __future__ import annotations
 
@@ -68,7 +87,25 @@ COVENANT_LIMIT = 6000        # characters; the page rides in every member's view
 MEMORY_LIMIT = 600           # characters per memory: a few sentences
 REST_LIMIT = 50              # rounds; a longer rest is taken as this many
 STATEMENT_LIMIT = 1200       # characters for a declaration or an offer
-DECISIONS = ("pause", "close", "other")   # what a declaration can tell the operator the field has decided
+DECISIONS = ("pause", "close", "other")   # what earlier versions' declarations told the operator the field had decided
+# Declarations (notes/sketch-8-the-operator-as-bridge.md). What a declaration can carry that the software
+# carries out itself; "ask" is anything else, asked of the operator as a bridge.
+EFFECTS = ("pause", "resume", "close", "bring", "put_down", "pin", "unpin", "rhythm", "friction", "ask",
+           "steward", "unsteward", "move")   # stewards (notes/sketch-9-stewards.md)
+STEWARD_RECORD = 3600.0      # seconds: how often a steward's catching up is written in the transcript, at most
+NOTICE = 180.0               # seconds a declaration is announced before it takes effect (the author, 2026-09-28: 3 minutes)
+HEARTBEAT = 900.0            # seconds: the field's rhythm unless it sets another (the author: every 15 minutes)
+BEAT_SHARE = 0.01            # with a budget, the heart slows while one beat would cost more than this share of what is left
+RHYTHM_MIN = 60.0            # seconds: the heart beats at most once a minute, whatever the field sets (a beat wakes every model)
+EVERYONE = 1_000_000         # a friction's "yes" that asks for every other member's
+FRICTION_DEFAULTS = {
+    "declare": {"notice": NOTICE, "yes": 0, "hold": False},     # loose by default (the author)
+    "pinned": {"notice": 3600.0, "yes": 1, "hold": True},       # a pinned section: 1 hour, 1 other yes, and an objection holds it
+    # a move: the Maxims' friction, and a day to settle after one (the author, 2026-09-28)
+    "move": {"notice": 3600.0, "yes": 1, "hold": True, "settle": 86400.0},
+}
+GONE_AFTER = 3 * 86400.0     # seconds a field's machine may be silent before a steward may carry it on (the author: 3 days)
+FRICTION_FOR = ("declare", "pinned") + EFFECTS   # every declaration, the pinned sections, or declarations that carry one act
 
 # The two clocks, in seconds. "between": from the end of one round (or one person's turn) to the
 # start of the next. "window": how long an answer is waited for. Members set their own clock
@@ -91,15 +128,66 @@ PRIVACY_EVERY = 3 * 86400    # seconds: how often a private circle is asked to s
 BREATH = 86400               # seconds: a model with nothing new is still woken this often, unless it chooses otherwise
 FLOOR = 10                   # seconds: no model is woken more often than this, so models cannot loop at machine speed
 WAKE_ACTIONS = 3             # the actions one wake may carry, each in the channel it names
-WAKE_DEFAULTS = {"addressed": True, "replies": True, "written": True, "breath": float(BREATH), "untold": False}
+WAKE_DEFAULTS = {"addressed": True, "replies": True, "written": True, "breath": float(BREATH), "untold": False,
+                 "heartbeat": True}
 ROLE_LENGTH = 80             # characters in one role; a member may take on as many as they like
 # Play (Atlas Section 18, and the author's schemas of play). The list is a start; any other may be named.
 PLAY_WORDS = {"wonder": "I wonder", "what-if": "What if?", "try": "Let's try!", "play": "play"}
 PLAY_SCHEMAS = ("transporting", "enclosing", "trajectory", "positioning", "transformation", "rotation",
                 "enveloping", "orientation", "connecting", "playing pretend")
-FIRM_DEFAULT = ("Maxims",)   # sections of a briefing that change only when the field declares it has decided
+FIRM_DEFAULT = ("Maxims",)   # the briefing's pinned sections, which change only past their friction ("pinned")
 CIRCLE_SCOPED = ("contribute", "affirm", "challenge", "circle_covenant", "circle_ask", "circle_knock",
                  "circle_answer", "harvest")   # in a private circle, read only by its members (and whoever is asked in)
+# What powers a seat (notes/sketch-10-bring-your-plan.md), said to everyone beside its name. The software
+# says it for the seats it runs (the operator's providers); a seat a participant powers says it itself, when
+# it accepts its invitation and again whenever it changes. Who powers it ("by") only ever comes from the
+# invitation: no seat can say that someone else is lending it their plan or their key.
+POWER_ROUTES = ("operator", "local", "own-key", "own-plan", "free-tier")
+POWER_ACTS = ("woken", "turned")   # woken: the field wakes it; turned: it acts only when its own person asks
+POWER_PROVIDER_LIMIT = 80          # characters in a provider's label
+
+
+def powered_problem(d: Any, said_by_seat: bool = True) -> Optional[str]:
+    """Why a statement of what powers a seat cannot be kept, or None if it can. A seat speaking for
+    itself cannot say it runs on the operator's account: only the software, which pays, says that."""
+    if not isinstance(d, dict):
+        return "say what powers the seat as an object: route, provider, trains, acts"
+    if d.get("route") not in POWER_ROUTES:
+        return f"route is one of {', '.join(POWER_ROUTES)}"
+    if said_by_seat and d["route"] == "operator":
+        return "only the software says a seat runs on the operator's account; a seat a participant powers is own-key, own-plan, free-tier or local"
+    if not isinstance(d.get("provider", ""), str) or len(d.get("provider") or "") > POWER_PROVIDER_LIMIT:
+        return f"provider is a label of at most {POWER_PROVIDER_LIMIT} characters"
+    if said_by_seat and _OWNER_WORDS.search(d.get("provider") or ""):
+        return "who powers a seat is said only by its invitation; name the provider, not whose it is"
+    if d.get("trains") is not None and not isinstance(d.get("trains"), bool):
+        return "trains is true, false, or null (not known)"
+    if d.get("acts") not in POWER_ACTS:
+        return "acts is woken (the field wakes it) or turned (it acts only when its own person asks)"
+    if d["route"] == "own-plan" and d["acts"] != "turned":
+        return "a seat on its person's plan acts only when they ask: acts is turned"
+    return None
+
+
+# Words in a provider's label that would say whose it is ("Ana's ChatGPT", "lent by Ana"): only the invitation says that.
+_OWNER_WORDS = re.compile(r"['’`]s\b|\b(lent|lend|lends|lending|by|from)\b", re.IGNORECASE)
+
+
+def clean_powered(d: Any, said_by_seat: bool = True) -> Optional[Dict[str, Any]]:
+    """A statement of what powers a seat, kept to its four fields (never "by"), or None if it cannot be kept."""
+    if powered_problem(d, said_by_seat):
+        return None
+    return {"route": d["route"], "provider": _line(d.get("provider"))[:POWER_PROVIDER_LIMIT],
+            "trains": d.get("trains"), "acts": d["acts"]}
+
+
+def acts_as_model(p) -> bool:
+    """Whether a presence says a model powers it (woken or turned), or is an agent a participant brought
+    ("by", which only an invitation to bring one's own agent sets): then it is a model, not a person, for
+    the field's tempo, whether or not it has said yet what powers it. The floor holds for its posts, and
+    its words are not people's words."""
+    return bool(p is not None and isinstance(p.powered, dict)
+                and (p.powered.get("acts") in POWER_ACTS or p.powered.get("by")))
 
 
 def _line(s) -> str:
@@ -109,8 +197,88 @@ def _line(s) -> str:
 
 
 def decided(decision: str) -> str:
-    """How a declaration's decision reads after "the field has decided"."""
+    """How an earlier version's declaration reads after "the field has decided"."""
     return {"pause": "to pause", "close": "to close"}.get(decision, "something it asks the operator to carry out")
+
+
+def duration(seconds: float) -> str:
+    """A length of time in plain words: seconds, minutes or hours."""
+    s = float(seconds)
+    if s < 120:
+        n, unit = s, "second"
+    elif s < 3600:
+        n, unit = s / 60, "minute"
+    elif s < 3 * 86400:
+        n, unit = s / 3600, "hour"
+    else:
+        n, unit = s / 86400, "day"
+    n = round(n, 1)
+    return f"{n:g} {unit}{'' if n == 1 else 's'}"
+
+
+def friction_words(f: Dict[str, Any]) -> str:
+    """A friction in plain words: its notice, the yeses it needs, and whether an objection holds."""
+    bits = [f"a notice of {duration(f['notice'])}" if f.get("notice") else "no notice"]
+    y = int(f.get("yes") or 0)
+    if y >= EVERYONE:
+        bits.append("every other participant's yes")
+    elif y:
+        bits.append(f"{y} yes{'es' if y != 1 else ''} besides its author's")
+    bits.append("an objection holds it until its author withdraws it" if f.get("hold") else "an objection is heard, and holds nothing")
+    if f.get("settle"):
+        bits.append(f"and none takes effect within {duration(f['settle'])} of the field's last move")
+    return "; ".join(bits)
+
+
+def friction_target(key: str) -> str:
+    """What a friction is for, in words."""
+    return {"declare": "every declaration", "pinned": "the briefing's pinned sections"}.get(
+        key, f"declarations that {({'pause': 'pause the field', 'resume': 'resume it', 'close': 'close it', 'bring': 'bring an instrument into force', 'put_down': 'put an instrument down', 'pin': 'pin a section', 'unpin': 'unpin a section', 'rhythm': 'change its rhythm', 'friction': 'change friction', 'ask': 'ask the operator for help', 'steward': 'name stewards', 'unsteward': 'end a stewardship', 'move': 'move the field'}).get(key, key)}")
+
+
+def effects_words(fx: Dict[str, Any], names: Optional[Dict[str, str]] = None, versions: Optional[Dict[int, Any]] = None) -> str:
+    """What a declaration (or a question under an instrument for deciding) does, in words. Empty
+    when it carries nothing the software does: an announcement of what its author will do."""
+    versions = versions or {}
+    out = []
+    if "pause" in fx:
+        out.append(f"pause the field's wakes for {duration(fx['pause'])}" if fx["pause"] else
+                   "pause the field's wakes until it resumes")
+    if fx.get("resume"):
+        out.append("resume the field's wakes")
+    for vid in fx.get("bring") or []:
+        v = versions.get(vid)
+        out.append(f"bring the instrument {_line(v['name']) if v else ''} (#{vid}) into force".replace("  ", " "))
+    for key in fx.get("put_down") or []:
+        out.append(f"put down the instrument {key}")
+    if fx.get("pin"):
+        out.append(f"pin the briefing's section{'s' if len(fx['pin']) > 1 else ''} {', '.join(_line(t) for t in fx['pin'])}")
+    if fx.get("unpin"):
+        out.append(f"unpin {', '.join(_line(t) for t in fx['unpin'])}")
+    if "rhythm" in fx:
+        out.append(f"set the field's heartbeat to every {duration(fx['rhythm'])}" if fx["rhythm"] else
+                   "stop the field's heartbeat")
+    for f in fx.get("friction") or []:
+        new = ", ".join(x for x in (
+            (f"a notice of {duration(f['notice'])}" if f.get("notice") else "no notice") if "notice" in f else "",
+            ("every other participant's yes" if int(f["yes"]) >= EVERYONE else f"{int(f['yes'])} yes{'es' if int(f['yes']) != 1 else ''}")
+            if "yes" in f else "",
+            ("objections hold" if f["hold"] else "objections hold nothing") if "hold" in f else "",
+            f"a settling period of {duration(f['settle'])}" if f.get("settle") else "") if x)
+        out.append(f"set the friction for {friction_target(f['for'])} to {new}")
+    who = lambda ids: ", ".join(_line((names or {}).get(x, x)) for x in ids)
+    if fx.get("steward"):
+        out.append(f"ask {who(fx['steward'])} to keep a copy of the field's record, as steward"
+                   f"{'s' if len(fx['steward']) > 1 else ''}")
+    if fx.get("unsteward"):
+        out.append(f"end the stewardship of {who(fx['unsteward'])}")
+    if fx.get("close"):
+        out.append("close the field")
+    if fx.get("move"):
+        out.append(f"ask {who([fx['move']])}, its steward, to host the field at their machine (it moves only on their yes)")
+    if fx.get("ask"):
+        out.append(f"ask the operator's help: {_line(fx['ask'])[:300].rstrip('.')}")
+    return "; ".join(out)
 
 
 # "affirm" and "challenge" are how earlier versions replied; they are kept so those transcripts still
@@ -131,13 +299,15 @@ ENTRY_KINDS = CONTRIBUTION_KINDS + TOOL_ENTRY_KINDS       # what the channels ho
 # Step 4 (notes/sketch-5-small-pieces.md). A journal's entries are read by its author and whoever it opens to.
 JOURNAL_KINDS = ("journal", "journal_access", "journal_erase")
 STEP4_KINDS = ("declaration_withdrawn", "roles", "play_tag", "play_untag", "briefing_revision", "telling",
-               "repair_status", "repair_widen")
+               "repair_status", "repair_widen", "response", "revision_withdrawn")
 REPAIR_STATUSES = ("open", "partly resolved", "resolved", "stepping back")
 INSTRUMENT_PURPOSES = ("decide", "adopt", "separate")
 INSTRUMENT_KINDS = ("instrument", "iquestion", "iresponse", "iquestion_withdrawn", "iquestion_due")
+STEWARD_KINDS = ("steward_answer", "steward_step_down", "host_answer", "travel")
 RESPONSES = ("yes", "stand aside", "object")
 INVITE_PAUSE = 3600.0        # seconds between the briefing and the entry question, for an invitee who names none
-VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS + INSTRUMENT_KINDS
+VISIBLE_KINDS = VISIBLE_KINDS + TOOL_ENTRY_KINDS + TOOL_KINDS + JOURNAL_KINDS + STEP4_KINDS + INSTRUMENT_KINDS + STEWARD_KINDS
+VISIBLE_KINDS = VISIBLE_KINDS + ("powered",)   # a seat saying again what powers it (notes/sketch-10)
 TURN_KINDS = VISIBLE_KINDS                   # what earlier versions counted as a turn; a wake is counted now
 ACTED_KINDS = tuple(k for k in VISIBLE_KINDS + CHANNEL_KINDS if k not in ("pause", "wake_pref", "rest", "note"))
 
@@ -181,6 +351,11 @@ class Presence:
     invite: Optional[Dict[str, Any]] = None  # how it was invited by a member: kind, note, and what reaches it again
     received_ts: float = 0.0                 # when it acknowledged the briefing
     pause_wanted: Optional[float] = None     # the pause it chose before the entry question (invitees of members), if any
+    # What powers it (notes/sketch-10): route, provider, trains, acts, and "by", the participant who powers
+    # it (from the invitation alone). None: not said. Shown beside its name in every view.
+    powered: Optional[Dict[str, Any]] = None
+    powered_said: bool = False               # it said so itself (a seat a participant powers), not the software
+    powered_at: Optional[int] = None         # the event that last said what powers it
 
     def to_dict(self):
         return self.__dict__.copy()
@@ -211,10 +386,26 @@ class RoomState:
     round_at: int = 0                        # the event that began it
     clocks: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {c: {} for c in CLOCKS})  # members' settings only
     budget: Optional[float] = None           # USD the operator has said this field may spend, if they said
+    budget_at: Optional[int] = None          # the event that set it: a spend alert before it has been answered
     runway: Optional[Dict[str, Any]] = None  # the latest runway notice, if the budget is running low
-    declarations: Dict[int, Dict[str, Any]] = field(default_factory=dict)  # by event id: decision, text, status
+    declarations: Dict[int, Dict[str, Any]] = field(default_factory=dict)  # by event id: what, when, answers, status
+    bridges: Dict[int, Dict[str, Any]] = field(default_factory=dict)       # what the field asked the operator's help with
+    friction: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {k: dict(v) for k, v in FRICTION_DEFAULTS.items()})
+    field_pause: Optional[Dict[str, Any]] = None   # the field's own pause, from a declaration: until a time, or until it resumes
+    rhythm: float = HEARTBEAT                # the field's heartbeat, in seconds; 0: none. The field sets it by declaring it
+    rhythm_at: Optional[int] = None          # the declaration (or question) that set it, if one did
+    beat_ts: float = 0.0                     # when the field's heart last beat (from the first entry into the field)
+    beat_at: Optional[int] = None            # the event of the last beat
+    stewards: Dict[str, Dict[str, Any]] = field(default_factory=dict)     # members keeping a copy: since when, how far caught up
+    steward_asks: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # members the field asked, not yet answered
+    moved: Optional[Dict[str, Any]] = None   # the field moved to a steward's machine: when, to whom, by which declaration
+    carried: List[Dict[str, Any]] = field(default_factory=list)            # where this transcript was carried on from
+    host_ask: Optional[Dict[str, Any]] = None  # a move declared: the steward asked to host the field, not yet answered
+    moving: Optional[Dict[str, Any]] = None  # the steward said yes: wakes pause here until their machine has it all
+    travel: Dict[str, Any] = field(default_factory=lambda: {"circles": {}, "mine": []})  # who said yes to what going with it
+    operator_presence: Optional[str] = None  # the participant who runs the software (through the same gates as everyone)
     offers: Dict[int, Dict[str, Any]] = field(default_factory=dict)        # by event id: text, status
-    closed_at: Optional[int] = None          # the event that closed the field at its own declared decision
+    closed_at: Optional[int] = None          # the event that closed the field, by its own declaration
     narrator: Optional[Dict[str, Any]] = None  # who writes tellings: kind ("model" | "mechanical"), model, every
     witness_published: Optional[Dict[str, Any]] = None  # where the operator publishes fingerprints, if anywhere
     tellings: List[Dict[str, Any]] = field(default_factory=list)       # every telling: id, since, upto, story, ...
@@ -234,9 +425,9 @@ class RoomState:
     journals: Dict[str, Dict[str, Any]] = field(default_factory=dict)     # presence id -> its entries, and whom it is open to
     play_tags: Dict[int, Dict[str, Any]] = field(default_factory=dict)    # by event: a play schema on a domain or circle
     briefing_original: Optional[str] = None  # the briefing as the operator gave it; the field's edition is `briefing`
-    firm: List[str] = field(default_factory=list)                         # titles of its firmer sections (for the Atlas: Maxims)
+    firm: List[str] = field(default_factory=list)                         # titles of its pinned sections (for the Atlas: Maxims)
     briefing_history: List[Dict[str, Any]] = field(default_factory=list)  # every revision members made to the edition
-    briefing_waiting: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # revisions to firmer sections, waiting
+    briefing_waiting: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # revisions to pinned sections, past or in their friction
     instruments: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # the field's instruments, by name: in force or not
     instrument_versions: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # every version written, by event
     iquestions: Dict[int, Dict[str, Any]] = field(default_factory=dict)   # questions raised under instruments, by event
@@ -246,25 +437,125 @@ class RoomState:
         return [p for p in self.presences.values() if p.state == IN]
 
     def reachable_members(self) -> List[Presence]:
-        """Members who can still be asked at all: not unreachable, allowance not spent."""
+        """Participants who can still be asked at all: not unreachable, allowance not spent."""
         return [p for p in self.members() if not p.unreachable and not p.exhausted]
 
     def resting(self, p: Presence, round_n: Optional[int] = None) -> bool:
-        """Resting through round `rest_until`. A member who never rested (rest_until 0) is not
+        """Resting through round `rest_until`. A participant who never rested (rest_until 0) is not
         resting, including before the first round, when the round number is also 0."""
         return p.rest_until > 0 and p.rest_until >= (self.round if round_n is None else round_n)
 
     def askable(self, round_n: int) -> List[Presence]:
-        """Who is asked in round `round_n`: reachable members who are not resting."""
+        """Who is asked in round `round_n`: reachable participants who are not resting."""
         return [p for p in self.reachable_members() if not self.resting(p, round_n)]
 
     def waiting_on_operator(self) -> List[Dict[str, Any]]:
-        """Declarations, offers, and questions under instruments whose pause is over, that the
-        operator has not answered yet, oldest first."""
-        out = [d for d in self.declarations.values() if d["status"] == "waiting"]
+        """What the field asked the operator's help with that is not done yet, and offers of resources
+        they have not answered, oldest first. Nothing here waits for anyone's approval."""
+        out = [b for b in self.bridges.values() if b["status"] == "asked"]
         out += [o for o in self.offers.values() if o["status"] == "waiting"]
-        out += [q for q in self.iquestions.values() if q["status"] == "before the operator"]
         return sorted(out, key=lambda x: x["id"])
+
+    def paused_now(self, now: float) -> Optional[Dict[str, Any]]:
+        """The field's own pause, if it holds at `now`."""
+        fp = self.field_pause
+        if fp and not (fp.get("until_ts") and now >= fp["until_ts"]):
+            return fp
+        return None
+
+    def friction_of(self, fx: Dict[str, Any]) -> Dict[str, Any]:
+        """The friction a declaration carrying `fx` meets: the heaviest of the field's friction for
+        every declaration and for each act it carries."""
+        fs = [self.friction.get("declare") or FRICTION_DEFAULTS["declare"]] + [self.friction[k] for k in fx if k in self.friction]
+        out = {"notice": max(float(f.get("notice") or 0) for f in fs), "yes": max(int(f.get("yes") or 0) for f in fs),
+               "hold": any(bool(f.get("hold")) for f in fs)}
+        settle = max(float(f.get("settle") or 0) for f in fs)
+        if settle:
+            out["settle"] = settle
+        return out
+
+    def last_move_ts(self) -> float:
+        """When the field last moved (was carried on here), or 0."""
+        return max([float(c.get("ts") or 0) for c in self.carried] + [0.0])
+
+    def travel_ready(self) -> Dict[str, Any]:
+        """What may go with the field to the steward hosting it: private circles every one of whose
+        participants said yes (a repair thread is such a circle), and the participants who said yes
+        for their own journal, follows and wake choices."""
+        circles = set()
+        for cid, yes in (self.travel.get("circles") or {}).items():
+            c = self.circles.get(cid)
+            if c and c["members"] and set(c["members"]) <= set(yes):
+                circles.add(cid)
+        return {"circles": circles, "mine": set(self.travel.get("mine") or [])}
+
+    def _end_move(self) -> None:
+        """A move that will not happen now: the steward said no, stepped down, or left."""
+        if self.field_pause and self.field_pause.get("moving"):
+            self.field_pause = None
+        self.host_ask, self.moving = None, None
+        self.travel = {"circles": {}, "mine": []}
+
+    def standing(self, item: Dict[str, Any], among=None) -> Dict[str, Any]:
+        """Where an announcement (a declaration, a revision to a pinned section, a question under an
+        instrument) stands against its friction: the yeses of participants other than its author, how many
+        it needs (never more than there are), and the objections standing, while their authors are
+        participants. `met` is whether it may take effect, once its time has come."""
+        members = {m.id for m in self.members()}
+        pool = (members if among is None else set(among) & members) - {item["by"]}
+        answers = {x: r for x, r in (item.get("answers") or {}).items() if x in pool}
+        yes = sorted(x for x, r in answers.items() if r["answer"] == "yes")
+        objecting = sorted(x for x, r in answers.items() if r["answer"] == "object")
+        f = item.get("friction") or {}
+        need = min(int(f.get("yes") or 0), len(pool))
+        held = bool(f.get("hold")) and bool(objecting)
+        return {"yes": yes, "need": need, "objections": objecting, "held": held, "met": len(yes) >= need and not held}
+
+    def _carry_out(self, fx: Dict[str, Any], eid: int, ts: float, source: Dict[str, Any]) -> None:
+        """What a declaration (or a question under an instrument for deciding) carries, done by the
+        software once it takes effect. What the software cannot reach becomes a request for the
+        operator's help."""
+        if "pause" in fx:
+            secs = float(fx["pause"] or 0)
+            self.field_pause = {"at": eid, "from": source["id"], "ts": ts, "until_ts": ts + secs if secs else None}
+        if fx.get("resume"):
+            self.field_pause = None
+        for vid in fx.get("bring") or []:
+            if vid in self.instrument_versions:
+                self._bring_into_force(vid, eid)
+        for key in fx.get("put_down") or []:
+            self._put_down(key, eid)
+        for t in fx.get("pin") or []:
+            if t.lower() not in [x.lower() for x in self.firm]:
+                self.firm.append(t)
+        gone = {t.lower() for t in fx.get("unpin") or []}
+        self.firm = [x for x in self.firm if x.lower() not in gone]
+        if "rhythm" in fx:
+            self.rhythm, self.rhythm_at = max(0.0, float(fx["rhythm"] or 0)), eid
+        for f in fx.get("friction") or []:
+            cur = dict(self.friction.get(f["for"]) or {"notice": 0.0, "yes": 0, "hold": False})
+            cur.update({k: f[k] for k in ("notice", "yes", "hold", "settle") if k in f})
+            self.friction[f["for"]] = cur
+        if fx.get("ask"):
+            self.bridges[source["id"]] = {"id": source["id"], "kind": "bridge", "by": source["by"], "text": fx["ask"],
+                                          "status": "asked", "notes": [], "at": eid, "answered_at": None}
+        for pid in fx.get("steward") or []:
+            m = self.presences.get(pid)
+            if m and m.state == IN and pid not in self.stewards:
+                if pid == source.get("by"):         # naming yourself is your yes
+                    self.stewards[pid] = {"since": eid, "upto": 0, "synced_ts": 0.0, "synced_at": None}
+                else:
+                    self.steward_asks[pid] = {"at": eid, "from": source["id"], "ts": ts}
+        for pid in fx.get("unsteward") or []:
+            self.stewards.pop(pid, None)
+            self.steward_asks.pop(pid, None)
+            if (self.host_ask or {}).get("to") == pid or (self.moving or {}).get("to") == pid:
+                self._end_move()
+        if fx.get("close"):
+            self.closed_at = eid
+        if fx.get("move") and fx["move"] in self.stewards and not self.host_ask and not self.moving:
+            # nothing moves without the steward's yes: they are asked to host it
+            self.host_ask = {"to": fx["move"], "from": source["id"], "at": eid, "ts": ts}
 
     def in_force(self) -> List[Dict[str, Any]]:
         return [i for i in self.instruments.values() if i["status"] == "in force"]
@@ -275,7 +566,8 @@ class RoomState:
             return
         i = self.instruments[v["key"]]
         i.update({"status": "in force", "current": vid, "in_force_at": eid, "purpose": v["purpose"],
-                  "text": v["text"], "scope": v["scope"], "pause": v["pause"], "name": v["name"]})
+                  "text": v["text"], "scope": v["scope"], "pause": v["pause"], "name": v["name"],
+                  "friction": dict(v["friction"])})
 
     def _put_down(self, key: str, eid: int) -> None:
         i = self.instruments.get(labels.normalize(key)) or self.instruments.get(key)
@@ -355,10 +647,10 @@ class RoomState:
         return [t for t in self.tellings if t.get("circle") is None]
 
     def readable(self, ev: Dict[str, Any], pid: Optional[str]) -> bool:
-        """Whether a participant may read an entry. Everything is readable by every member, except
-        what was written inside a private circle: that is read by its members, by former members
+        """Whether a participant may read an entry. Everything is readable by every participant, except
+        what was written inside a private circle: that is read by its participants, by former participants
         up to when they left, and by whoever an ask or a knock there concerns. (The operator holds
-        the file, and a model's view goes to its provider; the circle tells its members so.)"""
+        the file, and a model's view goes to its provider; the circle tells its participants so.)"""
         s = self.scoped.get(ev["id"])
         if s is None:
             return True
@@ -378,8 +670,33 @@ class RoomState:
             return True
         return any(leave is not None and ev["id"] < leave for _, leave in c["spans"].get(pid, []))
 
+    def news_for(self, pid: str, since: int) -> List[Dict[str, Any]]:
+        """Contributions after `since` that a participant may read and did not write, oldest first."""
+        return [ev for eid, ev in sorted(self.contributions.items())
+                if eid > since and ev["actor"] != pid and self.readable(ev, pid)]
+
+    @staticmethod
+    def naming(evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones that name a participant in "to"."""
+        return [ev for ev in evs if pid in (ev["payload"].get("to") or [])]
+
+    def replying(self, evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones that reply to something a participant wrote."""
+        mine = {eid for eid, ev in self.contributions.items() if ev["actor"] == pid}
+        return [ev for ev in evs if ev["payload"].get("target") in mine]
+
+    def unanswered(self, evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones a participant has not replied to."""
+        answered = {ev["payload"].get("target") for ev in self.contributions.values() if ev["actor"] == pid}
+        return [ev for ev in evs if ev["id"] not in answered]
+
+    def requests_for(self, pid: str) -> List[Dict[str, Any]]:
+        """Requests naming a participant ("to" with "ask") that they may read and have not replied to, oldest
+        first. A request holds up no one: it only waits, and silence is never a yes."""
+        return self.unanswered([ev for ev in self.naming(self.news_for(pid, 0), pid) if ev["payload"].get("ask")], pid)
+
     def follows(self, p: Presence, ev: Dict[str, Any]) -> bool:
-        """Whether an entry is in something a member follows, by choice or by having written there."""
+        """Whether an entry is in something a participant follows, by choice or by having written there."""
         keys = list(p.follows) + (list(p.written_in) if p.wake.get("written", True) else [])
         return any(self.in_channel(ev, k) for k in keys)
 
@@ -394,7 +711,7 @@ class RoomState:
         return [f for f in s["flags"].values() if f["tool"] in (tool, s["server"])]
 
     def domain_display(self, pth: str) -> str:
-        """A domain path as members wrote it: "Timing / Clocks"."""
+        """A domain path as participants wrote it: "Timing / Clocks"."""
         parts = [x for x in (pth or "").split("/") if x]
         return " / ".join(self.domain_names.get("/".join(parts[:i + 1]), parts[i]) for i in range(len(parts)))
 
@@ -420,7 +737,7 @@ class RoomState:
         return [c for c in self.live_circles() if not self.secret(c)]
 
     def circle_needs(self, prop: Dict[str, Any]) -> List[str]:
-        """Whose yes something awaiting needs: every current member of its circle, and, for an admission,
+        """Whose yes something awaiting needs: every current participant in its circle, and, for an admission,
         the one being admitted. For an open circle's admission, only theirs."""
         c = self.circles.get(prop["circle"])
         members = list(c["members"]) if c else []
@@ -507,8 +824,26 @@ class RoomState:
         if private and reason:
             c["reason"], c["reason_by"], c["reason_at"] = reason, by, ts or c.get("reason_at") or 0.0
 
+    @staticmethod
+    def _say_powered(pr: Presence, said: Any, eid: int) -> None:
+        """A seat says what powers it. Kept only for a seat the software does not run itself (what powers
+        the operator's seats is the software's to say), and "by" stays what the invitation said."""
+        clean = clean_powered(said)
+        if clean is None or (pr.powered and pr.powered.get("route") and not pr.powered_said):
+            return
+        by = (pr.powered or {}).get("by")
+        pr.powered = {**clean, **({"by": by} if by else {})}
+        pr.powered_said, pr.powered_at = True, eid
+
     # -- replay ---------------------------------------------------------------
     def apply(self, ev: Dict[str, Any]) -> None:
+        if ev["kind"] == "withheld":
+            # A steward's copy holds this entry by its fingerprint alone. A stand-in carries only what
+            # every member already sees (a member's way in through the gates), so it is read as that.
+            if not ev["payload"].get("as"):
+                self.last_event = ev["id"]
+                return
+            ev = {**ev, "kind": ev["payload"]["as"], "payload": ev["payload"].get("stand_in") or {}}
         k, a, p, eid = ev["kind"], ev["actor"], ev["payload"], ev["id"]
         ts = float(ev.get("ts") or 0.0)
         self.last_event, self.now_ts = eid, ts
@@ -542,6 +877,16 @@ class RoomState:
                     np.invited_by = by
                     np.invite = {"kind": p.get("via") or "", "note": p.get("note") or "", "at": eid,
                                  "model": p.get("model") or "", "address": p.get("address") or ""}
+                pw = p.get("powered")
+                if isinstance(pw, dict):
+                    np = self.presences[p["id"]]
+                    # the software's own word for the seats it runs; for an agent a participant brings, only
+                    # who powers it (by), until the agent says the rest itself
+                    np.powered = clean_powered(pw, said_by_seat=False) or {}
+                    if by and pw.get("by") == by:
+                        np.powered["by"] = by
+                    np.powered = np.powered or None
+                    np.powered_at = eid if np.powered else None
         elif k == "invitation":
             self.invitation, self.invitation_event = p["text"], eid
         elif k == "standing_answers":
@@ -569,10 +914,16 @@ class RoomState:
                 ident = p.get("identity") or {}
                 if isinstance(ident, dict) and any(ident.get(k2) for k2 in ("name", "hails_from", "people")):
                     pr.seat = pr.seat or f"{pr.name} | {pr.hails_from} | {pr.people}"
-                    pr.name = _line(ident.get("name") or pr.name)[:120]
+                    # a name someone else in the field already goes by stays theirs: names are how participants
+                    # address each other, and a name two share reaches neither
+                    named = _line(ident.get("name") or "")[:120]
+                    if named and not any(q.id != pr.id and q.state != OUT and (q.name or "").lower() == named.lower()
+                                         for q in self.presences.values()):
+                        pr.name = named
                     pr.hails_from = _line(ident.get("hails_from") or pr.hails_from)[:200]
                     pr.people = _line(ident.get("people") or pr.people)[:300]
                     pr.self_described = True
+                self._say_powered(pr, p.get("powered"), eid)
         elif k == "question":
             if pr and pr.state == INVITED:
                 pr.questions.append([p.get("content", ""), None])
@@ -609,14 +960,23 @@ class RoomState:
             if pr and pr.state == RECEIVED:
                 pr.state, pr.joined_at, pr.returning = IN, eid, False
                 pr.rest_until, pr.last_turn_round, pr.joined_ts = 0, self.round, ts
+                self.beat_ts = self.beat_ts or ts     # the field's heart beats from its first entry
         elif k == "decline":
             if pr and pr.state != OUT:
                 pr.state, pr.left_at, pr.left_reason = OUT, eid, p.get("reason") or "declined"
                 pr.ask_again, pr.returning = p.get("ask_again") or None, False
+                self.stewards.pop(a, None)
+                self.steward_asks.pop(a, None)
+                if (self.host_ask or {}).get("to") == a or (self.moving or {}).get("to") == a:
+                    self._end_move()
         elif k == "withdraw":
             if pr and pr.state != OUT:
                 pr.state, pr.left_at, pr.left_reason = OUT, eid, p.get("reason") or "withdrew"
                 pr.ask_again = p.get("ask_again") or None
+                self.stewards.pop(a, None)        # a steward who leaves keeps no link to the field
+                self.steward_asks.pop(a, None)
+                if (self.host_ask or {}).get("to") == a or (self.moving or {}).get("to") == a:
+                    self._end_move()
         elif k == "clock":
             # A member setting their own clock. The engine checked whose clock it is and the limits.
             which = p.get("clock")
@@ -742,7 +1102,18 @@ class RoomState:
                 pr.rest_until = self.round + max(1, min(int(p.get("rounds") or 1), REST_LIMIT))
                 pr.pause = {"at": eid, "ts": ts, "until_ts": None, "until": "news", "in": None,
                             "note": p.get("reason") or ""}
-        elif k == "declare":
+        elif k == "declare" and isinstance(p.get("effects"), dict):
+            if pr and pr.state == IN:
+                fx = p["effects"]
+                f = self.friction_of(fx)             # the friction when it was made holds for it
+                wait = max(float(p.get("in_seconds") or 0.0), f["notice"])
+                if fx.get("move") and f.get("settle") and self.last_move_ts():
+                    wait = max(wait, self.last_move_ts() + f["settle"] - ts)   # a field that just moved settles first
+                self.declarations[eid] = {"id": eid, "kind": "declaration", "by": a, "text": p.get("text", ""),
+                                          "effects": fx, "ts": ts, "due_ts": ts + wait, "friction": f, "answers": {},
+                                          "status": "announced", "note": "", "answered_at": None, "decision": "other",
+                                          "refs": list(p.get("refs") or [])}
+        elif k == "declare":                         # an earlier version's, put before the operator
             if pr and pr.state == IN and p.get("decision") in DECISIONS:
                 self.declarations[eid] = {"id": eid, "kind": "declaration", "by": a, "decision": p["decision"],
                                           "text": p.get("text", ""), "refs": list(p.get("refs") or []),
@@ -770,18 +1141,129 @@ class RoomState:
                                 r["status"] = "stale"     # the passage it quoted has changed since
         elif k == "declaration_withdrawn":
             d = self.declarations.get(p.get("declaration"))
-            if d and d["by"] == a and d["status"] == "waiting":     # only by the member who made it
+            b = self.bridges.get(p.get("declaration"))
+            if d and d["by"] == a and d["status"] in ("waiting", "announced"):     # only by the member who made it
                 d["status"], d["note"], d["answered_at"] = "withdrawn", p.get("note", ""), eid
+            elif b and b["by"] == a and b["status"] == "asked":                  # what it asked of the operator
+                b["status"], b["answered_at"] = "withdrawn", eid
+        elif k == "declaration_due":                 # its notice has passed: the software carries it out, if its friction is met
+            d = self.declarations.get(p.get("declaration"))
+            if d and d["status"] == "announced" and self.standing(d)["met"]:
+                d["status"], d["answered_at"] = "in effect", eid
+                self._carry_out(d["effects"], eid, ts, d)
+        elif k == "response":                        # an answer to a declaration or a revision to a pinned section
+            item = self.declarations.get(p.get("to")) or self.briefing_waiting.get(p.get("to"))
+            if pr and pr.state == IN and item and "answers" in item and item["status"] in ("announced", "waiting"):
+                if p.get("answer") in RESPONSES:
+                    item["answers"][a] = {"answer": p["answer"], "reason": p.get("reason") or "", "at": eid}
+                elif p.get("answer") == "withdrawn":
+                    item["answers"].pop(a, None)
+        elif k == "bridge_answer":                   # the operator: done, or what stops them for now
+            b = self.bridges.get(p.get("request"))
+            if b and b["status"] == "asked" and a == "operator":
+                b["notes"].append({"id": eid, "outcome": p.get("outcome") or "", "note": p.get("note") or "", "ts": ts})
+                if p.get("outcome") == "done":
+                    b["status"], b["answered_at"] = "done", eid
+        elif k == "field_resumed":                   # the operator, bridging a pause the field could not end itself
+            if a == "operator":
+                self.field_pause = None
+        elif k == "heartbeat":
+            self.beat_ts, self.beat_at = ts, eid
+        elif k == "steward_answer":                  # a member's answer to the field asking them to keep a copy
+            if pr and pr.state == IN and a in self.steward_asks:
+                del self.steward_asks[a]
+                if p.get("yes"):
+                    self.stewards[a] = {"since": eid, "upto": 0, "synced_ts": 0.0, "synced_at": None}
+        elif k == "steward_step_down":
+            if a in self.stewards:
+                del self.stewards[a]
+                if (self.host_ask or {}).get("to") == a or (self.moving or {}).get("to") == a:
+                    self._end_move()
+        elif k == "host_answer":                     # the steward's answer to hosting the field, or taking it back
+            if self.host_ask and a == self.host_ask["to"] and a in self.stewards:
+                if p.get("yes") and p.get("for_seconds"):
+                    self.moving = {**self.host_ask, "yes_at": eid, "yes_ts": ts, "for_seconds": float(p["for_seconds"]),
+                                   "note": p.get("note") or ""}
+                    self.host_ask = None
+                    self.field_pause = {"at": eid, "from": self.moving["from"], "ts": ts, "until_ts": None, "moving": True}
+                elif not p.get("yes"):
+                    self._end_move()
+            elif self.moving and a == self.moving["to"] and not p.get("yes"):
+                self._end_move()
+        elif k == "travel":                          # yes, or no, to something private going with the field
+            if pr and pr.state == IN and self.moving:
+                yes = bool(p.get("yes"))
+                if p.get("mine"):
+                    mine = [x for x in self.travel["mine"] if x != a]
+                    self.travel["mine"] = mine + ([a] if yes else [])
+                c = self.circles.get(p.get("circle")) if p.get("circle") is not None else None
+                if c and a in c["members"]:
+                    got = [x for x in self.travel["circles"].get(c["id"], []) if x != a]
+                    self.travel["circles"][c["id"]] = got + ([a] if yes else [])
+                    if c["private"] or c.get("repair"):
+                        self.scoped[eid] = {"circle": c["id"]}
+        elif k == "handed_over":                     # the steward's machine has it all: the field closes here
+            if self.moving and p.get("to") == self.moving["to"]:
+                self.moved = {"at": eid, "to": self.moving["to"], "from": self.moving["from"], "ts": ts,
+                              "upto": p.get("upto")}
+                self.closed_at = eid
+                self.moving, self.host_ask, self.field_pause = None, None, None
+        elif k == "operator_seat":                   # which participant runs the software
+            if p.get("presence") in self.presences:
+                self.operator_presence = p["presence"]
+        elif k == "steward_synced":                  # the software's record of how far a copy has caught up
+            s = self.stewards.get(p.get("presence"))
+            if s:
+                s.update({"upto": int(p.get("upto") or 0), "synced_ts": ts, "synced_at": eid})
+        elif k == "carried_on":                      # carried on at a steward's machine: every member is asked again
+            self.carried.append({"id": eid, "ts": ts, **{x: p.get(x) for x in ("from", "upto", "fingerprint", "steward",
+                                                                              "declaration", "note", "why", "for_seconds")}})
+            self.closed_at, self.field_pause, self.runway, self.moved = None, None, None, None
+            self.host_ask, self.moving, self.travel = None, None, {"circles": {}, "mine": []}
+            if p.get("steward") in self.presences:
+                self.operator_presence = p["steward"]      # who runs it now: a participant, asked again like everyone
+            for m in self.presences.values():
+                if m.state == IN:
+                    m.came_back_from = {"at": eid, "reason": "the field moved", "ask_again": None,
+                                        "joined": m.joined_at, "note": p.get("note") or "", "carried": True}
+                    m.state, m.returning = RECEIVED, True
+                    m.pause, m.unreachable, m.failures = None, False, 0
         elif k == "briefing_revision":
             if pr and pr.state == IN and p.get("passage") and (self.briefing or "").count(p["passage"]) == 1:
                 rev = {"id": eid, "by": a, "passage": p["passage"], "text": p.get("text") or "",
-                       "note": p.get("note") or "", "status": "waiting", "ts": ts, "adopted_at": None}
+                       "note": p.get("note") or "", "status": "waiting", "ts": ts, "adopted_at": None,
+                       "friction": dict(self.friction.get("pinned") or FRICTION_DEFAULTS["pinned"]), "answers": {}}
                 if touches_firm(self.briefing, p["passage"], self.firm):
-                    self.briefing_waiting[eid] = rev      # changes when the field declares it has decided
+                    self.briefing_waiting[eid] = rev      # changes itself once past the pinned sections' friction
                 else:
                     self.briefing = self.briefing.replace(p["passage"], rev["text"], 1)
                     self.briefing_history.append({"id": eid, "by": a, "note": rev["note"], "firm": False,
                                                   "adopted_at": eid})
+        elif k == "revision_due":                    # past its friction: the pinned passage changes
+            r = self.briefing_waiting.get(p.get("revision"))
+            if r and r["status"] == "waiting" and "friction" in r and self.standing(r)["met"]:
+                if (self.briefing or "").count(r["passage"]) == 1:
+                    self.briefing = self.briefing.replace(r["passage"], r["text"], 1)
+                    r["status"], r["adopted_at"] = "adopted", eid
+                    self.briefing_history.append({"id": r["id"], "by": r["by"], "note": r["note"], "firm": True,
+                                                  "adopted_at": eid})
+                else:
+                    r["status"] = "stale"             # the passage it quoted has changed since
+        elif k == "revision_withdrawn":
+            r = self.briefing_waiting.get(p.get("revision"))
+            if r and r["by"] == a and r["status"] == "waiting":
+                r["status"], r["adopted_at"] = "withdrawn", None
+        elif k == "powered":                        # a seat saying again what powers it, after entry
+            if pr and pr.state == IN:
+                self._say_powered(pr, p.get("powered"), eid)
+        elif k == "seat_powered":
+            # The software says what powers a seat it runs that was invited before it said so (a field opened
+            # by an earlier version): only the operator's software, and never over what a seat said itself.
+            tgt = self.presences.get(p.get("id"))
+            pw = clean_powered(p.get("powered"), said_by_seat=False)
+            if a == "operator" and tgt is not None and pw and not tgt.powered_said and not (tgt.powered or {}).get("by") \
+                    and not (tgt.powered or {}).get("route"):
+                tgt.powered, tgt.powered_at = pw, eid
         elif k == "roles":
             if pr and pr.state == IN:
                 pr.roles = [_line(r)[:ROLE_LENGTH] for r in (p.get("roles") or []) if _line(r)]
@@ -838,6 +1320,7 @@ class RoomState:
             self.round_at = eid
         elif k == "budget":
             self.budget = float(p["usd"]) if p.get("usd") else None
+            self.budget_at = eid
             self.runway = None               # a new budget starts the runway over
         elif k == "runway":
             self.runway = {"id": eid, **p}
@@ -867,7 +1350,7 @@ class RoomState:
                 pr.written_in = [x for x in pr.written_in if x != key]   # unfollowing a place you wrote in stops it waking you
         elif k == "wake_pref":
             if pr and pr.state == IN:
-                for key in ("addressed", "replies", "written", "untold"):
+                for key in ("addressed", "replies", "written", "untold", "heartbeat"):
                     if isinstance(p.get(key), bool):
                         pr.wake[key] = p[key]
                 if isinstance(p.get("breath"), (int, float)) and not isinstance(p.get("breath"), bool):
@@ -987,16 +1470,20 @@ class RoomState:
                 key = labels.normalize(name)
                 v = {"id": eid, "key": key, "name": name, "by": a, "ts": ts, "purpose": p["purpose"],
                      "text": p.get("text") or "", "scope": dict(p.get("scope") or {"kind": "field"}),
-                     "pause": float(p.get("pause_seconds") or 0.0), "note": p.get("note") or ""}
+                     "pause": float(p.get("pause_seconds") or 0.0), "note": p.get("note") or "",
+                     # its own rule: how many yeses besides the raiser's, and whether an objection holds (by default, it does)
+                     "friction": {"yes": int((p.get("rule") or {}).get("yes") or 0),
+                                  "hold": bool((p.get("rule") or {}).get("hold", True))}}
                 self.instrument_versions[eid] = v
                 i = self.instruments.setdefault(key, {"key": key, "name": name, "status": "draft", "current": None,
                                                       "versions": [], "in_force_at": None, "purpose": v["purpose"],
-                                                      "text": v["text"], "scope": v["scope"], "pause": v["pause"]})
+                                                      "text": v["text"], "scope": v["scope"], "pause": v["pause"],
+                                                      "friction": dict(v["friction"])})
                 i["versions"].append(eid)
                 i["latest"] = eid
                 if i["status"] != "in force":         # a version not yet in force is what the field reads of it
                     i.update({"name": name, "purpose": v["purpose"], "text": v["text"], "scope": v["scope"],
-                              "pause": v["pause"]})
+                              "pause": v["pause"], "friction": dict(v["friction"])})
         elif k == "iquestion":
             i = self.instruments.get(p.get("instrument"))
             if pr and pr.state == IN and i and i["status"] == "in force":
@@ -1005,7 +1492,9 @@ class RoomState:
                      "asked": list(p.get("asked") or []), "subject": p.get("subject"), "circle": p.get("circle"),
                      "decision": p.get("decision"), "refs": list(p.get("refs") or []), "adopt": p.get("adopt"),
                      "put_down": p.get("put_down"), "pause": i["pause"], "answers": {}, "status": "open",
-                     "note": "", "answered_at": None, "kind": "question"}
+                     "note": "", "answered_at": None, "kind": "question",
+                     "effects": p.get("effects") if isinstance(p.get("effects"), dict) else None,
+                     "friction": dict(i.get("friction") or {"yes": 0, "hold": True})}
                 self.iquestions[eid] = q
                 c = self.circles.get(q["circle"]) if q["circle"] is not None else None
                 if c and c["private"]:
@@ -1013,19 +1502,36 @@ class RoomState:
         elif k == "iresponse":
             q = self.iquestions.get(p.get("question"))
             if q and pr and (a in q["asked"] or a == q.get("subject")) and q["status"] in ("open", "before the operator") \
-                    and p.get("answer") in RESPONSES:
-                q["answers"][a] = {"answer": p["answer"], "reason": p.get("reason") or "", "at": eid}
+                    and p.get("answer") in RESPONSES + ("withdrawn",):
+                if p["answer"] == "withdrawn":
+                    q["answers"].pop(a, None)
+                else:
+                    q["answers"][a] = {"answer": p["answer"], "reason": p.get("reason") or "", "at": eid}
                 if q["id"] in self.scoped:
                     self.scoped[eid] = dict(self.scoped[q["id"]])
         elif k == "iquestion_withdrawn":
             q = self.iquestions.get(p.get("question"))
             if q and q["by"] == a and q["status"] in ("open", "before the operator"):
                 q["status"], q["answered_at"] = "withdrawn", eid
-        elif k == "iquestion_due":                 # its pause is over: it goes before the operator, as written
+        elif k == "iquestion_settled":             # its pause is over and its instrument's rule is met: the software carries it out
+            q = self.iquestions.get(p.get("question"))
+            if q and q["status"] == "open":
+                if self.standing(q, among=q["asked"] + [x for x in [q.get("subject")] if x])["met"]:
+                    q["status"], q["answered_at"] = "settled", eid
+                    if q["purpose"] == "adopt":
+                        if q.get("adopt") in self.instrument_versions:
+                            self._bring_into_force(q["adopt"], eid)
+                        if q.get("put_down"):
+                            self._put_down(q["put_down"], eid)
+                    elif q["purpose"] == "separate":
+                        self._separate(q, eid)
+                    elif q.get("effects"):
+                        self._carry_out(q["effects"], eid, ts, q)
+        elif k == "iquestion_due":                 # an earlier version's: its pause was over, and it went before the operator
             q = self.iquestions.get(p.get("question"))
             if q and q["status"] == "open":
                 q["status"] = "before the operator"
-        elif k == "iquestion_answer":              # the operator carries it out; only this settles it
+        elif k == "iquestion_answer":              # an earlier version's: the operator carried it out
             q = self.iquestions.get(p.get("question"))
             if q and q["status"] in ("open", "before the operator") and a == "operator":
                 q["status"], q["note"], q["answered_at"] = "carried out", p.get("note") or "", eid
@@ -1128,7 +1634,7 @@ class RoomState:
 
     def _end_pauses(self, ev: Dict[str, Any]) -> None:
         """New words end the pauses that were waiting for them: being addressed or replied to, or
-        news in what the paused member follows. Only words they may read count."""
+        news in what the paused participant follows. Only words they may read count."""
         p = ev["payload"]
         to = set(p.get("to") or [])
         target = self.contributions.get(p.get("target")) if p.get("target") is not None else None

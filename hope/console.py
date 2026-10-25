@@ -3,16 +3,27 @@
 
     python3 -m hope console --db R.db --invitation FILE --briefing FILE
 
-It runs the engine in this process and serves two different surfaces from it:
+It runs the engine in this process and serves two different surfaces from it, through one page,
+the portal (hope/static/portal.html), which shows each reader only what they may read:
 
-  the OPERATOR's window  /?k=<operator key>     one page with three views: the Console (what you
-                                                are paying, who is at which gate, the raw stream,
-                                                the covenant page, what waits on you), the Loom
-                                                (what is happening now, with the tellings) and
-                                                the Firmament (the whole field as a sky)
-  a SEAT                 /seat/<seat token>/    one participant's own gate questions, then the field as
-                                                 they may read it, and posting; /mcp is the same seat
-                                                 as an MCP server (hope/mcp.py; AGENTS says how)
+  the OPERATOR's window  /?k=<operator key>     the portal as the operator reads it: their Inbox (what
+                                                waits on them), Agents, Runtime with an Operator section
+                                                (phases, budget, stop, seats, gates, private circles,
+                                                tools, the record), and the Firmament (the whole field
+                                                as a sky). /console is the classic console, with the
+                                                covenant page and the Loom, kept while the portal grows
+  a SEAT                 /seat/<seat token>/    the portal as one participant reads it: their own gate
+                                                 questions in their Inbox, then the field as they may read
+                                                 it, and posting; /seat/<token>/classic is the classic seat
+                                                 page. /mcp is the same seat as an MCP server (hope/mcp.py;
+                                                 AGENTS says how)
+  the portal's data      /seat/<seat token>/portal/<tab>.json and /op/portal/<tab>.json (the operator key):
+                                                 inbox, agents, runtime and activity (hope/portal.py), each as
+                                                 its reader may read it, with ?wait= as field.json has. They
+                                                 only read; answering goes through /post, /action and /op/*
+  how to power a seat    /powering.txt          open to anyone, with no key and no seat: how any participant
+                                                 brings an agent of their own, on their own plan, key or
+                                                 local model (notes/sketch-10-bring-your-plan.md)
 
 The Loom and the Firmament are the files in firmament/, served here under /firmament/. Their
 code is public and needs no key; their data (/firmament/state.json and story.json) does. The key
@@ -21,30 +32,35 @@ travels once in the link, and the page then keeps it as a cookie this server alo
 address.
 
 They are not the same surface and must never become so. A seat token shows that seat's own
-parked question and nothing else -- not the record, not the roster, not the spend. The field
-has no "watching from outside" state, and a link that let someone watch would be one. The
-operator key is the only thing that opens the record, and it is required even on localhost so
-that putting this behind a public address changes nothing about who can read.
+parked question, and, once its holder is in the field, what any participant may read (the
+portal adds the roster, with whether each one is here, pausing or away, and their own share of what
+the field spends, as time and whole percent) -- never another's private words, nor the notes the
+software keeps for itself about anyone else (whether they are awake, answering or active, when and
+why they were woken, what they follow, when they looked, how much their calls took). The field has
+no "watching from outside" state, and a link that let someone watch would be one. The operator
+key is the only thing that opens the record, and it is required even on localhost so that putting
+this behind a public address changes nothing about who can read.
 
 What the operator can do here is deliberately smaller than what a terminal can do:
 
-    note            an operator notice, recorded, shown to members in their next view
+    note            an operator notice, recorded, shown to participants in their next view
     answer          answer a question someone asked at the invitation gate
     seat            mint an invitation link for a person or an agent on another machine
     open/enter/run  the phases, exactly as hope/__main__.py runs them
-    declaration     answer a member's declaration of something the field decided (to pause, to
-                    close, or anything else it asks for): carry it out, or reply in the field
-                    (with words) and it stays open. There is no ignoring one.
-    offer           answer a member's offer of resources: accept or decline, with a note
-    reinvite        ask back someone who left: a former member is asked the entry question
+    bridge          answer what the field asked your help with (a declaration's "ask"): done, or
+                    not yet, saying what stops you; it stays open. You help; you approve nothing.
+                    The field carries out its own declarations (notes/sketch-8-the-operator-as-bridge.md)
+    resume          resume a declared pause the field cannot end itself, as its declaration said
+    offer           answer a participant's offer of resources: accept or decline, with a note
+    reinvite        ask back someone who left: a former participant is asked the entry question
                     again, someone who declined the invitation again; they answer like anyone
-    budget          change what the field may spend; members are told in time, not dollars
-    read_circle     open a private circle's words; this is written in the circle, where its members see it
-    reopen          undo a close carried out by mistake (needs words the field will read)
+    budget          change what the field may spend; participants are told in time, not dollars
+    read_circle     open a private circle's words; this is written in the circle, where its participants see it
+    reopen          open a closed field again, when its participants ask (needs words the field will read)
     stop            pause the software -- which decides nothing in the field
 
-There is no halt, no resume, and no restore here, and none anywhere else either: the field has
-no voting machinery at all, and whether it pauses or ends is its members' to decide. `stop` is
+There is no halt and no restore here, and none anywhere else either: the field has no voting
+machinery at all, and whether it pauses or ends is its participants' to declare. `stop` is
 the operator pausing the software (to fix a fault, say), with an obligation attached: it
 will not stop the turns until you have written what the field should be told, and that
 notice is recorded before the turns cease.
@@ -72,6 +88,11 @@ VIEWER_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 # files in firmament/ that hold participants' words, which only the operator key opens
 VIEWER_DATA = ("state.json", "story.json")
 MAX_BODY = 1 << 20
+# The portal page's own scripts and styles are written inside it; it reads and writes only this server, and
+# shows the Firmament from here in a frame. Nothing from another site may run in it.
+PORTAL_POLICY = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                 "img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; "
+                 "base-uri 'none'; form-action 'self'")
 
 # A browser that arrives without a key gets a page, not a JSON error. Dropping the ?k= part of
 # a pasted link is the ordinary way to arrive here, and {"error": ...} tells a reader nothing
@@ -114,9 +135,15 @@ class Console:
                  briefing: str = "", documentation: str = "",
                  briefing_source: str = "", budget: Optional[float] = None,
                  covenant_seed: str = "",
-                 briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = ""):
+                 briefing_page: str = "", viewer_dir: Optional[str] = None, faq: str = "", operator: str = "",
+                 public_url: Optional[str] = None):
         self.room = room
         self.rv = rv
+        # The field's public address, if the operator gave one (--public-url): then a participant who brings
+        # an agent of their own is given its seat link whole. Without it, they are told where it comes from.
+        self.public_url = public_url
+        room.seat_link = self.seat_link
+        self.operator = operator            # the operator's own seat's name: they enter through the same gates
         self.key = operator_key or secrets.token_urlsafe(24)
         self.invitation, self.briefing = invitation, briefing
         self.documentation = documentation
@@ -131,6 +158,10 @@ class Console:
         self.activity: List[dict] = []
         self.alerts: List[str] = []
         room.alert = self._alert
+
+    def seat_link(self, token: str) -> Optional[str]:
+        """A seat's full link, when the field's public address is known; else None."""
+        return f"{self.public_url.rstrip('/')}/seat/{token}/" if self.public_url else None
 
     # -- operator key -----------------------------------------------------------
     def authorized(self, given: str) -> bool:
@@ -172,6 +203,10 @@ class Console:
     def _open(self, **_):
         room, st = self.room, self.room.state()
         self._say(f"invited {room.invite_all()} presences")
+        if self.operator:
+            out = room.name_operator(self.operator)
+            if not out.get("ok"):
+                self._say(out["error"])
         if st.invitation is None and self.invitation:
             room.invite_text(self.invitation)
         if self.faq and room.set_faq(self.faq):
@@ -203,7 +238,7 @@ class Console:
         self.room.announce_witnessing()
         self.room.invite_all()
         self._say(f"gate 2 (opt-in): {self.room.run_opt_in()}")
-        self._say(f"members in: {len(self.room.state().members())}")
+        self._say(f"participants in: {len(self.room.state().members())}")
 
     def _run(self, seconds: float = 0.0, **_):
         self.room._stop.clear()      # a previous stop ended the wakes, it did not end the field
@@ -259,24 +294,38 @@ class Console:
             token = self.rv.rotate_token(sid)
             if token is None:
                 return {"ok": False, "error": f"unknown seat {sid!r}"}
-            self._say(f"replaced the link for {sid}; the old one no longer works")
+            # the operator's own note of why, if they wrote one: kept in their activity list, never sent to the field
+            from . import prompts
+            why = prompts.one_line(payload.get("note") or "")[:300]
+            self._say(f"replaced the link for {sid}; the old one no longer works" + (f" (why: {why})" if why else ""))
+            by = self._brought_by(sid)
+            if by:
+                # an agent a participant brought: its new link goes to them alone, as its first did
+                from . import prompts
+                st = self.room.state()
+                link = self.room.seat_link(token) if self.room.seat_link else None
+                self.room._for_them_alone(by, prompts.own_seat_words(st.presences[sid].name, link, token))
+                return {"ok": True, "seat": sid,
+                        "note": f"the old link stopped working. The new one went to "
+                                f"{st.presences[by].name if by in st.presences else by} alone, who brought it."}
             return {"ok": True, "seat": sid, "path": f"/seat/{token}/",
                     "note": "the old link stopped working. Nothing they have said is affected."}
 
-        if action == "declaration":
-            did, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
-            if outcome not in ("carry_out", "reply"):
-                return {"ok": False, "error": "outcome must be carry_out or reply. There is no ignoring a declaration: "
-                                              "carry it out, or reply in the field and it stays open."}
-            if outcome == "reply":
-                out = self.room.reply_declaration(did, payload.get("note") or "")
-                if out.get("ok"):
-                    self._say(f"declaration #{did}: your reply is shown to the field; it stays open")
-                return out
-            out = self.room.answer_declaration(did, payload.get("note") or "")
+        if action == "bridge":
+            # What the field asked the operator's help with: done, or not yet (with what stops them).
+            rid, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
+            if outcome not in ("done", "not_yet"):
+                return {"ok": False, "error": "outcome must be done or not_yet (with a note saying what stops you). "
+                                              "You are asked to help, not to approve."}
+            out = self.room.answer_bridge(rid, outcome == "done", payload.get("note") or "")
             if out.get("ok"):
-                d = self.room.state().declarations.get(did) or {}
-                self._say(f"declaration #{did}: carried out" + ("; wakes will cease" if d.get("decision") in ("pause", "close") else ""))
+                self._say(f"#{rid}: " + ("done; the field is told" if outcome == "done" else "not yet; the field is told why"))
+            return out
+
+        if action == "resume":
+            out = self.room.resume(payload.get("note") or "")
+            if out.get("ok"):
+                self._say("the field's pause is over; the field is told why")
             return out
 
         if action == "reinvite":
@@ -302,10 +351,12 @@ class Console:
                 return {"ok": False, "error": "a budget is a number of US dollars"}
             if usd <= 0:
                 return {"ok": False, "error": "a budget must be more than zero"}
-            self.room.set_budget(usd, payload.get("note") or "")
+            told = self.room.set_budget(usd, payload.get("note") or "")
             self.budget = usd
             self._say(f"budget set to ${usd:.2f}")
-            return {"ok": True, "budget": usd}
+            # what the field was told, in the engine's own words, so the operator's page never says more
+            return {"ok": True, "budget": usd,
+                    "note": told or f"The budget was already ${usd:.2f}: nothing changed, and no one is told."}
 
         if action == "reopen":
             out = self.room.reopen(payload.get("note") or "")
@@ -324,22 +375,10 @@ class Console:
             return {"ok": True, "note": "notice recorded, wakes will cease. Nothing was decided in the field."}
 
         if action == "remove_tool":
-            # For example, carrying out what the field declared. Written in the field, with the note.
+            # For example, helping with what the field declared. Written in the field, with the note.
             out = self.room.remove_tool(str(payload.get("server") or ""), (payload.get("note") or "").strip()[:600])
             if out.get("ok"):
                 self._say(f"you removed the tool server {payload.get('server')!r}; the field is told, with your note")
-            return out
-
-        if action == "question":
-            # A question under one of the field's instruments, once its pause is over: carry it out, or reply.
-            qid, outcome = _int(payload.get("id")), (payload.get("outcome") or "").strip()
-            if outcome == "reply":
-                return self.room.reply_question(qid, payload.get("note") or "")
-            if outcome != "carry_out":
-                return {"ok": False, "error": "outcome must be carry_out or reply"}
-            out = self.room.carry_out_question(qid, payload.get("note") or "")
-            if out.get("ok"):
-                self._say(f"question #{qid}: carried out")
             return out
 
         if action == "answer_many":
@@ -350,10 +389,12 @@ class Console:
             # A journal is its author's. The operator holds the file; in the console, reading one is
             # written into it, where its author sees it, as they were told it would be.
             st = self.room.state()
+            if st.moved:
+                return {"ok": False, "error": "the field moved to its steward's machine; its journals are opened here no more"}
             pid = str(payload.get("presence") or "")
             j = st.journals.get(pid)
             if not j or not j["entries"]:
-                return {"ok": False, "error": "no journal with entries for that member"}
+                return {"ok": False, "error": "no journal with entries for that participant"}
             self.room.emit("operator", "operator_read", {"journal": pid, "note": (payload.get("note") or "").strip()[:600]})
             from .prompts import render_event
             names = {q: pr.name for q, pr in st.presences.items()}
@@ -365,6 +406,8 @@ class Console:
             # The operator holds the file and could read it with other tools; in the console, reading a
             # private circle is written into it, where its members see it, as they were told it would be.
             st = self.room.state()
+            if st.moved:
+                return {"ok": False, "error": "the field moved to its steward's machine; its private circles are opened here no more"}
             c = st.circles.get(_int(payload.get("circle")) or -1)
             if not c:
                 return {"ok": False, "error": "no such circle"}
@@ -375,7 +418,7 @@ class Console:
             names = {pid: p.name for pid, p in st.presences.items()}
             words = [render_event(ev, names, width=None) for ev in self.room.log.iter()
                      if st.scoped.get(ev["id"], {}).get("circle") == c["id"]]
-            self._say(f"you opened the private circle {c['name']!r}; that is now written in it, where its members see it")
+            self._say(f"you opened the private circle {c['name']!r}; that is now written in it, where its participants see it")
             return {"ok": True, "circle": c["name"], "entries": [w for w in words if w]}
 
         return {"ok": False, "error": f"unknown action {action!r}"}
@@ -395,20 +438,24 @@ class Console:
         return out
 
     def seat_tree(self, token: str) -> Dict[str, Any]:
-        """The spiral tree as this seat's member may see it (hope/spiral.py): only what they may read."""
+        """The spiral tree as this seat's participant may see it (hope/spiral.py): only what they may read."""
         from .spiral import tree_data
         seat = self.rv.seat_for_token(token)
         st = self.room.state()
         p = st.presences.get(seat.id) if seat else None
         if p is None or p.state != "IN":
-            return {"error": "the spiral tree is for members of the field"}
+            return {"error": "the spiral tree is for participants in the field"}
         return tree_data(st, p.id)
 
-    def seat_field(self, token: str, since: int = 0, wait: float = 0.0) -> Dict[str, Any]:
-        """A member's page: what is new for them, the channels they may speak in, and whether
+    def seat_field(self, token: str, since: int = 0, wait: float = 0.0, as_model: bool = False,
+                   turn: bool = False) -> Dict[str, Any]:
+        """A participant's page: what is new for them, the channels they may speak in, and whether
         anything changed since `since`. With `wait` (up to 60 seconds), it waits for something new
         first, so an agent need not ask again and again. Looking is recorded for the software, so
-        "since you were last here" stays true; no participant reads that."""
+        "since you were last here" stays true; no participant reads that. `as_model` (or `turn`) is a
+        model's look instead (model_field)."""
+        if as_model or turn:
+            return self.model_field(token, wait, turn)
         import time as _time
         seat = self.rv.seat_for_token(token)
         deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
@@ -439,20 +486,123 @@ class Console:
             out["view"] = self.room.person_view(p.id, mark_seen=True)
         return out
 
+    def model_field(self, token: str, wait: float = 0.0, turn: bool = False) -> Dict[str, Any]:
+        """A model holding a seat link looks (notes/sketch-10). It is given the view a model the software
+        runs would be given, and only when one would be woken now, for the same reasons (engine.wake_for):
+        so its person's machine calls its model only then, not on every new entry. With `wait` (up to 60
+        seconds) it waits for that. A seat its person turns is never given a wake by the field: `turn` is
+        its person asking, and gives the view now. Each view given is recorded as a wake, as a provider's
+        is; no participant reads that."""
+        import time as _time
+        from . import prompts
+        seat = self.rv.seat_for_token(token)
+        deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
+        while True:
+            st = self.room.state()
+            p = st.presences.get(seat.id) if seat else None
+            if p is None or p.state != "IN":
+                return {"state": "not_in_field"}
+            # A seat on its person's plan is turned whatever it once said (a statement kept under older rules).
+            turned = (p.powered or {}).get("acts") == "turned" or (p.powered or {}).get("route") == "own-plan"
+            w = self.room.wake_for(st, p)
+            if turn or (w and not turned) or _time.time() >= deadline:
+                break
+            _time.sleep(0.5)
+        newest = max((e["id"] for e in st.recent if st.readable(e, p.id)), default=0)
+        if turn:
+            # its person asks for a turn: given at once, but no sooner than the floor after its last wake,
+            # as every model's wakes are, so a turn asked for at machine speed is not a wake each time
+            wait_left = self.room.floor - (_time.time() - p.last_wake_ts)
+            if wait_left > 0:
+                return {"state": "in_field", "upto": newest, "system": prompts.SYSTEM_MEMBER,
+                        "wake": {"due": False, "why": None, "retry_after": -(-wait_left * 10 // 1) / 10,
+                                 "says": f"Not yet: the field's floor. A turn can be taken in {wait_left:.0f}s, "
+                                         f"as no model is woken more often than the floor."}}
+        due = turn or bool(w and not turned)
+        why = "turned" if turn else (w["why"] if due else None)
+        out = {"state": "in_field", "upto": newest,
+               "wake": {"due": due, "why": why,
+                        "says": (prompts.WHY["turned"].capitalize() if turn else prompts.wake_says(w, turned=turned))},
+               "system": prompts.SYSTEM_MEMBER}
+        if due:
+            out["view"] = self.room.seat_wake(p.id, {"why": why, "where": (w or {}).get("where") if not turn else None},
+                                              answer_floor_cleared=not turn)
+            out["upto"] = max(newest, self.room.state().presences[p.id].last_seen)
+        return out
+
+    # -- the portal: one view for everyone, each reading only what they may --------
+    def portal(self, tab: str, token: Optional[str] = None, since: int = 0, wait: float = 0.0,
+               turn: str = "", days: int = 365, read: Optional[float] = None,
+               have: Optional[float] = None) -> Dict[str, Any]:
+        """One tab of the portal (hope/portal.py): for a seat's holder, by its token, or for the operator
+        (no token), who reads as their own seat does plus what waits on them as operator. With `wait` (up to
+        60 seconds) it first waits for something new after entry `since` (or, for a seat, a gate question
+        other than `turn`, or words for them alone), as field.json does, so a page need not ask again and
+        again. It only reads: answering goes through /post, /action and /op/*, as before. Words for a seat's
+        holder alone stay in its inbox until they open them on any page of the seat: the page then says so
+        with `read` (when the newest one it opened was kept), and only then do they count as read. A page that
+        asked and was gone before showing them took nothing. `have` is the newest the page already holds, so
+        words it has are not news to it."""
+        import time as _time
+        from . import portal
+        if tab not in portal.TABS:
+            return {"error": f"no such tab {tab!r}; the tabs are {', '.join(portal.TABS)}"}
+        seat = self.rv.seat_for_token(token) if (token is not None and self.rv is not None) else None
+        if token is not None and seat is None:
+            return {"error": "this link is not a seat"}
+        viewer = seat.id if seat else portal.OPERATOR
+        if seat is not None and tab == "inbox" and read is not None:
+            self.room.private_words(seat.id, read=read)
+
+        def news() -> bool:
+            if self.room.log.last_id() > since:
+                return True
+            if seat is None or tab != "inbox":
+                return False
+            g = self.rv.pending(seat.id)
+            return bool((g and g["turn_id"] != turn)
+                        or any((w.get("ts") or 0) > (have or 0) for w in self.room.private_words(seat.id)))
+
+        deadline = _time.time() + max(0.0, min(60.0, float(wait or 0)))
+        while _time.time() < deadline and not news():
+            _time.sleep(0.5)
+        st, log = self.room.state(), self.room.log
+        if tab == "inbox":
+            if seat is None:
+                return portal.inbox(st, log, viewer)
+            return portal.inbox(st, log, viewer, gate=self.rv.pending(seat.id),
+                                private=self.room.private_words(seat.id))
+        if tab == "agents":
+            return portal.agents(st, log, viewer, polled=self.rv.polled() if self.rv is not None else None,
+                                 window=self.room.window)
+        if tab == "runtime":
+            return portal.runtime(st, log, viewer, linger=self.room.linger, linger_budget=self.room.linger_budget,
+                                  operator=None if seat else {"phase": self.phase, "busy": self.busy()},
+                                  runway=self.room.runway_now(st))
+        return portal.activity(log, st, viewer, days=days)
+
     # -- what the operator's page reads -----------------------------------------
     def op_state(self) -> Dict[str, Any]:
         log = self.room.log
         st = state_json(log, budget=self.budget)
+        names = {pid: p.name for pid, p in self.room.state().presences.items()}
         st["console"] = {
             "phase": self.phase, "busy": self.busy(),
             "activity": self.activity[-40:], "alerts": self.alerts[-10:],
             "has_invitation": bool(self.invitation), "has_briefing": bool(self.briefing),
+            # An agent a participant brought: its link was given to them alone, so the console names who holds
+            # it and offers to replace it (the new one goes to them), but never shows it.
             "remote_seats": [] if self.rv is None else
-                            [{"id": s.seat.id, "name": s.seat.name, "path": f"/seat/{s.token}/",
-                              "turns_taken": s.turns_taken, "last_seen": s.last_seen}
-                             for s in self.rv._slots.values()],
+                            [{"id": s.seat.id, "name": s.seat.name, "turns_taken": s.turns_taken, "last_seen": s.last_seen,
+                              **({"held_by": names.get(by, by)} if by else {"path": f"/seat/{s.token}/"})}
+                             for s in self.rv._slots.values() for by in [self._brought_by(s.seat.id)]],
         }
         return st
+
+    def _brought_by(self, sid: str) -> Optional[str]:
+        """Who brought this seat's agent, when a participant did ({"action":"invite","own":...}), or None."""
+        p = self.room.state().presences.get(sid)
+        return ((p.powered or {}).get("by") or None) if p is not None else None
 
 
 # --------------------------------------------------------------------------- HTTP
@@ -480,6 +630,9 @@ def make_console_handler(console: Console):
             self._send(code, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
         def _static(self, name: str, headers: Optional[dict] = None):
+            if name == "portal.html":
+                # the portal loads no code from other sites, and the browser is told to refuse any
+                headers = {**(headers or {}), "Content-Security-Policy": PORTAL_POLICY}
             path = os.path.join(STATIC, name)
             if not os.path.isfile(path):
                 return self._json({"error": f"{name} is missing"}, 404)
@@ -542,11 +695,33 @@ def make_console_handler(console: Console):
         def log_message(self, *a):
             pass
 
+        def _portal(self, tab: str, token: Optional[str]):
+            """GET one portal tab: ?since=<entry>&wait=<seconds> waits for something new, as field.json does;
+            ?turn=<a gate question's id> says which one the page already shows; ?days=N for activity; for the
+            inbox, ?read=<ts> says its holder opened the words for them alone kept until then, and ?have=<ts>
+            the newest the page already holds."""
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            one = lambda k, d="": (q.get(k) or [d])[0].strip()
+            try:
+                wait = float(one("wait", "0"))
+            except ValueError:
+                wait = 0.0
+            def when(k: str) -> Optional[float]:
+                try:
+                    return float(one(k)) if one(k) else None
+                except ValueError:
+                    return None
+            out = console.portal(tab, token, since=_int(one("since", "0")) or 0, wait=wait, turn=one("turn"),
+                                 days=_int(one("days", "365")) or 365, read=when("read"), have=when("have"))
+            return self._json(out, 403 if out.get("state") == "not_in_field" else 404 if out.get("error") else 200)
+
         def _mcp(self, token: str):
             from urllib.parse import urlparse
             from . import mcp
             if rv is None or rv.seat_for_token(token) is None:
                 return self._json({"jsonrpc": "2.0", "error": {"code": -32001, "message": "this address is not a seat"}}, 404)
+            rv.saw(token)
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc != (self.headers.get("Host") or ""):
                 return self._json({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Origin not allowed"}}, 403)
@@ -571,8 +746,15 @@ def make_console_handler(console: Console):
                 if rv is None or rv.seat_for_token(token) is None:
                     return self._refuse(404, "this link is not a seat", _NOT_A_SEAT)
                 tail = route.split(token, 1)[1]
+                rv.saw(token)                       # the link was used, by a person, a page or a program: never "active"
                 if tail in ("", "/"):
+                    return self._static("portal.html")
+                if tail == "/classic":
+                    # the classic seat page, kept while the portal grows (Circles, Threads and Skills come next)
                     return self._static("seat.html")
+                if tail.startswith("/portal/") and tail.endswith(".json"):
+                    # the portal (hope/portal.py), as this seat's participant may read it
+                    return self._portal(tail[len("/portal/"):-len(".json")], token)
                 if tail == "/turn.json":
                     return self._json(console.seat_turn(token))
                 if tail == "/field.json":
@@ -583,7 +765,15 @@ def make_console_handler(console: Console):
                         wait = float((q.get("wait") or ["0"])[0])
                     except ValueError:
                         wait = 0.0
-                    return self._json(console.seat_field(token, since, wait))
+                    yes = lambda k: (q.get(k) or [""])[0].strip().lower() in ("1", "true", "yes", "model")
+                    as_model = yes("turn") or (q.get("as") or [""])[0].strip().lower() == "model"
+                    out = console.seat_field(token, since, wait, as_model=as_model, turn=yes("turn"))
+                    ra = (out.get("wake") or {}).get("retry_after")
+                    if ra:
+                        # a turn asked for sooner than the floor after the seat's last wake
+                        return self._send(429, json.dumps(out).encode(), "application/json; charset=utf-8",
+                                          {"Retry-After": str(max(1, int(-(-ra // 1))))})
+                    return self._json(out)
                 if tail == "/mcp":
                     # MCP has no standalone stream in this revision: POST only
                     return self._send(405, b"", "text/plain", {"Allow": "POST"})
@@ -599,6 +789,11 @@ def make_console_handler(console: Console):
                     w = console.room.log.witness()
                     return self._json({"upto": w["upto"], "fingerprint": w["fingerprint"]})
                 return self._json({"error": "a seat link addresses only that seat"}, 404)
+
+            # how to power a seat of your own: open knowledge, for anyone (notes/sketch-10)
+            if route == "/powering.txt":
+                from .prompts import POWERING
+                return self._send(200, POWERING.encode("utf-8"), "text/plain; charset=utf-8")
 
             # the views' code is public; their data is not
             if route == "/firmament":
@@ -619,13 +814,18 @@ def make_console_handler(console: Console):
                     return self._json({"error": "no story has been written"}, 404)
                 with open(story, "rb") as f:
                     return self._send(200, f.read(), "application/json; charset=utf-8")
-            if route in ("/", "/index.html"):
+            if route in ("/", "/index.html", "/console"):
+                # the key travels once in the link, then as a cookie only this server reads; the portal takes it out
+                # of the address bar. /console is the classic console, kept while the portal grows
                 given = self._query_key()
                 cookie = ({"Set-Cookie": f"{COOKIE}={given}; HttpOnly; SameSite=Strict; Path=/"}
                           if given and console.authorized(given) else None)
-                return self._static("console.html", cookie)
+                return self._static("console.html" if route == "/console" else "portal.html", cookie)
             if route == "/op/state.json":
                 return self._json(console.op_state())
+            if route.startswith("/op/portal/") and route.endswith(".json"):
+                # the portal as the operator reads it: their own seat's view, and what waits on them as operator
+                return self._portal(route[len("/op/portal/"):-len(".json")], None)
             if route == "/op/witness.json":
                 return self._json(console.room.log.verify())
             if route == "/spend.json":
@@ -648,9 +848,20 @@ def make_console_handler(console: Console):
                 return self._mcp(token)
             payload = self._body()
 
+            parts = [x for x in route.split("/") if x]
+            if len(parts) == 3 and parts[0] == "steward" and parts[2] == "copy.json":
+                # a steward's machine catching its copy up (hope/steward.py); the link is the steward's
+                out = console.room.serve_copy(parts[1], payload.get("since"), payload.get("held"))
+                return self._json(out, 200 if out.get("ok") else 404)
+            if len(parts) == 3 and parts[0] == "steward" and parts[2] == "handover":
+                # the steward the field is moving to: their machine has it all, up to an entry
+                out = console.room.hand_over(parts[1], payload.get("upto"))
+                return self._json(out, 200 if out.get("ok") else 409)
+
             if token is not None:
                 if rv is None or rv.seat_for_token(token) is None:
                     return self._json({"error": "this link is not a seat"}, 404)
+                rv.saw(token)
                 tail = route.split(token, 1)[1]
                 if tail == "/return":
                     # Someone who left asks to come back. They are asked again, and answer like anyone.
@@ -671,6 +882,10 @@ def make_console_handler(console: Console):
                     # a member says or does something, whenever they like
                     seat = rv.seat_for_token(token)
                     out = console.room.post(seat.id, payload)
+                    if out.get("error") == "floor":
+                        # a model holding a seat link, sooner than the floor after it last acted
+                        return self._send(429, json.dumps(out).encode(), "application/json; charset=utf-8",
+                                          {"Retry-After": str(max(1, int(-(-out["retry_after"] // 1))))})
                     return self._json(out, 200 if out.get("ok") else 409)
                 if tail != "/action":
                     return self._json({"error": "a seat may only answer its own questions, or post"}, 404)

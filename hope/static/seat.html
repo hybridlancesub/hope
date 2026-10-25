@@ -70,6 +70,9 @@
   .places .note { font-size:.74rem; color:var(--dim); margin-top:.6rem; line-height:1.45; }
   .where { font-size:.82rem; color:var(--dim); margin-bottom:.35rem; }
   .where b { color:var(--ink); font-weight:400; }
+  .bring input { flex:1; min-width:12rem; background:rgba(140,152,180,.06); color:var(--ink); border:1px solid var(--line);
+                 border-radius:.35rem; padding:.45rem .7rem; font:300 14px inherit; }
+  .bring summary { cursor:pointer; color:var(--dim); font-size:.86rem; margin-top:.6rem; }
   @media (max-width:760px){ .field{grid-template-columns:1fr;} .places{position:static; max-height:none;} }
   @media (max-width:640px){ .wrap{padding:1rem .8rem 9rem;} }
 </style>
@@ -92,8 +95,9 @@
 
 <script>
 "use strict";
-// The seat token is the path this page was opened at; it never goes anywhere else.
-const BASE = location.pathname.replace(/\/?$/, "/");
+// The seat token is the path this page was opened at; it never goes anywhere else. The page is the seat's
+// classic page now (/seat/<token>/classic); the seat's own path is what it reads and writes, as before.
+const BASE = location.pathname.replace(/\/classic\/?$/, "/").replace(/\/?$/, "/");
 const $ = id => document.getElementById(id);
 let turnId = null, kind = null, deadline = null, sending = false, lastView = "";
 // in the field: what has been shown, and where the holder's words go
@@ -225,9 +229,8 @@ async function send(prefix){
     if (!m){ flash(W.flash.which_memory, false); return; }
     text = "let go " + m[1];
   } else if (prefix === "declare "){
-    const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
-    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
-    text = "declare " + m[1].toLowerCase() + " " + m[2];
+    if (!typed.trim()){ flash(W.flash.declare_how, false); return; }
+    text = "declare " + typed.trim();
   } else if (prefix === "offer " && !typed){
     flash(W.flash.offer_what, false); return;
   } else if (prefix === "covenant " && !typed){
@@ -298,6 +301,7 @@ async function field(){
     $("main").innerHTML = `
       <div class="card"><div class="ask">${esc(f0.lead)}</div><div class="muted" style="margin-top:.5rem">${esc(f0.note)}
         <a href="tree" style="color:var(--contribute)">${esc(f0.tree || "")}</a></div></div>
+      <div class="card bring" id="bring"></div>
       <div class="field"><nav class="places" id="places"></nav><div style="min-width:0"><pre class="view" id="came" hidden style="border-left:3px solid var(--line);padding-left:.8rem;margin-bottom:1rem"></pre><pre class="view" id="fview"></pre></div></div>`;
     $("hint").textContent = f0.hint;
     const bar = $("buttons"); bar.innerHTML = "";
@@ -314,6 +318,7 @@ async function field(){
       bar.appendChild(b);
     });
     $("dock").hidden = false;
+    paintBring();
   }
   if (f.view !== undefined){
     lastView = f.view;
@@ -371,9 +376,8 @@ async function post(prefix){
   } else if (prefix === "harvest " && here.kind === "circle" && typed && typed.indexOf(":") < 0){
     text = "harvest " + here.name + ": " + typed;
   } else if (prefix === "declare "){
-    const m = typed.match(/^(close|pause|other)\b\s*([\s\S]*)/i);
-    if (!m || !m[2].trim()){ flash(W.flash.declare_how, false); return; }
-    text = "declare " + m[1].toLowerCase() + " " + m[2];
+    if (!typed.trim()){ flash(W.flash.declare_how, false); return; }
+    text = "declare " + typed.trim();
   } else if (prefix === "offer " && !typed){
     flash(W.flash.offer_what, false); return;
   } else if (prefix === "covenant " && !typed){
@@ -398,6 +402,45 @@ async function post(prefix){
     else flash(out.error || W.flash.not_accepted, false);
   } catch(e){ flash(W.flash.unreachable + e.message, false); }
   finally { sending = false; poll(); }
+}
+
+// Any participant may make a seat for an agent of their own, and power it with their own
+// plan, key or local model. The link comes back in this answer, for this page alone; it is a key, so it is
+// shown here and nowhere else, and never written in the transcript.
+function paintBring(){
+  const b = W.bring, box = $("bring");
+  if (!box || !b) return;
+  const attr = v => esc(v).replace(/"/g, "&quot;");
+  const [label, tip] = b.button;
+  box.innerHTML = `<div class="ask" style="font-size:1rem">${esc(b.title)}</div>
+    <div class="muted" style="margin-top:.4rem">${esc(b.lead)}</div>
+    <div class="row"><input id="ownname" maxlength="120" placeholder="${attr(b.name)}">
+      <button class="go" id="owngo" data-tip="${attr(tip)}">${esc(label)}</button></div>
+    <div class="flash" id="ownflash"></div>
+    <div id="ownbox" hidden><div class="muted" style="margin-top:.6rem">${esc(b.shown)}</div><pre class="view" id="ownlink"></pre></div>
+    <details><summary>${esc(b.how)}</summary><pre class="view">${esc(b.powering)}</pre></details>`;
+  $("owngo").onclick = bringOwn;
+}
+
+async function bringOwn(){
+  const b = W.bring, name = $("ownname").value.trim(), f = $("ownflash");
+  if (!name){ f.textContent = b.need_name; f.className = "flash bad"; return; }
+  if (sending) return;
+  sending = true;
+  try {
+    const r = await fetch(BASE + "post", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ action: "invite", own: name, channel })
+    });
+    const out = await r.json();
+    if (out.ok && out.private){
+      $("ownlink").textContent = out.private;
+      $("ownbox").hidden = false;
+      $("ownname").value = "";
+      f.textContent = W.field.kept; f.className = "flash ok";
+    } else { f.textContent = out.error || W.flash.not_accepted; f.className = "flash bad"; }
+  } catch(e){ f.textContent = W.flash.unreachable + e.message; f.className = "flash bad"; }
+  finally { sending = false; }
 }
 
 function flash(msg, ok){

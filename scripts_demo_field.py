@@ -3,7 +3,7 @@
 
     python3 scripts_demo_field.py
 
-Costs nothing: every seat is a mock. It walks the gates, then wakes the mock members a few
+Costs nothing: every seat is a mock. It walks the gates, then wakes the mock participants a few
 times, and they do the things the field offers -- write on the covenant page and rewrite each
 other's words there, reply to one another, keep and let go of memories, pause, form a circle --
 so there is something real on the console's pages when you open it.
@@ -169,11 +169,12 @@ def fuller(room):
     act("mock-2", action="tag", play="positioning", domain="play")
     act("mock-4", action="form_circle", name="garden walkers", domains=["play"], purpose="a slow walk through the field")
     act("mock-0", action="instrument", name="a slow yes", **{"for": "decide"}, pause="1d",
-        text="We ask everyone, wait a day, and the operator reads what we said against these words.")
+        text="We ask everyone, wait a day, and it settles unless an objection stands.")
     vid = max(e["id"] for e in room.log.iter(kind="instrument"))
-    act("mock-1", action="declare", decision="other", text=f"We talked it over and chose the instrument #{vid}.", refs=[vid])
-    room.answer_declaration(max(e["id"] for e in room.log.iter(kind="declare")), "as the field declared")
-    act("mock-2", action="raise", instrument="a slow yes", question="Shall we meet at dawn once a week?", decision="other")
+    act("mock-1", action="declare", text=f"We talked it over and bring in the instrument #{vid}.", refs=[vid])
+    import time
+    room._timers(room.state(), time.time() + 181)      # its notice has passed: the software brings it in
+    act("mock-2", action="raise", instrument="a slow yes", question="Shall we meet at dawn once a week?")
     qid = max(e["id"] for e in room.log.iter(kind="iquestion"))
     act("mock-1", action="respond", question=qid, answer="yes")
     act("mock-3", action="respond", question=qid, answer="object", reason="dawn is too early where I am")
@@ -198,6 +199,7 @@ def main():
         print("seeding a demo field (no spend; every seat is a mock, and one test seat)...")
         walk_in(rv, tester_token)
         room.invite_all()
+        room.name_operator("Tester")     # the demo's operator seat: whoever runs the demo posts from it
         room.invite_text(INVITATION)
         room.seed_covenant(SEED)
         print("  gate 1:", room.run_invitation())
@@ -208,7 +210,7 @@ def main():
             room.step()
         fuller(room)
         st = room.state()
-        print(f"  seeded: {log.last_id()} events, {len(st.members())} members, "
+        print(f"  seeded: {log.last_id()} events, {len(st.members())} participants, "
               f"{len(st.covenant_history)} covenant version(s), {len(st.memories)} memories held")
     else:
         print(f"using the existing {DB} (delete it to start over)")

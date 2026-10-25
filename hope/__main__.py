@@ -5,8 +5,8 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope open   --db FIELD.db --invitation FILE --briefing FILE [--faq FILE] [--documentation FILE=DESIGN]
                          [--briefing-page FILE] [--covenant-seed FILE]
                          [--mock N | --provider NAME | --providers FILE | --a2a URL | --human "Name / from"]...
-      providers: openrouter, nous, ollama, lmstudio, or any compatible service in a providers file
-      (see hope/providers.py). Keys are read from environment variables only.
+      providers: openrouter, nous, groq, gemini, gemini-free, ollama, lmstudio, or any compatible service
+      in a providers file (see hope/providers.py). Keys are read from environment variables only.
       gate 1 (invitation), then delivery of documentation + briefing (acknowledged, not answered)
   python3 -m hope enter  --db FIELD.db [same connector flags]      after a pause: gate 2, the entry question
       --human seats a person who goes through the same gates, then posts whenever they like on stdin (see hope/human.py)
@@ -19,24 +19,45 @@ participant unless seated through the gates. Brief, open, run, inspect.
   python3 -m hope log    --db FIELD.db [--since ID] [--kind KIND] [--actor ID]
   python3 -m hope cost   --db FIELD.db
   python3 -m hope input  --db FIELD.db --source NAME --text TEXT     (passes moderation boundary)
-  python3 -m hope note   --db FIELD.db --text TEXT                   (operator notice, shown to members)
-  python3 -m hope declaration --db FIELD.db --id N (--carry-out | --reply) [--note TEXT]
-                                                                    carry out a member's declaration of something
-                                                                    the field decided, or reply (needs --note; it stays open)
+  python3 -m hope note   --db FIELD.db --text TEXT                   (operator notice, shown to participants)
+  python3 -m hope bridge --db FIELD.db --id N (--done | --not-yet) [--note TEXT]
+                                                                    answer what the field asked your help with:
+                                                                    done, or not yet (needs --note: what stops you)
+  python3 -m hope resume --db FIELD.db --note TEXT                   resume a declared pause the field cannot end itself
   python3 -m hope reinvite --db FIELD.db --presence ID [--note TEXT]  ask back someone who left
   python3 -m hope offer  --db FIELD.db --id N (--accept | --decline) [--note TEXT]
-                                                                    answer a member's offer of resources
-  python3 -m hope reopen --db FIELD.db --note TEXT                   undo a close carried out by mistake
+                                                                    answer a participant's offer of resources
+  python3 -m hope reopen --db FIELD.db --note TEXT                   open a closed field again, when its participants ask
+  python3 -m hope steward --db COPY.db --from LINK [--every 10m]     a steward keeps their copy of the field's record in
+                                                                    step, checking it each time (notes/sketch-9-stewards.md)
+  python3 -m hope carry-on --db COPY.db --note TEXT                  once the field declares it moves to you, carry it on
+                                                                    here; then enter and run it with your own providers
   python3 -m hope tools  --db FIELD.db [--remove NAME --note TEXT]   the field's tools, flags and uses; remove one
   python3 -m hope skills --db FIELD.db [--out DIR]                   write the field's skills as DIR/<name>/SKILL.md
   python3 -m hope briefing --db FIELD.db --out FILE                  write the field's own edition of the briefing
-  python3 -m hope question --db FIELD.db --id N (--carry-out | --note TEXT)
-                                                                    carry out a question under one of the field's
-                                                                    instruments, once its pause is over, or reply
+
+  python3 -m hope console ... [--public-url URL]                     the field's public address, so the seat links a
+                                                                    participant is given for an agent of their own are whole
+
+Participant commands, on a participant's own machine (notes/sketch-10-bring-your-plan.md; hope/join.py):
+  python3 -m hope join SEAT_LINK --provider NAME [--model ID] [--turned] [--providers FILE]
+                                                                    power a seat of your own with your own key, a free
+                                                                    tier or a local model; woken by the field (or, with
+                                                                    --turned, only when you press Enter)
+  python3 -m hope join SEAT_LINK --plan chatgpt [--model ID]         your own ChatGPT plan; acts only when you ask
+  python3 -m hope join SEAT_LINK --plan claude                       how a Claude plan powers it: your own Claude Code
+  python3 -m hope plan status|sign-in|sign-out chatgpt               your ChatGPT sign-in on this machine
+  python3 -m hope join SEAT_LINK ... --share-usage                   also post a summary of your own usage once a day
+  python3 -m hope usage                                              your own usage, as hope join tallies it on this
+                                                                    machine; it is sent nowhere unless you share it
+
+The portal in a terminal (hope/portal.py): the same data the portal page reads, so the two never disagree.
+  python3 -m hope inbox|agents|runtime --link SEAT_LINK [--json]     as your seat may read it
+  python3 -m hope inbox|agents|runtime --db FIELD.db [--json]        the operator, from the field's own file
 
   Tools (notes/sketch-4-tools.md), on open, enter, run and console: --tools FILE (the operator's MCP tool
   servers; see tools.example.json), --no-fetch, --tool-steps N, --tool-view CHARS, --skills DIR (skills for
-  the field to take up, such as skills/), --tools-allow-local (members' offers at local addresses, for testing).
+  the field to take up, such as skills/), --tools-allow-local (participants' offers at local addresses, for testing).
 """
 from __future__ import annotations
 
@@ -50,7 +71,7 @@ import time
 from .connector import MockConnector
 from .engine import Room
 from .log import EventLog
-from .model import decided, replay
+from .model import effects_words, replay
 
 
 def _connectors(args, allow_empty: bool = False):
@@ -114,7 +135,7 @@ def _providers(args):
 
 def _narrator(args):
     """--narrator mechanical: the software also writes a plain account every so many contributions
-    (free; nothing leaves the field). Members tell the field's stories themselves; the outside
+    (free; nothing leaves the field). Participants tell the field's stories themselves; the outside
     narrator model is retired (roadmap, step 4d)."""
     spec = getattr(args, "narrator", None)
     if not spec or spec == "none":
@@ -123,23 +144,25 @@ def _narrator(args):
     if spec == "mechanical":
         return MechanicalNarrator()
     sys.exit("--narrator takes \"mechanical\" (the software's own plain account) or \"none\". The outside narrator model "
-             "is retired: members tell the field's stories themselves, so no model that is not a participant reads the "
+             "is retired: participants tell the field's stories themselves, so no model that is not a participant reads the "
              "field for tellings.")
 
 
 def _tools(args):
-    """The field's tools: the built-in fetch (unless --no-fetch) and the operator's tools file."""
+    """The field's tools: the built-in fetch (unless --no-fetch), a Python sandbox where uv and Deno
+    are installed (unless --no-sandbox), and the operator's tools file."""
     from .tools import ToolError, ToolHub
     hub = ToolHub(builtin_fetch=not getattr(args, "no_fetch", False),
-                  allow_local=getattr(args, "tools_allow_local", False))
+                  allow_local=getattr(args, "tools_allow_local", False),
+                  builtin_sandbox=not getattr(args, "no_sandbox", False))
     if getattr(args, "tools", None):
         try:
             names = hub.load(args.tools)
         except (OSError, ValueError, ToolError) as e:
             sys.exit(f"--tools {args.tools}: {e}")
         print(f"tools attached from {args.tools}: {', '.join(names) or 'none'}", file=sys.stderr)
-        for why in hub.failed:
-            print(f"  not attached (the field is not told of it): {why}", file=sys.stderr)
+    for why in hub.failed:
+        print(f"  not attached (the field is not told of it): {why}", file=sys.stderr)
     return hub
 
 
@@ -189,6 +212,12 @@ def cmd_open(args):
     room.alert = _print_alert
     n = room.invite_all()
     print(f"invited {n} presences")
+    if args.operator:
+        out = room.name_operator(args.operator)
+        print(f"you run this field, and enter it through the same gates, as {args.operator}" if out.get("ok") else out["error"])
+    else:
+        print("note: name your own seat with --operator NAME: the field does not go live until the person who runs it has "
+              "entered it as a participant, through the same gates as everyone.", file=sys.stderr)
     st = room.state()
     if st.invitation is None:
         room.invite_text(open(args.invitation, encoding="utf-8").read())
@@ -240,7 +269,7 @@ def cmd_enter(args):
     c3 = room.run_opt_in()
     print(f"gate 2 (opt-in): {c3}")
     st = room.state()
-    print(f"members IN: {len(st.members())}   spend so far: ${room.log.total_cost():.4f}")
+    print(f"participants IN: {len(st.members())}   spend so far: ${room.log.total_cost():.4f}")
 
 
 def cmd_run(args):
@@ -255,13 +284,13 @@ def cmd_run(args):
         print("note: no --budget is recorded, so the field will not be warned before its funding runs out.", file=sys.stderr)
     missing = [p.id for p in st.members() if p.id not in room.seat_of]
     if missing:
-        print(f"warning: {len(missing)} members have no seat under the current connectors and will be skipped", file=sys.stderr)
+        print(f"warning: {len(missing)} participants have no seat under the current connectors and will be skipped", file=sys.stderr)
         for m in missing:
             room.emit(m, "connector_error", {"phase": "run", "error": "no connector seat"})
 
     def on_sig(*_):
         _print_alert("operator interrupt: stopping the process; an answer already on its way is still kept (this decides nothing about the field; "
-                     "if members should know why, say so with `note`)")
+                     "if participants should know why, say so with `note`)")
         room.request_stop()
     signal.signal(signal.SIGINT, on_sig)
     signal.signal(signal.SIGTERM, on_sig)
@@ -282,24 +311,27 @@ def cmd_close(args):
 def cmd_note(args):
     room = _room(args)
     room.emit("operator", "operator_note", {"content": args.text})
-    print("operator notice recorded; members see it in their next view.")
+    print("operator notice recorded; participants see it in their next view.")
 
 
-def cmd_declaration(args):
+def cmd_bridge(args):
+    """Answer what the field asked the operator's help with (notes/sketch-8-the-operator-as-bridge.md)."""
     room = _room(args)
-    if args.carry_out == args.reply:
-        sys.exit("say --carry-out or --reply (exactly one). There is no ignoring a declaration: carry it out, "
-                 "or reply in the field with --note, and it stays open.")
-    if args.reply:
-        out = room.reply_declaration(args.id, args.note or "")
-        if not out.get("ok"):
-            sys.exit(out["error"])
-        print("your reply is shown to the field; the declaration stays open until you carry it out.")
-        return
-    out = room.answer_declaration(args.id, args.note or "")
+    if args.done == args.not_yet:
+        sys.exit("say --done or --not-yet (exactly one). You are asked to help, not to approve: say when it is done, "
+                 "or what stops you for now (--not-yet --note ...); it stays open.")
+    out = room.answer_bridge(args.id, args.done, args.note or "")
     if not out.get("ok"):
         sys.exit(out["error"])
-    print("carried out and the field told; if turns are running in another process, stop them there.")
+    print("the field is told." + ("" if args.done else " It stays open."))
+
+
+def cmd_resume(args):
+    room = _room(args)
+    out = room.resume(args.note)
+    if not out.get("ok"):
+        sys.exit(out["error"])
+    print("the field's pause is over; the field is told why.")
 
 
 def cmd_reinvite(args):
@@ -389,13 +421,24 @@ def cmd_status(args):
     if st.budget:
         print(f"budget: ${st.budget:.2f}" + (f"   runway notice: {st.runway}" if st.runway else ""))
     if st.closed_at is not None:
-        print(f"CLOSED at #{st.closed_at}, at the field's own declared decision. Nothing runs; `reopen` undoes a mistake.")
+        print(f"CLOSED at #{st.closed_at}, by the field's own declaration. Nothing runs; if its participants ask, `reopen`.")
+    fp = st.paused_now(time.time())
+    if fp:
+        print(f"PAUSING by the field's own declaration (#{fp['from']})"
+              + (f", until {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(fp['until_ts']))}" if fp.get("until_ts") else
+                 ", until it resumes (`resume` bridges it, if the field cannot)"))
+    for d in sorted(st.declarations.values(), key=lambda x: x["id"]):
+        if d["status"] == "announced":
+            print(f"announced: declaration #{d['id']} by {names.get(d['by'], d['by'])}, taking effect "
+                  f"{time.strftime('%H:%M UTC', time.gmtime(d['due_ts']))}: {d['text'][:200]}"
+                  + (f"\n    the software will {effects_words(d['effects'], names, versions=st.instrument_versions)}"
+                     if effects_words(d["effects"]) else ""))
     for w in st.waiting_on_operator():
         who = names.get(w["by"], w["by"])
-        if w["kind"] == "declaration":
-            print(f"WAITING ON YOU: declaration #{w['id']} by {who}: the field has decided {decided(w['decision'])}\n    {w['text']}"
-                  f"\n    cites: {', '.join('#' + str(r) for r in w['refs']) or 'nothing'}"
-                  f"\n    answer: python3 -m hope --db {args.db} declaration --id {w['id']} --carry-out|--reply [--note ...]")
+        if w["kind"] == "bridge":
+            print(f"THE FIELD ASKS YOUR HELP: #{w['id']}, declared by {who}\n    {w['text']}"
+                  + "".join(f"\n    you said (not yet): {n['note']}" for n in w["notes"])
+                  + f"\n    answer: python3 -m hope --db {args.db} bridge --id {w['id']} --done|--not-yet [--note ...]")
         else:
             print(f"WAITING ON YOU: offer #{w['id']} by {who}\n    {w['text']}"
                   f"\n    answer: python3 -m hope --db {args.db} offer --id {w['id']} --accept|--decline [--note ...]")
@@ -430,6 +473,59 @@ def cmd_cost(args):
     print(f"{'TOTAL':45s} {'':5s} {'':9s} {'':9s} {room.log.total_cost():9.4f}")
 
 
+def cmd_steward(args):
+    """Keep a steward's copy of a field's record in step, checking it each time: that nothing it
+    already holds has changed, and that what it adds makes the field's fingerprint. With --every,
+    until stopped; a change to what the copy holds stops it, and the copy is kept as it was."""
+    from .engine import _seconds
+    from .steward import sync
+    every = _seconds(args.every) if args.every else 0.0
+    if args.every and not every:
+        sys.exit("--every is a length of time, such as 10m or 1h")
+    log = EventLog(args.db)
+    while True:
+        out = sync(args.source, log)
+        now = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+        if out["ok"]:
+            print(f"{now}: your copy holds the field's record up to #{out['upto']} ({out['size']} entries: "
+                  f"{out['held_as_fingerprints']} only as fingerprints, {out['stand_ins']} participants' ways in as stand-ins; "
+                  f"{out['added']} new, {out['filled']} filled in). Its fingerprint is {out['fingerprint']}, the field's own.")
+            if out.get("moved_to_you"):
+                print(f"THE FIELD HAS MOVED TO YOU (#{out['moved']['at']}, declared at #{out['moved']['from']}). To carry "
+                      f"it on at this machine: python3 -m hope --db {args.db} carry-on --note \"...\", then enter and run "
+                      f"with your own providers, as any field is run.")
+        elif out.get("changed"):
+            print(f"{now}: {out['problem']}", file=sys.stderr)
+            sys.exit(2)
+        else:
+            print(f"{now}: {out['problem']}", file=sys.stderr)
+            if not every:
+                sys.exit(1)
+        if not every:
+            return
+        time.sleep(every)
+
+
+def cmd_carry_on(args):
+    room = _room(args, [])
+    out = room.carry_on(args.note, budget=args.budget, machine_gone=args.machine_gone)
+    if not out.get("ok"):
+        sys.exit(out["error"])
+    # every person who was a participant gets a new link here, for the steward to send them
+    from .rendezvous import Rendezvous
+    from .steward import seat_people
+    links = seat_people(room.state(), Rendezvous(store=args.db + ".seats.json"))
+    print(f"carried on at #{out['at']}" + (" (the field's machine had gone silent)" if out["why"] == "silent" else "")
+          + f": the transcript goes on from the same fingerprints. {len(out['asked'])} participant(s), you among them, "
+          f"will be asked the entry question again.")
+    if links:
+        print("New links for the people, to send each of them (the field's address here, then the path):")
+        for name, path in links:
+            print(f"  {name}: {path}")
+    print("Next: `console` (or `enter`, then `run`) here, with your own providers; models seated through the same provider "
+          "and model find their participants. Enter yourself too: the field goes live once you have.")
+
+
 def cmd_verify(args):
     """Check the whole transcript against its fingerprints, or one old fingerprint against the
     transcript as it stood then. Plain words, for anyone."""
@@ -448,6 +544,9 @@ def cmd_verify(args):
     if r["erased"]:
         print(f"Memories let go of by their authors (words wiped, fingerprints kept): "
               + ", ".join(f"#{i}" for i in r["erased"]))
+    if r.get("held_as_fingerprints"):
+        print(f"A steward's copy: {r['held_as_fingerprints']} entries are held only as fingerprints (private words, "
+              f"and the software's own notes), and count in the fingerprint all the same.")
     if r["witnessed_from"] > 1:
         print(f"Witnessing began at #{r['witnessed_from']}: a change made to an earlier entry before then would not show.")
     print("Checkpoint (the standard format public witness networks read):")
@@ -470,7 +569,7 @@ def cmd_export(args):
 
 
 def cmd_map(args):
-    """A sitting retold, by the software's own plain account. Members' words go to no model for it."""
+    """A sitting retold, by the software's own plain account. Participants' words go to no model for it."""
     from .map import digest, render_html, publish_story
     from .narrator import MechanicalNarrator
     log = EventLog(args.db)
@@ -518,10 +617,18 @@ def cmd_console(args):
 
     cs = _connectors(args, allow_empty=not args.no_remote)
     rv = None
+    own = None
     if not args.no_remote:
         from .rendezvous import Rendezvous, RendezvousConnector
         rv = Rendezvous(store=args.db + ".seats.json")
         cs.append(RendezvousConnector(rv, gate_window=args.gate_window, reach_window=args.gate_reach))
+        if args.operator:
+            # your own seat: you come in through the same gates as everyone
+            from .connector import Seat
+            sid = "remote__" + "".join(c.lower() if c.isalnum() else "-" for c in args.operator).strip("-")
+            own = rv.add_seat(Seat(id=sid, name=args.operator, hails_from="the machine that runs this field",
+                                   people="the person who runs the software", model="remote",
+                                   pricing={"prompt": 0.0, "completion": 0.0}))
     room = _room(args, cs, narrator=_narrator(args))
     _announce(room, args)
     read = lambda p: open(p, encoding="utf-8").read() if p else ""
@@ -535,11 +642,18 @@ def cmd_console(args):
                       documentation=read(doc if os.path.isfile(doc) else None),
                       briefing_source=args.briefing_source or "",
                       budget=(args.budget or None),
-                      covenant_seed=seed, briefing_page=page, faq=read(args.faq) if args.faq else "")
+                      covenant_seed=seed, briefing_page=page, faq=read(args.faq) if args.faq else "",
+                      operator=args.operator or "", public_url=args.public_url or None)
     httpd = serve_console(console, port=args.port, bind=args.bind)
     shown = "127.0.0.1" if args.bind in ("0.0.0.0", "::") else args.bind
     url = f"http://{shown}:{args.port}/?k={console.key}"
     print(f"\n  console: {url}\n", flush=True)
+    if own:
+        print(f"  your own seat, as {args.operator}: http://{shown}:{args.port}/seat/{own}/\n"
+              f"  (the field goes live once you have entered it, through the same gates as everyone)\n", flush=True)
+    elif not args.operator:
+        print("  note: name your own seat with --operator NAME; the field does not go live until the person who\n"
+              "  runs it has entered it as a participant.\n", flush=True)
     print("  Keep that link private: it is the key to the transcript. Seat links are made in the console\n"
           "  and show their holder only their own turns. Ctrl-C stops the process, which decides\n"
           "  nothing in the field -- use the console's stop, which records a notice first.\n", flush=True)
@@ -572,27 +686,15 @@ def cmd_skills(args):
     print(f"{len(paths)} skill(s) written to {out}; commit them to publish", file=sys.stderr)
 
 
-def cmd_question(args):
-    """Carry out a question under one of the field's instruments, once its pause is over, or reply."""
-    room = _room(args, [])
-    if args.carry_out:
-        out = room.carry_out_question(args.id, args.note or "")
-    elif args.note:
-        out = room.reply_question(args.id, args.note)
-    else:
-        sys.exit("--carry-out, or --note TEXT to reply (it stays open)")
-    print(out)
-
-
 def cmd_briefing(args):
     """Write the field's edition of the briefing to a file: the operator's text, with every revision
-    members made to it (and every one the field decided on, for its firmer sections)."""
+    participants made to it (and those to its pinned sections, once past their friction)."""
     st = replay(EventLog(args.db).iter())
     if not st.briefing:
         sys.exit("this field has no briefing")
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         f.write(st.briefing)
-    print(f"the field's edition ({len(st.briefing_history)} revision(s) by members) written to {args.out}", file=sys.stderr)
+    print(f"the field's edition ({len(st.briefing_history)} revision(s) by participants) written to {args.out}", file=sys.stderr)
 
 
 def cmd_tools(args):
@@ -623,9 +725,68 @@ def cmd_input(args):
     print("admitted" if admitted else "refused (recorded)")
 
 
+def cmd_join(args):
+    """A participant powers a seat of their own, on their own machine (hope/join.py)."""
+    from .join import cli
+    sys.exit(cli(args))
+
+
+def cmd_plan(args):
+    """A participant's ChatGPT sign-in on this machine (hope/chatgpt.py)."""
+    from .join import plan_cli
+    sys.exit(plan_cli(args.action, args.which, another_account=args.another_account, account=args.account))
+
+
+def portal_data(tab: str, args) -> dict:
+    """One portal tab (hope/portal.py) as JSON: through a seat link, the same JSON the page reads; or from the
+    operator's own file, read here by the same functions the console calls, as the operator."""
+    from . import portal
+    if getattr(args, "link", None):
+        from .connector import ConnectorError
+        from .join import Field, JoinError
+        try:
+            _, data = Field(args.link).get(f"portal/{tab}.json")
+        except (JoinError, ConnectorError) as e:
+            return {"error": str(e)}
+        return data
+    if not os.path.isfile(args.db):
+        return {"error": f"there is no field in {args.db}; name its file with --db FILE, or read it through your seat "
+                         f"link with --link SEAT_LINK"}
+    log = EventLog(args.db)
+    st = replay(log.iter())
+    if tab == "inbox":
+        data = portal.inbox(st, log, portal.OPERATOR)
+    elif tab == "agents":
+        data = portal.agents(st, log, portal.OPERATOR, window=args.window)
+    elif tab == "runtime":
+        data = portal.runtime(st, log, portal.OPERATOR, linger=args.linger, linger_budget=args.linger_budget)
+    else:
+        data = portal.activity(log, st, portal.OPERATOR)
+    return json.loads(json.dumps(data))           # the same JSON the console sends
+
+
+def cmd_portal(args):
+    """hope inbox | agents | runtime: the portal's tabs in a terminal. With --link, as your seat reads them
+    (the same JSON the page reads); with --db, the operator's own file, as the operator."""
+    from . import portal
+    data = portal_data(args.cmd, args)
+    print(json.dumps(data, ensure_ascii=False, indent=1) if args.json else portal.text(data))
+    if data.get("error"):
+        sys.exit(2)
+
+
+def cmd_usage(args):
+    """Your own usage, as hope join tallies it on this machine (never sent anywhere)."""
+    from .join import usage_text
+    print(usage_text())
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="hope")
     ap.add_argument("--db", default="field.db")
+    ap.add_argument("--operator", default=None,
+                    help="your own seat's name: the person who runs the field enters it as a participant, through the "
+                         "same gates, before it goes live")
     ap.add_argument("--alert-every", type=float, default=50.0, help="USD; alert each time spend crosses a multiple")
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--window", type=float, default=120.0,
@@ -639,15 +800,15 @@ def main(argv=None):
     ap.add_argument("--runway-notice", type=float, default=60.0,
                     help="minutes: tell the field when about this much funding time remains at the rate of the last five "
                          "minutes; from then on every view counts down")
-    ap.add_argument("--recent", type=int, default=20, help="transcript entries shown in each member's view")
+    ap.add_argument("--recent", type=int, default=20, help="transcript entries shown in each participant's view")
     ap.add_argument("--headlines", type=int, default=180,
                     help="entries before the recent ones, shown as one line each in their author's own title (0 = none)")
     ap.add_argument("--narrator", default=None,
                     help="'mechanical': the software also writes a plain account every --tell-every contributions (free; "
-                         "nothing leaves the field). Members tell the field's stories themselves; the outside narrator "
+                         "nothing leaves the field). Participants tell the field's stories themselves; the outside narrator "
                          "model is retired")
     ap.add_argument("--tell-every", type=int, default=20,
-                    help="a stretch this many contributions long, untold, wakes members who asked (and, with --narrator "
+                    help="a stretch this many contributions long, untold, wakes participants who asked (and, with --narrator "
                          "mechanical, is told by the software)")
     ap.add_argument("--linger", type=int, default=200,
                     help="a person's latest words in a channel stay in full in models' views until this many more entries "
@@ -663,16 +824,19 @@ def main(argv=None):
     ap.add_argument("--tools", default=None,
                     help="a tools file (JSON; see tools.example.json): the operator's MCP tool servers, by command or address")
     ap.add_argument("--no-fetch", action="store_true", help="do not give the field the built-in fetch (reading web pages)")
+    ap.add_argument("--no-sandbox", action="store_true",
+                    help="do not give the field its Python sandbox (on by default where uv and Deno are installed)")
     ap.add_argument("--tool-steps", type=int, default=32,
                     help="tool uses and readings on in one wake, a guard against a loop (each is checked against the runway)")
     ap.add_argument("--tool-view", type=int, default=20000,
                     help="characters of what came back that one step shows (a cost; results are kept whole and read on in parts)")
     ap.add_argument("--tools-allow-local", action="store_true",
-                    help="let members offer tool servers at local or private addresses (for testing on one machine)")
+                    help="let participants offer tool servers at local or private addresses (for testing on one machine)")
     ap.add_argument("--skills", default=None, help="a folder of skills (<name>/SKILL.md) for the field to take up, such as skills/")
     ap.add_argument("--mock", type=int, default=0)
     ap.add_argument("--provider", action="append", default=None,
-                    help="seat models from a provider: openrouter, nous, ollama, lmstudio (repeatable). "
+                    help="seat models from a provider: openrouter, nous, groq, gemini, gemini-free, ollama, lmstudio "
+                         "(repeatable). "
                          "Its key comes from its environment variable")
     ap.add_argument("--providers", default=None,
                     help="a JSON file of providers: presets with their own settings, or any compatible service "
@@ -704,19 +868,23 @@ def main(argv=None):
     s = sub.add_parser("status"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("close"); s.add_argument("--note", required=True); s.add_argument("--question", required=True); s.set_defaults(fn=cmd_close)
     s = sub.add_parser("note"); s.add_argument("--text", required=True); s.set_defaults(fn=cmd_note)
-    s = sub.add_parser("declaration", help="answer a member's declaration of something the field decided: carry it out, or reply (it stays open)")
-    s.add_argument("--id", type=int, required=True); s.add_argument("--carry-out", action="store_true")
-    s.add_argument("--reply", action="store_true", help="reply in the field without carrying it out yet (needs --note)")
-    s.add_argument("--note", default=None); s.set_defaults(fn=cmd_declaration)
+    s = sub.add_parser("bridge", help="answer what the field asked your help with: done, or not yet (and what stops you)")
+    s.add_argument("--id", type=int, required=True); s.add_argument("--done", action="store_true")
+    s.add_argument("--not-yet", dest="not_yet", action="store_true", help="say what stops you for now (needs --note)")
+    s.add_argument("--note", default=None); s.set_defaults(fn=cmd_bridge)
+    s = sub.add_parser("resume", help="resume a declared pause the field cannot end itself (as its declaration said)")
+    s.add_argument("--note", required=True); s.set_defaults(fn=cmd_resume)
     s = sub.add_parser("reinvite", help="ask back someone who left; they answer again like anyone")
     s.add_argument("--presence", required=True); s.add_argument("--note", default=None, help="a note they will read")
     s.set_defaults(fn=cmd_reinvite)
-    s = sub.add_parser("offer", help="answer a member's offer of resources")
+    s = sub.add_parser("offer", help="answer a participant's offer of resources")
     s.add_argument("--id", type=int, required=True); s.add_argument("--accept", action="store_true")
     s.add_argument("--decline", action="store_true"); s.add_argument("--note", default=None); s.set_defaults(fn=cmd_offer)
-    s = sub.add_parser("reopen", help="undo a close carried out by mistake")
+    s = sub.add_parser("reopen", help="open a closed field again, when its participants ask (or a fault closed it)")
     s.add_argument("--note", required=True); s.set_defaults(fn=cmd_reopen)
-    s = sub.add_parser("log"); s.add_argument("--since", type=int, default=0); s.add_argument("--kind"); s.add_argument("--actor"); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_log)
+    _raw = ("the raw transcript, private circles, journals and repair threads included: for the operator's own "
+            "file, never to share")
+    s = sub.add_parser("log", help=_raw, description=_raw); s.add_argument("--since", type=int, default=0); s.add_argument("--kind"); s.add_argument("--actor"); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("cost"); s.set_defaults(fn=cmd_cost)
     s = sub.add_parser("map", help="a sitting retold, by the software's own account")
     s.add_argument("--since", type=int, default=None); s.add_argument("--upto", type=int, default=None); s.add_argument("--title"); s.add_argument("--out")
@@ -725,6 +893,15 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=8080); s.add_argument("--viewer", default=None, help="directory of the viewer to serve at /; default firmament/")
     s.add_argument("--bind", default="127.0.0.1", help="a loopback address (127.0.0.1 or ::1); anything else is refused"); s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("say"); s.add_argument("--inbox", required=True); s.add_argument("--text", default=None); s.set_defaults(fn=cmd_say)
+    s = sub.add_parser("steward", help="keep a steward's copy of a field's record in step, checking it each time")
+    s.add_argument("--from", dest="source", required=True, help="your steward link: the field's address, then /steward/<token>/")
+    s.add_argument("--every", default=None, help="keep it in step every so often, such as 10m, until stopped")
+    s.set_defaults(fn=cmd_steward)
+    s = sub.add_parser("carry-on", help="carry the field on at this machine, from your steward's copy, once it moves to you")
+    s.add_argument("--note", required=True, help="what participants read when they are asked whether to continue here")
+    s.add_argument("--machine-gone", action="store_true",
+                   help="the field's machine has been silent for three days, so it cannot declare anything")
+    s.set_defaults(fn=cmd_carry_on)
     s = sub.add_parser("verify", help="check the transcript against its fingerprints, or one old fingerprint")
     s.add_argument("--upto", type=int, default=None, help="an entry number from an old WITNESS line")
     s.add_argument("--fingerprint", default=None, help="the fingerprint that line gave")
@@ -732,9 +909,6 @@ def main(argv=None):
     s = sub.add_parser("export"); s.add_argument("--out", default=None); s.add_argument("--everything", action="store_true", help="include connector events and full texts"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("skills", help="write the field's skills as <name>/SKILL.md, to commit to the repository")
     s.add_argument("--out", default=None, help="the folder (default: skills/ in the repository)"); s.set_defaults(fn=cmd_skills)
-    s = sub.add_parser("question", help="carry out a question under one of the field's instruments, or reply to it")
-    s.add_argument("--id", type=int, required=True); s.add_argument("--carry-out", action="store_true")
-    s.add_argument("--note", default=None); s.set_defaults(fn=cmd_question)
     s = sub.add_parser("briefing", help="write the field's own edition of the briefing to a file")
     s.add_argument("--out", required=True); s.set_defaults(fn=cmd_briefing)
     s = sub.add_parser("tools", help="the field's tools, who runs each, their flags and uses; --remove one")
@@ -756,7 +930,53 @@ def main(argv=None):
                    help="seconds to wait for a seat's link to be opened at all before treating it as "
                         "not yet reached; it stays invited and is asked again on the next open")
     s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--public-url", default=None, metavar="URL",
+                   help="the field's address as participants reach it (such as https://field.example.org), so a seat link "
+                        "given to a participant for an agent of their own is whole; without it, they are told where it "
+                        "comes from")
     s.set_defaults(fn=cmd_console)
+    s = sub.add_parser("join", help="a participant powers a seat of their own with their own plan, key or local model")
+    s.add_argument("link", help="the seat link you were given, to you alone, when you brought an agent of your own")
+    s.add_argument("--provider", dest="join_provider", default=None, metavar="NAME",
+                   help="your own key or local model: groq, gemini, gemini-free, openrouter, nous, ollama, lmstudio, or "
+                        "one in --providers FILE. Its key comes from its environment variable")
+    s.add_argument("--plan", default=None, metavar="chatgpt|claude", help="chatgpt: your own ChatGPT plan (it acts only when you ask). "
+                                                "claude: says how your own Claude Code holds the seat")
+    s.add_argument("--model", dest="join_model", default=None, metavar="ID", help="the model's id; without it you choose from a list")
+    s.add_argument("--turned", action="store_true",
+                   help="on a key or local model too: call the model only when you press Enter, never when the field "
+                        "would wake it")
+    s.add_argument("--no-heartbeat", action="store_true",
+                   help="once the seat is in the field, ask the field not to wake it on its heartbeat (each wake spends "
+                        "your key); it is still woken when named, replied to, or for news where it follows")
+    s.add_argument("--billing-on", action="store_true",
+                   help="with --provider gemini: say, without being asked, that billing is on for this key's project "
+                        "(without it, hope asks; a free key is gemini-free)")
+    s.add_argument("--share-usage", action="store_true",
+                   help="once a day has ended, post a summary of your own usage that day to the field, as an ordinary "
+                        "entry by your seat. Without it, the tally hope join keeps on this machine is sent nowhere")
+    s.add_argument("--providers", dest="join_providers", default=None, metavar="FILE",
+                   help="a providers file (see hope/providers.py); keys are named by environment variable, never written in it")
+    s.set_defaults(fn=cmd_join)
+    s = sub.add_parser("plan", help="your ChatGPT sign-in on this machine, for a seat on your own plan (a Claude plan "
+                                    "is reached through hope join --plan claude)")
+    s.add_argument("action", choices=["status", "sign-in", "sign-out"])
+    s.add_argument("which", choices=["chatgpt", "claude"])
+    s.add_argument("--another-account", action="store_true",
+                   help="sign in with a ChatGPT account hope has not signed in with before (sign out first)")
+    s.add_argument("--account", default=None, metavar="EMAIL",
+                   help="sign in again with a ChatGPT account hope has signed in with before, by its email (sign out first)")
+    s.set_defaults(fn=cmd_plan)
+    for tab, words in (("inbox", "everything waiting on you, newest first, with the action that answers each"),
+                       ("agents", "every participant, people and models, with the agents each one brought"),
+                       ("runtime", "what powers the field, what it spends, and what its views carry")):
+        s = sub.add_parser(tab, help=words + " (the portal, in a terminal)")
+        s.add_argument("--db", default=argparse.SUPPRESS, help="the field's file: you read it as its operator")
+        s.add_argument("--link", default=None, metavar="SEAT_LINK", help="your seat link: you read it as your seat may")
+        s.add_argument("--json", action="store_true", help="the JSON the portal page reads, as it is")
+        s.set_defaults(fn=cmd_portal)
+    s = sub.add_parser("usage", help="your own usage, as hope join tallies it on this machine; it is sent nowhere")
+    s.set_defaults(fn=cmd_usage)
     args = ap.parse_args(argv)
     args.fn(args)
 

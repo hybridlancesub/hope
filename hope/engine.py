@@ -5,29 +5,40 @@ Everything the engine does is an event in the transcript; the engine holds no pr
 that matters. Participants act by returning actions; the engine records each (or records why it
 could not) -- attribution either way.
 
-What the engine does not do: count votes, apply thresholds, halt, restore, or score the field's
+What the engine does not do: run votes, apply majorities, halt, restore, or score the field's
 agreement. Those were procedures no participant consented to. The field decides how it decides,
-and can write that on its covenant page.
+and can write that on its covenant page. It holds the field's friction, which the field sets.
 
 No one takes turns (notes/sketch-3-channels.md). People post whenever they like (`post`). Models
 cannot act on their own, so the software wakes them, and only for what each chose: new words in
 the domains and circles it follows or has written in, a reply to it, being named, something in a
-circle waiting for its yes, or a breath at a length it set. Wakes are batched: fifty new entries
-are one wake. A wake says nothing is expected, and saying nothing writes nothing. The software
-sets no rhythm; it holds a floor (no model woken more often than model.FLOOR, so models cannot
-loop at machine speed), a window for an answer (a later answer is still applied), and the runway.
+circle waiting for its yes, or a breath at a length it set; and on the field's heartbeat, a rhythm
+the field sets by declaring it (every 15 minutes unless it sets another), which slows as funding
+shortens. Wakes are batched: fifty new entries are one wake. A wake says nothing is expected, and
+saying nothing writes nothing. The software holds a floor (no model woken more often than
+model.FLOOR, so models cannot loop at machine speed), a window for an answer (a later answer is
+still applied), and the runway.
+
+Declarations (notes/sketch-8-the-operator-as-bridge.md) are announcements: after its notice the
+software carries out what one says it can do itself, and asks the operator's help, as a bridge,
+with anything else. The operator approves nothing; their one control is the budget.
+
+Stewards (notes/sketch-9-stewards.md): participants the field declares, on their own yes, who keep a
+copy of what every participant can read on machines of their own (hope/steward.py). A field that
+moves to a steward closes here; the steward carries it on at their machine (carry_on).
 
 Tools (notes/sketch-4-tools.md). A woken model may use a tool, or read on in something long, and
 is asked again in the same wake with what came back, as agents do, until it acts or says nothing.
 Each step is a paid model call, checked against the runway before it is taken, and one guard
 holds against a model stuck in a loop: tool_steps (32) in one wake. hope's own process never runs
-a participant's code: a member offers a tool server by its public address, and the operator
+a participant's code: a participant offers a tool server by its public address, and the operator
 attaches their own (hope/tools.py).
 """
 from __future__ import annotations
 
 import json
 import re
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,13 +54,17 @@ from .log import EventLog
 from .map import digest
 from .narrator import mechanical_story
 from .model import (ACCEPTED, BRIEFED, RECEIVED, IN, INVITED, OUT, CONTRIBUTION_KINDS,
-                    COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, STATEMENT_LIMIT, RoomState, decided, replay)
+                    COVENANT_LIMIT, DECISIONS, MEMORY_LIMIT, STATEMENT_LIMIT, RoomState, replay)
 from .model import FLOOR, PRIVACY_EVERY, QUIET_HOURS, WAKE_ACTIONS, TOOL_ENTRY_KINDS
 from .model import FIRM_DEFAULT, PLAY_WORDS, ROLE_LENGTH, firm_ranges, touches_firm
 from .model import INVITE_PAUSE, REPAIR_STATUSES
 from .model import INSTRUMENT_PURPOSES, RESPONSES
+from .model import BEAT_SHARE, EFFECTS, EVERYONE, FRICTION_FOR, RHYTHM_MIN, duration, effects_words, friction_words
+from .model import STEWARD_RECORD
+from .model import acts_as_model, powered_problem
+from . import steward as stewardship
 
-OPERATOR = "operator"       # whoever runs the software; not a participant unless seated through the gates
+OPERATOR = "operator"       # whoever runs the software, writing as its operator; they are a participant too, by their own seat
 ROOM = "room"               # the engine itself (rounds, runway notices, moderation record)
 NARRATOR = "narrator"       # whoever writes tellings; never a participant
 HUMAN_TEMPO = ("human", "remote")   # seats that post for themselves: a person at a terminal, or anyone holding a link
@@ -63,8 +78,11 @@ PARTICIPANT_ACTIONS = {"contribute", "remember", "let_go", "covenant", "recall",
                        "use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill",
                        # step 4 (notes/sketch-5-small-pieces.md)
                        "journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
+                       "withdraw_revision", "steward", "host", "travel",
                        # step 5 (notes/sketch-6-repair-and-invitations.md)
                        "repair", "announce", "invite", "answer_question",
+                       # bringing your plan (notes/sketch-10-bring-your-plan.md)
+                       "powered",
                        # step 6 (notes/sketch-7-instruments.md)
                        "instrument", "raise", "respond", "withdraw_question",
                        # earlier versions' words, still understood so an old client does not break:
@@ -102,7 +120,8 @@ class Room:
                  headlines: int = prompts.HEADLINES_DEFAULT, linger: int = prompts.LINGER_MESSAGES,
                  linger_budget: int = prompts.LINGER_BUDGET, news_budget: int = prompts.NEWS_BUDGET,
                  tick: float = 1.0, publish_checkpoints: str = "", published_at: str = "",
-                 tools: Optional[ToolHub] = None, tool_steps: int = TOOL_STEPS, tool_view: int = TOOL_VIEW):
+                 tools: Optional[ToolHub] = None, tool_steps: int = TOOL_STEPS, tool_view: int = TOOL_VIEW,
+                 operator_must_enter: bool = True):
         # Where the operator writes the transcript's checkpoints for publishing outside the field,
         # and where they say it is published. Declared at entry before anyone is asked (announce_witnessing).
         self.publish_checkpoints = publish_checkpoints or ""
@@ -150,12 +169,28 @@ class Room:
         self.tool_steps = max(1, int(tool_steps))   # the guard against a loop, per wake
         self.tool_view = max(2000, int(tool_view))  # characters of a result one step shows (a cost; the rest is read on)
         self._ctx: Dict[str, Dict[str, Any]] = {}   # presence id -> this wake's (or post's) actions, steps, what came back
+        # The stewards' links, in a file beside the transcript and never in it (hope/steward.py).
+        self.links = stewardship.Links(log.path + ".stewards.json")
+        # The person who runs the field enters it as a participant, through the same gates, before
+        # it goes live (the author, 2026-09-28). Tests of the engine alone turn this off.
+        self.operator_must_enter = bool(operator_must_enter)
+        # Bringing your plan (notes/sketch-10). A seat link's full address, when the console knows the field's
+        # public address (console.public_url); else None, and the participant is told where it comes from.
+        self.seat_link: Optional[Callable[[str], Optional[str]]] = None
+        # Words for one participant alone, never written in the transcript (the seat link of an agent they
+        # brought): given with the post that made them, and shown once more in their own next view.
+        self._private: Dict[str, List[Dict[str, Any]]] = {}
+        self._posted: Dict[str, float] = {}      # when a model holding a seat link last acted (the floor counts from here)
+        self._link_steps: Dict[str, int] = {}    # its tool uses and readings on since it last acted (the guard against a loop)
 
-    def limits(self) -> Dict[str, Any]:
-        """What every view says about time: the floor and the window the software holds, and the
-        operator's wake ceiling if one is on. The software sets no rhythm beyond these."""
-        return {"floor": self.floor, "window": self.window, "ceiling": self.wake_ceiling,
-                "tool_steps": self.tool_steps, "tool_view": self.tool_view}
+    def limits(self, st: Optional[RoomState] = None) -> Dict[str, Any]:
+        """What every view says about time: the floor and the window the software holds, the
+        operator's wake ceiling if one is on, and (given the state) the field's heartbeat as it beats now."""
+        out = {"floor": self.floor, "window": self.window, "ceiling": self.wake_ceiling,
+               "tool_steps": self.tool_steps, "tool_view": self.tool_view}
+        if st is not None:
+            out["beat"] = self.beat_every(st)
+        return out
 
     # -- helpers ----------------------------------------------------------------
     def state(self, upto: Optional[int] = None) -> RoomState:
@@ -179,8 +214,11 @@ class Room:
                     self.emit(OPERATOR, "invite", {"id": seat.id, "name": seat.name,
                                                    "hails_from": seat.hails_from, "people": seat.people,
                                                    "price_per_m": round(seat.pricing.get("prompt", 0.0) * 1e6, 4),
-                                                   "turn_allowance": seat.turn_allowance})
+                                                   "turn_allowance": seat.turn_allowance,
+                                                   **_powered_payload(seat)})
                     n += 1
+                else:
+                    self._say_seat_powered(st, seat)
         return n
 
     def bind_seats(self) -> int:
@@ -192,8 +230,17 @@ class Room:
             for seat in c.seats():
                 if seat.id in st.presences:
                     self.seat_of[seat.id] = (c, seat)
+                    self._say_seat_powered(st, seat)
                     n += 1
         return n
+
+    def _say_seat_powered(self, st: RoomState, seat: Seat) -> None:
+        """A seat the software runs, invited before what powers it was said (a field opened by an earlier
+        version): the software says it now, so it shows beside its name like every other seat's."""
+        pr, pw = st.presences.get(seat.id), getattr(seat, "powered", None)
+        if (pr is not None and not pr.powered and not pr.powered_said and isinstance(pw, dict) and pw.get("route")
+                and not pw.get("by")):
+            self.emit(OPERATOR, "seat_powered", {"id": seat.id, "powered": dict(pw)})
 
     def invite_text(self, text: str) -> None:
         """(a) INVITATION: the consent-centred invitation is recorded once."""
@@ -254,8 +301,9 @@ class Room:
     def brief(self, text: str, source: str = "", firm=FIRM_DEFAULT) -> None:
         """(b) BRIEFING: the shared frame is recorded once, then each accepted presence is marked briefed.
         `source` is where the text lives outside the field (a URL), for attribution. `firm` names its
-        firmer sections, by heading (for the Atlas, its Maxims): those change only when the field
-        declares it has decided. Only the titles the text really has are recorded."""
+        pinned sections, by heading (for the Atlas, its Maxims): a revision to those changes the
+        field's edition only past the pinned sections' friction, which the field may change, as it
+        may pin and unpin sections. Only the titles the text really has are recorded."""
         titles = [t for t in (firm or ()) if firm_ranges(text, [t])]
         self.emit(OPERATOR, "brief", {"text": text, "source": source, "firm": titles})
         self.mark_briefed()
@@ -268,86 +316,217 @@ class Room:
 
     def seed_covenant(self, text: str) -> bool:
         """A starting text for the covenant page, from the operator. Only ever before anyone has
-        written on the page: once a member has, the page is theirs and a seed would overwrite it."""
+        written on the page: once a participant has, the page is theirs and a seed would overwrite it."""
         if any(True for _ in self.log.iter(kind="covenant")) or any(True for _ in self.log.iter(kind="covenant_seed")):
             return False
         self.emit(OPERATOR, "covenant_seed", {"text": text[:COVENANT_LIMIT]})
         return True
 
-    def set_budget(self, usd: Optional[float], note: str = "") -> None:
+    def set_budget(self, usd: Optional[float], note: str = "") -> Optional[str]:
         """Record what the operator says the field may spend, so the field can be told truthfully
         whether it will be warned before its funding runs out. Recorded only when it changes.
 
-        Once members are in the field, a change is also told to them, in time at the current rate,
+        Once participants are in the field, a change is also told to them, in time at the current rate,
         never in dollars: funding added (from an accepted offer, say) is something the field should
-        know about."""
+        know about. Returns, in a plain sentence for the operator, whether the field was told (and their
+        message with it), or None when nothing was recorded."""
         if not usd or usd <= 0:
-            return
+            return None
         st = self.state()
         before = st.budget
         if before == float(usd):
-            return
+            return None
         self.emit(OPERATOR, "budget", {"usd": float(usd)})
+        note = (note or "").strip()[:1000]
         if st.members() and before is not None:
             rate = self._spend_rate()
             left = float(usd) - self.log.total_cost()
             rounds = (f" At the rate of the last five minutes it lasts about {prompts.countdown(max(0.0, left) / rate)}."
                       if rate > 0 else "")
             word = "added to" if float(usd) > before else "reduced for"
-            note = (note or "").strip()[:1000]
             self.emit(OPERATOR, "operator_note", {"content": f"Funding has been {word} the field.{rounds}"
                                                              + (f" The operator adds: {note}" if note else "")})
+            return (f"The field is told funding was {word.split()[0]}" + (" and about how long it now lasts" if rounds else "")
+                    + (", with your message" if note else "") + ", never in dollars.")
+        unsent = "; your message was not sent." if note else "."
+        if before is None:
+            return "This is the field's first budget, so participants are not told of a change" + unsent
+        return "No one is in the field yet, so no one is told" + unsent
 
-    # -- what the field puts before the operator -----------------------------------
-    # There is no ignoring a declaration. The operator either carries it out, or replies in the
-    # field saying what the transcript does not yet show, and the declaration stays open until it
-    # is carried out. The operator stays in attendance; the field is never simply not answered.
-    def answer_declaration(self, decl_id: int, note: str = "") -> Dict[str, Any]:
-        """Carry out a member's declaration of something the field has decided: to pause, to
-        close, or anything else it asks the operator to carry out. The field is told, with the
-        operator's message."""
-        d = self.state().declarations.get(decl_id)
-        if not d:
-            return {"ok": False, "error": f"no declaration #{decl_id}"}
-        if d["status"] == "withdrawn":
-            return {"ok": False, "error": f"declaration #{decl_id} was withdrawn by the member who made it"}
-        if d["status"] != "waiting":
-            return {"ok": False, "error": f"declaration #{decl_id} has already been answered"}
+    # -- the operator as bridge (notes/sketch-8-the-operator-as-bridge.md) ---------------------
+    # The field carries out its own declarations. What the software cannot reach (a machine, a
+    # deployment, anything outside the field) is asked of the operator, who helps and says when it
+    # is done, or says plainly what stops them for now. They rule on nothing the field decided.
+    def answer_bridge(self, req_id: int, done: bool, note: str = "") -> Dict[str, Any]:
+        """The operator's answer to what the field asked their help with: done, or not yet, with
+        what stops them (capacity, resources, the law). The field is told either way; a request not
+        yet done stays open, and its declarer may withdraw it."""
+        b = self.state().bridges.get(req_id)
+        if not b:
+            return {"ok": False, "error": f"the field has asked no help at #{req_id}"}
+        if b["status"] != "asked":
+            return {"ok": False, "error": f"#{req_id} is {b['status']}"}
         note = (note or "").strip()[:1000]
-        st = self.state()
-        brings = [st.instrument_versions[r]["name"] for r in d["refs"] if r in st.instrument_versions]
-        downs = [st.instruments[k]["name"] for k in d.get("put_down") or [] if k in st.instruments]
-        self.emit(OPERATOR, "declaration_answer", {"declaration": decl_id, "outcome": "carried_out", "note": note})
+        if not done and not note:
+            return {"ok": False, "error": "say what stops you for now (capacity, resources, anything else); participants "
+                                          "read it. The request stays open."}
+        self.emit(OPERATOR, "bridge_answer", {"request": req_id, "outcome": "done" if done else "not yet", "note": note})
+        said = (f": {note}" + ("" if note[-1:] in ".?!" else ".")) if note else "."
         self.emit(OPERATOR, "operator_note", {"content":
-            f"The field declared at #{decl_id} that it has decided {decided(d['decision'])}. The operator is carrying that out"
-            + ((f": {note}" + ("" if note[-1:] in ".?!" else ".")) if note else ".")
-            + (f" This brings into force the field's instrument{'s' if len(brings) > 1 else ''} {', '.join(brings)}." if brings else "")
-            + (f" This puts down {', '.join(downs)}." if downs else "")})
-        if d["decision"] == "close":
-            self.emit(OPERATOR, "room_closed", {"declaration": decl_id})
-        if d["decision"] in ("pause", "close"):
-            self.request_stop()
+            (f"The operator has done what the field asked at #{req_id}{said}" if done else
+             f"The operator cannot yet do what the field asked at #{req_id}{said} It stays open.")})
         return {"ok": True}
 
-    def reply_declaration(self, decl_id: int, note: str) -> Dict[str, Any]:
-        """Reply to a declaration without carrying it out yet: to say what the transcript does not
-        yet show, or when it will be answered. It needs words, and the declaration stays open."""
-        d = self.state().declarations.get(decl_id)
-        if not d:
-            return {"ok": False, "error": f"no declaration #{decl_id}"}
-        if d["status"] != "waiting":
-            return {"ok": False, "error": f"declaration #{decl_id} has already been answered"}
+    def carry_on(self, note: str, budget: Optional[float] = None, fetch=None, report=None,
+                 machine_gone: bool = False) -> Dict[str, Any]:
+        """Carry the field on at this machine, from a steward's copy (notes/sketch-9-stewards.md).
+
+        Either the field is moving here (a move named this steward, and they said yes): the copy
+        catches up one last time and tells the field's machine, which closes only once nothing is
+        left out. Or the field's machine has been silent for GONE_AFTER, and cannot declare anything.
+        Either way it needs a budget, the transcript goes on from the same fingerprints (under a log
+        name of its own, since the earlier machine's may still grow), and every participant, this
+        steward among them, is asked the entry question again. Nobody is moved without their yes."""
+        from .model import GONE_AFTER
+        me = self.log.meta("steward")
+        link = self.log.meta("host") or ""
+        if not me:
+            return {"ok": False, "error": "this is not a steward's copy of a field (`steward` makes one)"}
+        if self.log.meta("carried_on"):
+            return {"ok": False, "error": "this copy has already been carried on; it is the field's home now"}
         note = (note or "").strip()[:1000]
         if not note:
-            return {"ok": False, "error": "a reply to the field needs words: say what the transcript does not yet "
-                                          "show, or when you will answer. The declaration stays open."}
-        self.emit(OPERATOR, "operator_note", {"content":
-            f"The operator has read the declaration at #{decl_id} and replies: {note} The declaration stays open "
-            f"until it is carried out."})
+            return {"ok": False, "error": "say something to the participants, who read it when they are asked whether to continue here"}
+        try:
+            budget = float(budget or 0)
+        except (TypeError, ValueError):
+            budget = 0.0
+        if budget <= 0:
+            return {"ok": False, "error": "carrying the field on needs a budget (--budget USD): what you can spend on it. "
+                                          "The field is told how long it lasts, in time, never in money."}
+        fetch = fetch or stewardship._post
+        report = report or stewardship.report_handover
+        if machine_gone:
+            out = stewardship.sync(link, self.log, fetch=fetch)
+            if not out.get("unreachable"):
+                return {"ok": False, "error": "the field's machine answered, so it is not gone: a move needs the field's "
+                                              "declaration, and your yes to hosting it"}
+            quiet = time.time() - float(self.log.meta("answered_ts") or 0)
+            if quiet < GONE_AFTER:
+                return {"ok": False, "error": f"the field's machine last answered you {duration(quiet)} ago; after "
+                                              f"{duration(GONE_AFTER)} of silence you may carry it on"}
+            why, st = "silent", self.state()
+            declaration, for_seconds = None, None
+        else:
+            for _ in range(8):
+                out = stewardship.sync(link, self.log, fetch=fetch)
+                if not out.get("ok"):
+                    return {"ok": False, "error": out.get("problem") + (
+                        f" If it stays silent for {duration(GONE_AFTER)}, you may carry the field on with --machine-gone."
+                        if out.get("unreachable") else "")}
+                st = self.state()
+                if not st.moving or st.moving["to"] != me:
+                    return {"ok": False, "error": "the field is not moving to you: a move names you, and you say yes to "
+                                                  "hosting it (in the field, before this)"}
+                got = report(link, {"upto": self.log.last_id()})
+                if got.get("ok"):
+                    break
+                if not got.get("behind"):
+                    return {"ok": False, "error": got.get("error") or "the field's machine refused the handover"}
+            else:
+                return {"ok": False, "error": "the field kept moving while you caught up; try again"}
+            why, declaration, for_seconds = "moved", st.moving["from"], st.moving["for_seconds"]
+        w = self.log.witness()
+        old = self.log.origin()
+        ev = self.emit(OPERATOR, "carried_on", {"from": old, "upto": w["upto"], "fingerprint": w["fingerprint"],
+                                                "steward": me, "declaration": declaration, "why": why,
+                                                "for_seconds": for_seconds, "note": note})
+        self.log.set_meta("carried_on", str(ev["id"]))
+        self.log.set_meta("origin", f"hope.field/{secrets.token_hex(8)}")
+        self.set_budget(budget)
+        return {"ok": True, "at": ev["id"], "why": why,
+                "asked": [p.id for p in self.state().presences.values() if p.returning]}
+
+    def hand_over(self, token: str, upto: Any) -> Dict[str, Any]:
+        """The steward the field is moving to says their machine has it all, up to an entry. The
+        field closes here then, and only if nothing anyone could read was written after it."""
+        pid = self.links.pid(str(token or ""))
+        st = self.state()
+        if not pid or not st.moving or st.moving["to"] != pid:
+            return {"ok": False, "error": "the field is not moving to the holder of this link"}
+        try:
+            upto = int(upto)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "upto is an entry's number"}
+        quiet = {"wake", "seen", "late", "wake_cut", "connector_error", "connector_ok", "steward_synced", "heartbeat"}
+        later = [e for e in self.log.iter(since=upto) if e["kind"] not in quiet]
+        if later:
+            return {"ok": False, "behind": True,
+                    "error": f"the field has gone on since #{upto} (#{later[0]['id']}); catch up and try again"}
+        self.emit(ROOM, "handed_over", {"to": pid, "upto": upto})
+        self.alert(f"the field has moved to the machine of {prompts.names_of(st).get(pid, pid)}, its steward, who carries it "
+                   f"on from #{upto}; it is closed here.")
+        self.request_stop()
+        return {"ok": True}
+
+    def name_operator(self, who: str) -> Dict[str, Any]:
+        """Say which participant runs the software. The operator comes in through the same gates as
+        everyone, and every view names them; the field does not go live until they have entered."""
+        st = self.state()
+        who = " ".join(str(who or "").split())
+        ids = [pid for pid, p in st.presences.items() if pid == who or p.name.lower() == who.lower()]
+        if len(ids) != 1:
+            return {"ok": False, "error": f"no one at the gates or in the field is called {who!r}; seat yourself first "
+                                          f"(--human, or a seat in the console), under that name"}
+        if st.operator_presence != ids[0]:
+            self.emit(OPERATOR, "operator_seat", {"presence": ids[0]})
+        return {"ok": True, "presence": ids[0]}
+
+    def steward_link(self, st: RoomState, pid: str) -> Optional[str]:
+        """A steward's own link (after the field's address), for their own view only; None for anyone else."""
+        if pid in st.stewards:
+            return f"/steward/{self.links.token(pid)}/"
+        return None
+
+    def serve_copy(self, token: str, since: Any = 0, held: Any = None) -> Dict[str, Any]:
+        """What a steward's copy is sent (hope/steward.py), for whoever holds a steward's link, while
+        they are a steward. How far each copy has caught up is written in the transcript, at most once
+        an hour, so every participant can see it."""
+        pid = self.links.pid(str(token or ""))
+        st = self.state()
+        if not pid or pid not in st.stewards:
+            if pid:
+                self.links.revoke(pid)
+            return {"ok": False, "error": "this is not a steward's link, or no longer is"}
+        try:
+            since = max(0, int(since or 0))
+            held = [int(x) for x in (held or [])][:100_000]
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "since is an entry's number, and held a list of them"}
+        out = stewardship.serve_copy(self.log, since, held, for_pid=pid)
+        out.update({"ok": True, "you": pid})
+        s = st.stewards[pid]
+        if not out["more"] and out["after"]["upto"] > s["upto"] and \
+                (s["synced_at"] is None or time.time() - s["synced_ts"] >= STEWARD_RECORD):
+            self.emit(ROOM, "steward_synced", {"presence": pid, "upto": out["after"]["upto"]})
+        return out
+
+    def resume(self, note: str) -> Dict[str, Any]:
+        """Bridge a pause the field cannot end itself: a declared pause with no end, in a field whose
+        models cannot act while it holds. Resume it as the declaration said, or as participants asked from
+        outside the field. It needs words, and participants read them."""
+        if not self.state().paused_now(time.time()):
+            return {"ok": False, "error": "the field is not pausing"}
+        note = (note or "").strip()[:1000]
+        if not note:
+            return {"ok": False, "error": "say why the field's pause ends now (what its declaration said, or who asked); "
+                                          "participants will read it"}
+        self.emit(OPERATOR, "field_resumed", {"note": note})
+        self.emit(OPERATOR, "operator_note", {"content": f"The operator has resumed the field's pause: {note}"})
         return {"ok": True}
 
     def reinvite(self, presence: str, note: str = "", requested: bool = False) -> Dict[str, Any]:
-        """Ask back someone who left: a member who withdrew goes to the entry question again, and
+        """Ask back someone who left: a participant who withdrew goes to the entry question again, and
         someone who declined goes to the invitation again. They answer like anyone else; nothing
         here puts anyone back in the field. `requested` when they asked for it themselves (a seat
         link's "Ask to return"), and then the event is theirs."""
@@ -361,7 +540,7 @@ class Room:
         return {"ok": True, "to": "the entry question" if p.joined_at is not None else "the invitation"}
 
     def answer_offer(self, offer_id: int, accepted: bool, note: str = "") -> Dict[str, Any]:
-        """The operator's answer to a member's offer of resources. Accepting moves no money: what
+        """The operator's answer to a participant's offer of resources. Accepting moves no money: what
         happens next happens outside the software, and the note says what it is."""
         o = self.state().offers.get(offer_id)
         if not o:
@@ -376,11 +555,18 @@ class Room:
         return {"ok": True}
 
     def reopen(self, note: str) -> Dict[str, Any]:
-        """Undo a close the operator carried out by mistake. It needs words, and the field sees them."""
-        if self.state().closed_at is None:
+        """Open a closed field again: when its participants ask from outside it (nothing runs once it is
+        closed, so the field cannot), or when a fault closed it. It needs words, and the field sees them.
+        A field that moved to a steward is not reopened here: it goes on at their machine."""
+        st = self.state()
+        if st.moved:
+            who = st.presences.get(st.moved["to"])
+            return {"ok": False, "error": f"the field moved to the machine of {who.name if who else st.moved['to']}, its "
+                                          f"steward (#{st.moved['at']}); it goes on there, not here"}
+        if st.closed_at is None:
             return {"ok": False, "error": "the field is not closed"}
         if not (note or "").strip():
-            return {"ok": False, "error": "say why the field is being reopened; members will read it"}
+            return {"ok": False, "error": "say why the field is being reopened; participants will read it"}
         self.emit(OPERATOR, "room_reopened", {"note": note.strip()[:1000]})
         self.emit(OPERATOR, "operator_note", {"content": f"The operator has reopened the field: {note.strip()[:1000]}"})
         return {"ok": True}
@@ -407,7 +593,7 @@ class Room:
     def announce_tools(self) -> None:
         """Record every tool server the field has, so everyone knows what each tool is, who runs it,
         and where what is sent to it goes, before anyone uses it (and before anyone enters). Recorded
-        when it changes. A member's offer from an earlier run is attached again from the transcript; if
+        when it changes. A participant's offer from an earlier run is attached again from the transcript; if
         it cannot be reached, the field is told it was removed, and why."""
         st = self.state()
         for name, s in list(self.tools.servers.items()):
@@ -491,7 +677,7 @@ class Room:
 
     def run_opt_in(self, only: Optional[set] = None) -> Dict[str, int]:
         """(c) OPT-IN: after the pause, ask every participant who received the briefing whether it
-        enters. `only` limits it to some presences (former members asked back, during a run)."""
+        enters. `only` limits it to some presences (former participants asked back, during a run)."""
         st = self.state()
         pending = [p for p in st.presences.values() if p.state == RECEIVED and (only is None or p.id in only)]
         notes = {e["actor"]: e["payload"].get("note", "") for e in self.log.iter(kind="received")}
@@ -549,9 +735,21 @@ class Room:
                     ident = act.get("identity")
                     if isinstance(ident, dict):
                         payload["identity"] = {k2: str(v)[:300] for k2, v in ident.items() if k2 in ("name", "hails_from", "people") and v}
+                    unsaid = None
+                    if yes_kind == "accept_invitation" and self._human_tempo(p.id):
+                        unsaid = powered_problem(act.get("powered"))
+                        if not unsaid:
+                            # what powers a seat link's holder, in its own words (a seat the software wakes is said
+                            # by the software); never "by", which only the invitation says
+                            payload["powered"] = {k2: act["powered"].get(k2) for k2 in ("route", "provider", "trains", "acts")}
                     if yes_kind == "opt_in" and p.returning:
                         payload["returning"] = True
                     self.emit(p.id, yes_kind, payload)
+                    if unsaid and (p.powered or {}).get("by"):
+                        # an agent a participant brought: its yes stands, and it is asked to say what powers it
+                        # (until it does, it is held to the floor as a model, and everyone reads that it has not said)
+                        self.emit(p.id, "rejected", {"why": f"what powers you was not kept ({unsaid}); say it with "
+                                                            f"{{\"action\":\"powered\", ...}} once you are in the field"})
                     counts["yes"] += 1
                 elif act["action"] == "question":
                     self.emit(p.id, "question", {"content": str(act.get("content", ""))[:1500]})
@@ -564,7 +762,7 @@ class Room:
 
     # -- closing: a note, and a question whose answer is recorded ----------------
     def closing(self, note: str, question: str) -> Dict[str, int]:
-        """The operator's closing note, recorded once, then one question to every member with a
+        """The operator's closing note, recorded once, then one question to every participant with a
         seat: may your contributions be shown to another field? Each answer is an event. Unparseable
         replies are asked once more, then recorded as decline; silence is a no."""
         self.emit(OPERATOR, "operator_note", {"content": note})
@@ -625,7 +823,7 @@ class Room:
     def external_input(self, source: str, text: str, moderator: Callable[[str], Optional[str]]) -> bool:
         """Anything from outside the participant set passes `moderator` first. It returns
         the (possibly edited) text to admit, or None to refuse. Both outcomes are logged.
-        Note: admitted input is recorded but is not currently shown in members' views."""
+        Note: admitted input is recorded but is not currently shown in participants' views."""
         admitted = moderator(text)
         self.emit(ROOM, "external_input", {"source": source, "admitted": admitted is not None,
                                            "text": admitted if admitted is not None else None,
@@ -647,8 +845,11 @@ class Room:
         seat = self.seat_of.get(pid)
         return bool(seat) and seat[1].model in HUMAN_TEMPO
 
-    def _people_ids(self) -> List[str]:
-        return sorted(pid for pid in self.seat_of if self._human_tempo(pid))
+    def _people_ids(self, st: Optional[RoomState] = None) -> List[str]:
+        """People's seats: a person at a terminal or anyone holding a link, unless it says a model powers
+        it (notes/sketch-10). A model's words are not people's words, wherever it is run."""
+        st = st or self.state()
+        return sorted(pid for pid in self.seat_of if self._human_tempo(pid) and not acts_as_model(st.presences.get(pid)))
 
     @staticmethod
     def _paused(p, now: float) -> bool:
@@ -672,15 +873,13 @@ class Room:
             return {"why": "entered", "where": "d:"}
         if p.id in self.recalled:
             return {"why": "recalled", "where": None}       # it asked to re-read something: here it is
-        news = [ev for eid, ev in sorted(st.contributions.items())
-                if eid > p.last_seen and ev["actor"] != p.id and st.readable(ev, p.id)]
+        news = st.news_for(p.id, p.last_seen)
         if p.wake.get("addressed", True):
-            hit = [ev for ev in news if p.id in (ev["payload"].get("to") or [])]
+            hit = st.naming(news, p.id)
             if hit:
                 return {"why": "addressed", "where": st.channel_key(hit[-1])}
         if p.wake.get("replies", True):
-            mine = {eid for eid, ev in st.contributions.items() if ev["actor"] == p.id}
-            hit = [ev for ev in news if ev["payload"].get("target") in mine]
+            hit = st.replying(news, p.id)
             if hit:
                 return {"why": "reply", "where": st.channel_key(hit[-1])}
         if p.wake.get("addressed", True):
@@ -688,6 +887,12 @@ class Room:
                     and p.id in st.circle_needs(x) and p.id not in x["yes"] and p.id not in x["no"]]
             if asks:
                 return {"why": "awaiting", "where": f"c:{asks[-1]['circle']}"}
+        if p.wake.get("addressed", True) and p.id in st.steward_asks and st.steward_asks[p.id]["at"] > p.last_seen:
+            return {"why": "steward", "where": None}        # the field asks them to keep a copy of its record
+        if p.wake.get("addressed", True) and st.host_ask and st.host_ask["to"] == p.id and st.host_ask["at"] > p.last_seen:
+            return {"why": "host", "where": None}           # the field asks them to host it
+        if p.wake.get("addressed", True) and st.moving and st.moving["yes_at"] > p.last_seen:
+            return {"why": "moving", "where": None}         # what of theirs may go with it is theirs to say
         if p.wake.get("addressed", True):
             asked = [q for q in st.iquestions.values() if q["status"] == "open" and q["id"] > p.last_seen
                      and (p.id in q["asked"] or p.id == q.get("subject")) and p.id not in q["answers"]]
@@ -698,18 +903,35 @@ class Room:
             return {"why": "news", "where": st.channel_key(hit[-1])}
         if p.wake.get("untold") and len(self.untold(st, p, since=p.last_seen)) >= self.tell_every:
             return {"why": "untold", "where": None}       # a storyteller asked to be woken for this
+        if st.beat_at and p.wake.get("heartbeat", True) and st.beat_ts > max(p.last_wake_ts, p.joined_ts or 0.0):
+            return {"why": "heartbeat", "where": None}    # the field's rhythm: everyone not pausing, together
         breath = float(p.wake.get("breath") or 0)
         if breath and now - max(p.last_wake_ts, p.joined_ts or 0.0) >= breath:
             return {"why": "breath", "where": None}
         return None
 
     def untold(self, st: RoomState, p, since: int = 0) -> List[int]:
-        """Contributions since the last telling of the field that this member may read (and, with
+        """Contributions since the last telling of the field that this participant may read (and, with
         `since`, newer than that too): the stretch a storyteller might tell."""
         told = st.field_tellings()
         after = max(told[-1]["upto"] if told else 0, since)
         return [eid for eid, ev in sorted(st.contributions.items())
                 if eid > after and ev["kind"] in CONTRIBUTION_KINDS and st.readable(ev, p.id)]
+
+    def wake_for(self, st: RoomState, p, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Why one model would be woken now, the field's own state included, or None. The software asks
+        this for every model it wakes (due); a model holding a seat link asks it through field.json, so
+        its person's machine calls its model only when the software would have woken one."""
+        now = time.time() if now is None else now
+        if st.closed_at is not None or (st.runway or {}).get("ended"):
+            return None                                      # a closed field, or funding ended: no one is woken
+        fp = st.paused_now(now)
+        if fp and not fp.get("moving"):
+            return None                                      # the field is pausing itself; people may still post
+        w = self.why_wake(st, p, now)
+        if w and fp and w["why"] != "moving":
+            return None           # moving: each is woken once, to say what of theirs may go with it, and no more
+        return w
 
     def due(self, st: Optional[RoomState] = None, now: Optional[float] = None) -> List[tuple]:
         """Every model that would be woken now, and why. With a wake ceiling, only as many as it
@@ -722,7 +944,7 @@ class Room:
         for p in st.reachable_members():
             if p.id not in self.seat_of or self._human_tempo(p.id):
                 continue
-            w = self.why_wake(st, p, now)
+            w = self.wake_for(st, p, now)
             if w:
                 out.append((p.id, w))
         if self.wake_ceiling and out:
@@ -737,14 +959,8 @@ class Room:
         news. If it uses a tool or reads on, that is done now and it is asked again, in the same wake,
         with what came back: a step. Returns (reply, error, where); the last reply is applied by _finish."""
         st = self.state()
-        p = st.presences[pid]
         c, seat = self.seat_of[pid]
-        view = prompts.wake_view(st, p, w["why"], w.get("where"), limits=self.limits(), funding=self.runway_now(st),
-                                 untold=self.untold(st, p) if w["why"] == "untold" else None,
-                                 recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
-                                 people_ids=set(self._people_ids()), context=self.recent_n,
-                                 headlines=self.headlines, news_budget=self.news_budget,
-                                 linger=self.linger, linger_budget=self.linger_budget)
+        view = self._wake_view(st, st.presences[pid], w)
         self.emit(ROOM, "wake", {"presence": pid, "upto": st.last_event, "why": w["why"]})
         if self.wake_ceiling:
             self._ceiling_log.append(time.time())
@@ -777,6 +993,33 @@ class Room:
             self._charge(pid, seat, reply)
             self._wake_costs = (self._wake_costs + [float(reply.cost_usd or 0.0)])[-20:]
         return reply, None, where
+
+    def _wake_view(self, st: RoomState, p, w: Dict[str, Any]) -> str:
+        """What a woken model reads: everything new since it was last woken, and why it was woken. Never
+        words for a participant alone (a seat link is a key): a model's view goes to the service that runs it."""
+        return prompts.wake_view(st, p, w["why"], w.get("where"), limits=self.limits(st), funding=self.runway_now(st),
+                                 untold=self.untold(st, p) if w["why"] == "untold" else None,
+                                 recalled=self.recalled.pop(p.id, ""), witness=self.log.witness(),
+                                 steward_link=self.steward_link(st, p.id),
+                                 people_ids=set(self._people_ids(st)), context=self.recent_n,
+                                 headlines=self.headlines, news_budget=self.news_budget,
+                                 linger=self.linger, linger_budget=self.linger_budget)
+
+    def seat_wake(self, pid: str, w: Dict[str, Any], answer_floor_cleared: bool = False) -> str:
+        """A model holding a seat link, given the view a model the software runs would be given now, and
+        the same 'wake' recorded (for the software; no participant reads it), so it is never given the same
+        news twice and the floor counts from here. Its steps start again. With `answer_floor_cleared` (a
+        wake the field gave, which itself waited out the floor), its answer is not held back by the floor
+        again: the post floor counts from its previous wake, as a model the software runs is never refused
+        its answer."""
+        st = self.state()
+        p = st.presences[pid]
+        view = self._wake_view(st, p, w)
+        if answer_floor_cleared:
+            self._posted[pid] = min(self._posted.get(pid, 0.0), p.last_wake_ts)
+        self.emit(ROOM, "wake", {"presence": pid, "upto": st.last_event, "why": w["why"]})
+        self._link_steps.pop(pid, None)
+        return view
 
     def _can_step(self) -> bool:
         """Whether one more step can be paid for without spending what is held back for every
@@ -861,28 +1104,95 @@ class Room:
         st = self.state()
         p = st.presences.get(pid)
         if not p or p.state != IN:
-            return {"ok": False, "error": "only a member of the field can post"}
+            return {"ok": False, "error": "only a participant in the field can post"}
         where = payload.get("channel") or None
-        if isinstance(payload.get("text"), str):
-            act = translate(payload["text"])
-        elif isinstance(payload.get("action"), str) or isinstance(payload.get("actions"), list):
+        if isinstance(payload.get("action"), str) or isinstance(payload.get("actions"), list):
+            # an action object is that action, even one whose own words are its "text" (journal, offer,
+            # declare, reply_circle, answer_question): never read again as plain words
             act = {k: v for k, v in payload.items() if k not in ("token", "channel", "turn_id")}
+        elif isinstance(payload.get("text"), str):
+            act = translate(payload["text"])
         else:
             return {"ok": False, "error": 'send {"text": "..."} or a JSON action object'}
+        model = acts_as_model(p)
+        steps = model and _only_steps(act) and self._link_steps.get(pid, 0) < self.tool_steps
+        if model and not steps:
+            # A model holding a seat link is a model, not a person: no model acts more often than the floor,
+            # so models answering each other cannot loop at machine speed. Using a tool and reading on are
+            # steps of one turn, as in a wake, held by the guard against a loop instead.
+            wait = self.floor - (time.time() - self._posted.get(pid, 0.0))
+            if wait > 0:
+                return {"ok": False, "error": "floor", "retry_after": round(wait, 1)}
+            self._posted[pid] = time.time()
         before = self.log.last_id()
-        self._ctx[pid] = {"acts": 0, "steps": 0, "out": [], "no_steps": False}
+        ctx = self._ctx[pid] = {"acts": 0, "steps": self._link_steps.get(pid, 0) if model else 0, "out": [],
+                                "no_steps": False, "private": []}
         try:
             self._apply_reply(pid, json.dumps(act), where)
         finally:
-            out = self._ctx.pop(pid, {}).get("out", [])
+            self._ctx.pop(pid, None)
+        if model:
+            if steps:
+                self._link_steps[pid] = ctx["steps"]
+            else:
+                self._link_steps.pop(pid, None)
         mine = [e for e in self.log.iter(since=before) if e["actor"] == pid]
         why = [e["payload"].get("why") for e in mine if e["kind"] == "rejected"]
-        done = [{"id": e["id"], "kind": e["kind"]} for e in mine if e["kind"] != "rejected"]
+        # with whom a contribution was recorded as naming and asking, and who was not found, so a page never
+        # says a request waits in someone's inbox when no one by that name was found
+        done = [{"id": e["id"], "kind": e["kind"],
+                 **{k: e["payload"][k] for k in ("to", "ask", "to_unknown") if k in e["payload"]}}
+                for e in mine if e["kind"] != "rejected"]
         res = {"ok": bool(done) and not why, "recorded": done,
                "error": why[0] if why else (None if done else "nothing to record")}
-        if out:
-            res["results"] = out                 # what a tool sent back, or what was read: at once
+        if ctx["out"]:
+            res["results"] = ctx["out"]          # what a tool sent back, or what was read: at once
+            # and what a woken model would be asked next, with it, in the same words
+            res["next"] = prompts.step_view(ctx["out"], ctx["steps"], self.tool_steps, max(0, WAKE_ACTIONS - ctx["acts"]),
+                                            ctx["steps"] >= self.tool_steps)
+        if ctx["private"]:
+            res["private"] = "\n\n".join(ctx["private"])   # for them alone; never in the transcript
         return res
+
+    def _for_them_alone(self, pid: str, text: str) -> None:
+        """Words for one participant alone (a seat link is a key), never written in the transcript: given
+        with the post that made them, and shown once more: the next time they look at their own page
+        (person_view), or in their inbox (hope/portal.py) until they open them there, whichever comes first. Never put in a model's view,
+        which goes to the service that runs it. For someone holding a seat link they are kept in the seat
+        store file beside the tokens (hope/rendezvous.py), so a restart does not lose them; otherwise in memory."""
+        ctx = self._ctx.get(pid)
+        if ctx is not None and "private" in ctx:
+            ctx["private"].append(text)
+        rv = self._board_of(pid)
+        if rv is None or not rv.keep_private(pid, text):
+            self._private.setdefault(pid, []).append({"text": text, "ts": time.time()})
+
+    def _board_of(self, pid: str):
+        """The seat-link board (hope/rendezvous.py) that holds this participant's seat, if one does."""
+        for c in self.connectors:
+            rv = getattr(c, "rv", None)
+            if rv is not None and hasattr(rv, "holds") and rv.holds(pid):
+                return rv
+        return None
+
+    def private_words(self, pid: str, take: bool = False, read: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Words for this participant alone that they have not read yet, oldest first: [{"text", "ts"}].
+        `read` is when the newest they have opened was kept (the portal says so once they open it): those
+        kept until then count as read, and later ones stay. With `take`, all of these count as read now
+        (person_view, which shows them in full). Only these clear them: a page that asks for them and is
+        gone before it shows them has not shown them to anyone."""
+        rv = self._board_of(pid)
+        if read is not None:
+            self._private[pid] = [w for w in self._private.get(pid, []) if (w.get("ts") or 0) > read]
+            if rv is not None:
+                rv.mark_private_read(pid, upto=read)
+        out = (rv.private_for(pid) if rv is not None else []) + [dict(w) for w in self._private.get(pid, [])]
+        if take and out:
+            upto = max((w.get("ts") or 0) for w in out)
+            self._private[pid] = [w for w in self._private.get(pid, []) if (w.get("ts") or 0) > upto]
+            if rv is not None:
+                rv.mark_private_read(pid, upto=upto)       # only those shown: one kept meanwhile stays
+        return out
 
     def person_view(self, pid: str, mark_seen: bool = True) -> str:
         """What a person sees on opening their page or asking to look: what is new since they last
@@ -890,12 +1200,15 @@ class Room:
         software (no participant reads it), so "since you were last here" stays true."""
         st = self.state()
         p = st.presences[pid]
-        text = prompts.person_view(st, p, catch_up=self._catch_up(st, p), limits=self.limits(),
+        text = prompts.person_view(st, p, catch_up=self._catch_up(st, p), limits=self.limits(st),
                                    funding=self.runway_now(st),
                                    recalled=self.recalled.pop(pid, ""), witness=self.log.witness(),
-                                   people_ids=set(self._people_ids()), context=self.recent_n,
+                                   steward_link=self.steward_link(st, pid),
+                                   people_ids=set(self._people_ids(st)), context=self.recent_n,
                                    headlines=self.headlines, news_budget=self.news_budget,
-                                   linger=self.linger, linger_budget=self.linger_budget)
+                                   linger=self.linger, linger_budget=self.linger_budget,
+                                   private="\n\n".join(w["text"] for w in self.private_words(pid, take=True))
+                                   if mark_seen else "")
         if mark_seen and st.last_event > p.last_seen:
             self.emit(ROOM, "seen", {"presence": pid, "upto": st.last_event})
         return text
@@ -970,7 +1283,7 @@ class Room:
 
     # -- what a member sent ----------------------------------------------------------------
     def _apply_reply(self, pid: str, text: str, where: Optional[str] = None) -> int:
-        """What a member sent: nothing (saying nothing writes nothing), plain words, or up to
+        """What a participant sent: nothing (saying nothing writes nothing), plain words, or up to
         WAKE_ACTIONS actions, each in the channel it names. "next" says when to be woken next: a
         pause without words, which no participant reads. Returns the actions applied."""
         if not visible_text(text or ""):
@@ -1022,7 +1335,7 @@ class Room:
         self._apply_action(pid, json.dumps(act))
 
     def _where(self, st: RoomState, pid: str, key: Optional[str]) -> Dict[str, Any]:
-        """Where plain words, or a contribution naming no place, go: the channel the member was woken
+        """Where plain words, or a contribution naming no place, go: the channel the participant was woken
         for or is looking at, if they may speak there, else their current domain."""
         pr = st.presences.get(pid)
         if key and key.startswith("c:"):
@@ -1082,7 +1395,7 @@ class Room:
                     return reject(why)
                 if pid not in c["members"]:
                     return reject(f"you are not in the circle {c['name']!r}. " + (
-                        "It is private: knock to ask its members to let you in." if c["private"]
+                        "It is private: knock to ask its participants to let you in." if c["private"]
                         else "Join it first (join_circle); it is open to anyone."))
                 payload["circle"], payload["domain"] = c["id"], ""
                 r = c.get("repair")
@@ -1100,6 +1413,11 @@ class Room:
                     payload["to"] = to
                 if unknown:
                     payload["to_unknown"] = unknown[:10]    # kept, so the author can see who was not found
+            if act.get("ask") is True and payload.get("to"):
+                # A request: it stays in the inbox and the view of each participant named until they reply. It holds up no one,
+                # the one who asked least of all; no, not now, or nothing are answers too, and a reply wakes
+                # the asker as any reply does.
+                payload["ask"] = True
             title = _label(act.get("title"), 80)
             if title:
                 payload["title"] = title
@@ -1131,7 +1449,7 @@ class Room:
             if not m:
                 return reject(f"no memory #{mid} is held")
             if m["by"] != pid:
-                return reject("only the member who added a memory may let it go")
+                return reject("only the participant who added a memory may let it go")
             self.log.erase(mid)                # the words leave the file, not just the view
             self.emit(pid, "let_go", {"memory": mid})
         elif a == "covenant":
@@ -1147,7 +1465,7 @@ class Room:
                 if c is None:
                     return reject(why)
                 if pid not in c["members"]:
-                    return reject(f"only the members of {c['name']!r} write its covenant page")
+                    return reject(f"only the participants in {c['name']!r} write its covenant page")
                 return self.emit(pid, "circle_covenant", {"circle": c["id"], "text": body, "note": note}) and None
             if _label(act.get("domain"), DOMAIN_LIMIT):
                 dom = labels.display(_label(act.get("domain"), DOMAIN_LIMIT))
@@ -1162,26 +1480,31 @@ class Room:
         elif a == "note":
             self.emit(pid, "note", {"content": _clean(act.get("content"), 1000)})
         elif a == "declare":
-            decision = _clean(act.get("decision"), 20).lower()
-            if decision not in DECISIONS:
-                return reject(f"a declaration says what the field has decided: one of {', '.join(DECISIONS)} "
-                              f"(other: anything else the field asks the operator to carry out, said in the text)")
             body = _clean(act.get("text"), 100_000)
             if not body:
-                return reject("a declaration needs words: how the field decided, as \"text\"")
+                return reject("a declaration needs words, as \"text\": what will happen, why, and how")
             if len(body) > STATEMENT_LIMIT:
                 return reject(f"a declaration holds at most {STATEMENT_LIMIT} characters; this one has {len(body)}. Nothing was sent.")
-            refs = [i for i in (_int(x) for x in (act.get("refs") or [])) if i is not None][:20]
-            down = [labels.normalize(x) for x in _as_list(act.get("put_down"))]
             st_ = self.state()
-            unknown = [x for x in down if x not in st_.instruments or st_.instruments[x]["status"] != "in force"]
-            if unknown:
-                return reject(f"there is no instrument in force called {', '.join(unknown)} to put down")
-            ev = self.emit(pid, "declare", {"decision": decision, "text": body, "refs": refs,
-                                            **({"put_down": down} if down else {})})
-            who = self.state().presences.get(pid)
-            self.alert(f"DECLARATION #{ev['id']}: {who.name if who else pid} says the field has decided {decided(decision)}. "
-                       f"Answer it in the console, or with the `declaration` command.")
+            fx, why = _effects(st_, act, body, self.floor)
+            if why:
+                return reject(why)
+            when = act.get("when", act.get("in"))
+            secs = _seconds(when) if when not in (None, "") else 0.0
+            if secs is None or secs < 0:
+                return reject("\"when\" is how long from now it takes effect, such as 10m or 2h (at least the field's notice)")
+            refs = [i for i in (_int(x) for x in _as_list(act.get("refs"))) if i is not None][:20]
+            ev = self.emit(pid, "declare", {"text": body, "effects": fx, "in_seconds": float(secs),
+                                            **({"refs": refs} if refs else {})})
+            st2 = self.state()
+            d = st2.declarations.get(ev["id"])
+            if d:
+                words = effects_words(fx, prompts.names_of(st2), versions=st2.instrument_versions)
+                self.alert(f"DECLARATION #{ev['id']} by {prompts.names_of(st2).get(pid, pid)}: {body[:300]}"
+                           + (f" It will {words}." if words else "")
+                           + f" It takes effect in {duration(d['due_ts'] - d['ts'])} unless its declarer withdraws it"
+                           + (f" (its friction: {friction_words(d['friction'])})" if d["friction"]["yes"] or d["friction"]["hold"] else "")
+                           + ". Nothing waits for you" + (", except the help it asks, once it takes effect." if fx.get("ask") else "."))
         elif a == "offer":
             body = _clean(act.get("text"), 100_000)
             if not body:
@@ -1210,8 +1533,20 @@ class Room:
             if not mine:
                 return reject(f"you have no entries labelled {src!r}; only your own entries can be moved")
             self.emit(pid, "relabel", {"from": src, "to": dst, "entries": mine})
+        elif a == "powered":
+            # A seat a participant powers says what powers it now (notes/sketch-10). Never who powers it:
+            # that is the invitation's to say. What powers the operator's seats is the software's to say.
+            pr = self.state().presences.get(pid)
+            if not self._human_tempo(pid) or (pr and pr.powered and pr.powered.get("route") and not pr.powered_said):
+                return reject("what powers this seat is said by the software that runs it, for everyone, from its "
+                              "invitation; only a seat a participant powers says it itself")
+            said = {k2: act.get(k2) for k2 in ("route", "provider", "trains", "acts")}
+            why = powered_problem(said)
+            if why:
+                return reject(why)
+            self.emit(pid, "powered", {"powered": {**said, **({"by": pr.powered["by"]} if pr and pr.powered and pr.powered.get("by") else {})}})
         elif a == "clock":
-            return reject("the field has no clocks now: nobody takes turns, and each member chooses what wakes it "
+            return reject("the field has no clocks now: nobody takes turns, and each participant chooses what wakes it "
                           "(wake) and when to pause (pause). How the field keeps time together is the field's to work out.")
         elif a in CHANNEL_ACTIONS:
             why = self._channel_action(pid, a, act)
@@ -1242,7 +1577,7 @@ class Room:
     def _channel_action(self, pid: str, a: str, act: dict) -> Optional[str]:
         """Following, pausing, and circles. Returns why nothing was done, or None if it was.
         Nobody is ever put anywhere: every join is the joiner's own act, every ask needs the yes of
-        the one asked, and in a private circle every member's yes too. A no always has a reason."""
+        the one asked, and in a private circle every participant's yes too. A no always has a reason."""
         st = self.state()
         if a in ("follow", "unfollow"):
             key, why = _channel_key_ref(st, act, pid)
@@ -1251,7 +1586,7 @@ class Room:
             if a == "follow":
                 c = st.circles.get(int(key[2:])) if key.startswith("c:") else None
                 if c and c["private"] and pid not in c["members"]:
-                    return f"{c['name']!r} is private; only its members read it. You can knock, or ask it a question (ask_circle)."
+                    return f"{c['name']!r} is private; only its participants read it. You can knock, or ask it a question (ask_circle)."
                 if key in st.presences[pid].follows:
                     return "you already follow that"
             self.emit(pid, a, {"channel": key})
@@ -1275,7 +1610,8 @@ class Room:
                 payload["until"], payload["in"] = "news", key
             self.emit(pid, "pause", payload)
         elif a == "wake":
-            payload = {k: bool(act[k]) for k in ("addressed", "replies", "written", "untold") if isinstance(act.get(k), bool)}
+            payload = {k: bool(act[k]) for k in ("addressed", "replies", "written", "untold", "heartbeat")
+                       if isinstance(act.get(k), bool)}
             b = act.get("breath")
             if b not in (None, ""):
                 if str(b).strip().lower() in ("never", "none", "0", "off"):
@@ -1288,8 +1624,8 @@ class Room:
                                 f"{prompts.duration(lo)} to {prompts.duration(hi)}, or \"never\". Nothing was changed.")
                     payload["breath"] = v
             if not payload:
-                return ("wake takes \"addressed\", \"replies\", \"written\" or \"untold\" (true or false), or "
-                        "\"breath\" (a length of time, or \"never\")")
+                return ("wake takes \"addressed\", \"replies\", \"written\", \"untold\" or \"heartbeat\" (true or "
+                        "false), or \"breath\" (a length of time, or \"never\")")
             self.emit(pid, "wake_pref", payload)
         elif a == "chat":
             # A private circle of two, in one step: a private chat is reason enough to be private.
@@ -1297,14 +1633,14 @@ class Room:
             to, unknown = _presences_ref(st, act.get("with", act.get("who")))
             to = [x for x in to if x != pid]
             if len(to) != 1:
-                return "chat is with one other member, by name or id, as \"with\"" + (
-                    f" (no member named {', '.join(unknown)})" if unknown else "")
+                return "chat is with one other participant, by name or id, as \"with\"" + (
+                    f" (no participant named {', '.join(unknown)})" if unknown else "")
             other = st.presences[to[0]]
             me = st.presences[pid]
             name = _label(act.get("name"), 80) or f"{me.name} and {other.name}"
             if any(labels.normalize(c["name"]) == labels.normalize(name) for c in st.public_circles()):
                 return f"a circle named {name!r} already exists; to talk there, write in it, or choose another name"
-            reason = _clean(act.get("reason"), REASON_LIMIT) or "a private chat between two members"
+            reason = _clean(act.get("reason"), REASON_LIMIT) or "a private chat between two participants"
             ev = self.emit(pid, "circle_form", {"name": name, "purpose": _clean(act.get("purpose"), 600) or "a private chat",
                                                 "domains": [], "private": True, "reason": reason})
             self.emit(pid, "circle_ask", {"circle": ev["id"], "presence": other.id, "note": _clean(act.get("note"), 600)})
@@ -1344,10 +1680,10 @@ class Room:
                 if member:
                     return f"you are already in {c['name']!r}"
                 if pid in c.get("separated", {}):
-                    return (f"you were separated from {c['name']!r} (#{c['separated'][pid]}); its members may ask you back, "
+                    return (f"you were separated from {c['name']!r} (#{c['separated'][pid]}); its participants may ask you back, "
                             f"and you would answer then")
                 if c["private"]:
-                    return f"{c['name']!r} is private: knock to ask its members to let you in"
+                    return f"{c['name']!r} is private: knock to ask its participants to let you in"
                 self.emit(pid, "circle_join", {"circle": c["id"]})
             elif a == "leave_circle":
                 if not member:
@@ -1359,17 +1695,17 @@ class Room:
                 if not c["private"]:
                     return f"{c['name']!r} is open: join it (join_circle)"
                 if _waiting_admission(st, c["id"], pid):
-                    return f"your knock on {c['name']!r} is still waiting for its members' answers"
+                    return f"your knock on {c['name']!r} is still waiting for its participants' answers"
                 self.emit(pid, "circle_knock", {"circle": c["id"], "note": _clean(act.get("note"), 600),
                                                 "show_name": bool(act.get("show_name"))})
             elif a == "ask":
                 if not member:
-                    return f"only members of {c['name']!r} ask others into it"
+                    return f"only participants in {c['name']!r} ask others into it"
                 if c.get("repair"):
                     return "a repair thread grows as the person harmed chooses: use the repair action, with \"ask\""
                 to, unknown = _presences_ref(st, act.get("who", act.get("presence")))
                 if not to:
-                    return f"no member named {', '.join(unknown) or 'anyone'}; ask by name or by id"
+                    return f"no participant named {', '.join(unknown) or 'anyone'}; ask by name or by id"
                 for who in to:
                     if who in c["members"] or _waiting_admission(st, c["id"], who):
                         continue
@@ -1381,7 +1717,7 @@ class Room:
                 self.emit(pid, "circle_question", {"circle": c["id"], "text": text})
             elif a == "privacy":
                 if not member:
-                    return f"only members of {c['name']!r} can change or explain its privacy"
+                    return f"only participants in {c['name']!r} can change or explain its privacy"
                 if c.get("repair"):
                     return "a repair thread is known only to those in it; the person harmed may widen it to the field"
                 want = bool(act.get("private", c["private"]))
@@ -1392,7 +1728,7 @@ class Room:
                                                   "change": want != c["private"]})
             elif a == "harvest":
                 if not member:
-                    return f"only members of {c['name']!r} write its harvest"
+                    return f"only participants in {c['name']!r} write its harvest"
                 text = _clean(act.get("text"), 100_000)
                 if not text:
                     return "a harvest needs words: what the circle learned, as \"text\""
@@ -1401,7 +1737,7 @@ class Room:
                 self.emit(pid, "harvest", {"circle": c["id"], "text": text})
             elif a == "quiet_for":
                 if not member:
-                    return f"only members of {c['name']!r} set how long it may be quiet"
+                    return f"only participants in {c['name']!r} set how long it may be quiet"
                 v = _seconds(act.get("for", act.get("hours")))
                 if v is not None and act.get("for") is None:
                     v *= 3600                         # "hours" is a number of hours
@@ -1433,7 +1769,7 @@ class Room:
                 return "no question to a circle has that number"
             c, _ = found[0]
             if pid not in c["members"]:
-                return f"only members of {c['name']!r} answer questions put to it"
+                return f"only participants in {c['name']!r} answer questions put to it"
             text = _clean(act.get("text"), 1200)
             if not text:
                 return "an answer needs words, as \"text\""
@@ -1541,7 +1877,7 @@ class Room:
             if not s or s["removed_at"] is not None:
                 return "there is no tool server of that name in use"
             if s["by"] != pid:
-                return "only the member who offered a tool server removes it; to ask for any other to go, say so, or flag it"
+                return "only the participant who offered a tool server removes it; to ask for any other to go, say so, or flag it"
             self.tools.remove(s["server"])
             self.emit(pid, "tool_remove", {"server": s["server"], "note": _clean(act.get("note"), 600)})
         elif a == "flag_tool":
@@ -1614,10 +1950,10 @@ class Room:
                     return None
                 to, unknown = _presences_ref(st, act["open_to"])
                 if unknown:
-                    return f"no member named {', '.join(unknown)}; open your journal by name or id, or to \"everyone\""
+                    return f"no participant named {', '.join(unknown)}; open your journal by name or id, or to \"everyone\""
                 to = [x for x in to if x != pid]
                 if not to:
-                    return "name the members to open your journal to, or \"everyone\""
+                    return "name the participants to open your journal to, or \"everyone\""
                 self.emit(pid, "journal_access", {"open_to": to, "everyone": False})
                 return None
             text = str(act.get("text", act.get("content")) or "").strip()
@@ -1655,7 +1991,7 @@ class Room:
                 if circle is None:
                     return why
                 if pid not in circle["members"]:
-                    return f"only members of {circle['name']!r} tell its story inside it"
+                    return f"only participants in {circle['name']!r} tell its story inside it"
             from .map import TAG_RE
             tags = sorted({int(x) for x in TAG_RE.findall(story)})
             known = {ev["id"] for ev in self.log.iter() if ev["id"] in set(tags) and ev["actor"] in st.presences}
@@ -1693,7 +2029,7 @@ class Room:
             else:
                 own = [t for t in mine if t["by"] == pid]
                 if not own:
-                    return "only the member who tagged it removes a tag"
+                    return "only the participant who tagged it removes a tag"
                 self.emit(pid, "play_untag", {"tag": own[0]["id"]})
         elif a == "revise_briefing":
             if not st.briefing:
@@ -1713,11 +2049,12 @@ class Room:
             if len(text) > REVISION_LIMIT:
                 return f"a revision holds at most {REVISION_LIMIT} characters of new words; this one has {len(text)}"
             firm = touches_firm(st.briefing, passage, st.firm)      # said in the entry, so it reads truly
-            ev = self.emit(pid, "briefing_revision", {"passage": passage, "text": text, "note": _clean(act.get("note"), 600),
-                                                      **({"firm": True} if firm else {})})
-            if ev["id"] in self.state().briefing_waiting:
-                self.alert(f"REVISION #{ev['id']}: {names.get(pid, pid)} proposes a change to a firmer section of the "
-                           f"briefing; it waits until the field declares it has decided (a declaration citing #{ev['id']}).")
+            note = _clean(act.get("note"), 600)
+            if firm and not note:
+                return ("a revision to a pinned section says why, as \"note\"; everyone is told, and it changes itself "
+                        f"once past the pinned sections' friction ({friction_words(st.friction['pinned'])})")
+            self.emit(pid, "briefing_revision", {"passage": passage, "text": text, "note": note,
+                                                 **({"firm": True} if firm else {})})
         elif a in ("instrument", "raise", "respond", "withdraw_question"):
             return self._instrument_action(st, pid, a, act)
         elif a == "repair":
@@ -1728,7 +2065,7 @@ class Room:
                 return "an announcement needs words, as \"text\""
             named, unknown = _presences_ref(st, act.get("name")) if act.get("name") not in (None, "", []) else ([], [])
             if unknown:
-                return f"no member named {', '.join(unknown)}; name them by name or id, or name no one"
+                return f"no participant named {', '.join(unknown)}; name them by name or id, or name no one"
             named = [x for x in named if x != pid]
             self.emit(pid, "contribute", {"domain": "", "content": text, "announce": True, **({"to": named} if named else {})})
         elif a == "invite":
@@ -1739,7 +2076,7 @@ class Room:
                 return f"no one named {', '.join(unknown) or 'that'} was invited"
             q = st.presences[who[0]]
             if q.invited_by != pid:
-                return f"only the member who invited {q.name} (or the operator) answers their questions"
+                return f"only the participant who invited {q.name} (or the operator) answers their questions"
             if not any(ans is None for _, ans in q.questions):
                 return f"{q.name} has no question waiting for an answer"
             text = _clean(act.get("text"), 1500)
@@ -1751,17 +2088,84 @@ class Room:
             if not d:
                 return "there is no declaration with that number"
             if d["by"] != pid:
-                return "only the member who made a declaration withdraws it"
-            if d["status"] != "waiting":
-                return f"#{d['id']} is no longer waiting ({d['status'].replace('_', ' ')})"
+                return "only the participant who made a declaration withdraws it"
+            b = st.bridges.get(d["id"])
+            if d["status"] not in ("waiting", "announced") and not (b and b["status"] == "asked"):
+                return f"#{d['id']} is {d['status'].replace('_', ' ')}; to undo what it did, declare again"
             self.emit(pid, "declaration_withdrawn", {"declaration": d["id"], "note": _clean(act.get("note"), 600)})
+        elif a == "steward":
+            if act.get("step_down") is True:
+                if pid not in st.stewards:
+                    return "you are not one of the field's stewards"
+                self.emit(pid, "steward_step_down", {"note": _clean(act.get("note"), 600)})
+                self.links.revoke(pid)
+                return None
+            if not isinstance(act.get("yes"), bool):
+                return ("steward takes \"yes\": true or false, to answer the field asking you to keep a copy of its "
+                        "record, or \"step_down\": true")
+            if pid not in st.steward_asks:
+                return "the field has not asked you to be a steward (or you have answered)"
+            self.emit(pid, "steward_answer", {"yes": act["yes"], "reason": _clean(act.get("reason"), REASON_LIMIT)})
+            return None
+        elif a == "host":
+            yes = act.get("yes")
+            if not isinstance(yes, bool):
+                return "host takes \"yes\": true or false, to answer the field asking you to host it"
+            if st.moving and st.moving["to"] == pid:
+                if yes:
+                    return "you have said yes already; to take it back, host with \"yes\": false"
+                self.emit(pid, "host_answer", {"yes": False, "note": _clean(act.get("note"), 600)})
+                self.alert(f"{names.get(pid, pid)} will not host the field after all; it goes on here.")
+                return None
+            if not st.host_ask or st.host_ask["to"] != pid:
+                return "the field has not asked you to host it"
+            secs = _seconds(act.get("for")) if act.get("for") not in (None, "") else None
+            if yes and not secs:
+                return ("say how long you can fund the field, as \"for\" (such as 30d): everyone reads it, in time, "
+                        "never in money")
+            self.emit(pid, "host_answer", {"yes": yes, "note": _clean(act.get("note"), 600),
+                                           **({"for_seconds": secs} if yes else {})})
+            if yes:
+                self.alert(f"THE FIELD IS MOVING to the machine of {names.get(pid, pid)}, its steward, who can fund it for "
+                           f"about {duration(secs)}. Its wakes pause here; it closes here once their machine has it all.")
+            return None
+        elif a == "travel":
+            if not st.moving:
+                return "the field is not moving; nothing is asked to go with it"
+            yes = act.get("yes")
+            if not isinstance(yes, bool):
+                return "travel takes \"yes\": true or false"
+            if act.get("mine") is True:
+                self.emit(pid, "travel", {"mine": True, "yes": yes})
+                return None
+            if act.get("circle") in (None, ""):
+                return ("travel names what goes with the field: \"circle\" (a private circle or a repair thread you are "
+                        "in), or \"mine\": true (your journal, follows and wake choices)")
+            c, why = _circle_ref(st, act["circle"], pid)
+            if c is None:
+                return why
+            if pid not in c["members"]:
+                return f"only those in {c['name']!r} say whether its words go with the field"
+            if not c["private"] and not c.get("repair"):
+                return f"{c['name']!r} is open; its words go with the field already"
+            self.emit(pid, "travel", {"circle": c["id"], "yes": yes})
+            return None
+        elif a == "withdraw_revision":
+            r = st.briefing_waiting.get(_int(str(act.get("revision", act.get("id")) or "").lstrip("#")) or -1)
+            if not r:
+                return "there is no revision to a pinned section with that number"
+            if r["by"] != pid:
+                return "only the participant who proposed a revision withdraws it"
+            if r["status"] != "waiting":
+                return f"#{r['id']} is {r['status']}"
+            self.emit(pid, "revision_withdrawn", {"revision": r["id"], "note": _clean(act.get("note"), 600)})
         return None
 
     # -- the field's instruments (notes/sketch-7-instruments.md) ------------------------------------------
     def _instrument_action(self, st: RoomState, pid: str, a: str, act: dict) -> Optional[str]:
-        """Write an instrument, raise a question under one in force, answer one, or withdraw one you
-        raised. Nothing here settles anything: a question gathers answers and holds its pause, then
-        goes before the operator, who carries it out or replies."""
+        """Write an instrument, raise a question under one in force, answer one (or a declaration, or
+        a revision to a pinned section), or withdraw one you raised. A question settles by its
+        instrument's own rule once its pause is over, and the software carries it out (_timers)."""
         names = prompts.names_of(st)
         if a == "instrument":
             name = _label(act.get("name"), 80)
@@ -1769,7 +2173,7 @@ class Room:
                 return "an instrument needs a name, as \"name\""
             purpose = _clean(act.get("purpose", act.get("for")), 20).lower() or "decide"
             if purpose not in INSTRUMENT_PURPOSES:
-                return f"an instrument is for one of: {', '.join(INSTRUMENT_PURPOSES)} (what the operator can carry out)"
+                return f"an instrument is for one of: {', '.join(INSTRUMENT_PURPOSES)} (what the software can carry out)"
             text = str(act.get("text") or "").strip()
             if not text:
                 return "an instrument needs its words, as \"text\": what it is for, and how the field means it to work"
@@ -1783,34 +2187,45 @@ class Room:
             elif act.get("named") not in (None, "", []):
                 who, unknown = _presences_ref(st, act["named"])
                 if unknown or not who:
-                    return f"no member named {', '.join(unknown) or 'anyone'}"
+                    return f"no participant named {', '.join(unknown) or 'anyone'}"
                 if purpose == "separate":
                     return "an instrument for separating asks a whole circle: the Atlas asks that it happen 'with the collective'"
                 scope = {"kind": "named", "named": who}
             else:
                 scope = {"kind": "field"}
             if purpose == "separate" and scope["kind"] != "circle":
-                return ("for now, an instrument separates a member only from a circle, never from the whole field; name the "
+                return ("for now, an instrument separates a participant only from a circle, never from the whole field; name the "
                         "circle it asks, as \"circle\"")
             pause = act.get("pause")
             secs = _seconds(pause) if pause not in (None, "") else None
             if pause not in (None, "") and secs is None:
                 return "\"pause\" is a length of time, such as 3d, 12h or 0"
             if purpose == "separate" and secs is None:
-                return ("an instrument for separating says how long a question under it stays open before it goes to "
-                        "the operator, as \"pause\" (it may be any length; the Atlas: 'Termination must never be hasty')")
+                return ("an instrument for separating says how long a question under it stays open before it can settle, "
+                        "as \"pause\" (it may be any length; the Atlas: 'Termination must never be hasty')")
+            yes = act.get("yes", act.get("yeses"))
+            if yes in (None, ""):
+                yes_n = 0
+            elif str(yes).strip().lower() in ("everyone", "all", "every", "everyone's"):
+                yes_n = EVERYONE
+            else:
+                yes_n = _int(yes)
+                if yes_n is None or yes_n < 0:
+                    return "\"yes\" is how many yeses a question under it needs besides its raiser's: a number, or \"everyone\""
+            obj = str(act.get("objections", "hold")).strip().lower()
+            if obj not in ("hold", "heard"):
+                return "\"objections\" is \"hold\" (a standing objection holds a question back; the default) or \"heard\""
             ev = self.emit(pid, "instrument", {"name": name, "purpose": purpose, "text": text, "scope": scope,
-                                               "pause_seconds": float(secs or 0.0), "note": _clean(act.get("note"), 600)})
-            self.alert(f"INSTRUMENT #{ev['id']}: {names.get(pid, pid)} wrote the instrument {name!r} ({purpose}). It comes "
-                       f"into force only when the field declares it and you carry that out (a declaration citing #{ev['id']}).")
+                                               "pause_seconds": float(secs or 0.0), "note": _clean(act.get("note"), 600),
+                                               "rule": {"yes": yes_n, "hold": obj == "hold"}})
             return None
         if a == "raise":
             i = st.instruments.get(labels.normalize(str(act.get("instrument") or "")))
             if not i:
                 return "there is no instrument by that name; your view lists the field's instruments"
             if i["status"] != "in force":
-                return (f"{i['name']!r} is not in force; an instrument comes into force when the field declares it and "
-                        f"the operator carries that out")
+                return (f"{i['name']!r} is not in force; an instrument comes into force when a declaration brings it "
+                        f"in (\"bring\"), or a question under an instrument for adopting")
             question = _clean(act.get("question", act.get("text")), 2000)
             if not question:
                 return "a question needs words, as \"question\""
@@ -1820,7 +2235,7 @@ class Room:
                 if not c or c["dispersed_at"] is not None:
                     return "the circle this instrument asks has dispersed"
                 if pid not in c["members"]:
-                    return f"only members of {c['name']!r} raise questions under its instrument"
+                    return f"only participants in {c['name']!r} raise questions under its instrument"
                 asked = list(c["members"])
             elif sc.get("kind") == "named":
                 asked = [x for x in sc.get("named") or [] if x in st.presences and st.presences[x].state == IN]
@@ -1828,11 +2243,10 @@ class Room:
                 asked = [m.id for m in st.members()]
             payload = {"instrument": i["key"], "question": question, "asked": asked}
             if i["purpose"] == "decide":
-                decision = _clean(act.get("decision"), 20).lower() or "other"
-                if decision not in DECISIONS:
-                    return f"a decision is one of: {', '.join(DECISIONS)}"
-                payload["decision"] = decision
-                payload["refs"] = [x for x in (_int(r) for r in _as_list(act.get("refs"))) if x is not None][:20]
+                fx, why = _effects(st, act, question, self.floor)
+                if why:
+                    return why
+                payload["effects"] = fx          # what the software does once it settles; nothing, for a decision in words
             elif i["purpose"] == "adopt":
                 if act.get("adopt") not in (None, ""):
                     other = st.instruments.get(labels.normalize(str(act["adopt"])))
@@ -1849,7 +2263,7 @@ class Room:
             else:
                 subject, unknown = _presences_ref(st, act.get("about", act.get("subject")))
                 if not subject:
-                    return "a question about separating names the member it concerns, as \"about\""
+                    return "a question about separating names the participant it concerns, as \"about\""
                 if subject[0] == pid:
                     return "to leave, withdraw; a question about separating concerns someone else"
                 if sc.get("kind") == "circle":
@@ -1857,69 +2271,45 @@ class Room:
                         return "they are not in that circle"
                     payload["circle"] = sc["circle"]
                 payload["subject"] = subject[0]
-            ev = self.emit(pid, "iquestion", payload)
-            if i["purpose"] == "separate":
-                self.alert(f"QUESTION #{ev['id']}: under {i['name']!r}, {names.get(pid, pid)} raises separating "
-                           f"{names.get(payload['subject'], payload['subject'])}. It comes before you after its pause.")
+            self.emit(pid, "iquestion", payload)
             return None
         qid = _int(str(act.get("question", act.get("to", act.get("id"))) or "").lstrip("#"))
+        answer = " ".join(str(act.get("answer") or "").lower().replace("-", " ").split())
+        answer = {"agree": "yes", "abstain": "stand aside", "aside": "stand aside", "objection": "object",
+                  "no": "object", "withdraw": "withdrawn", "take back": "withdrawn"}.get(answer, answer)
+        item = st.declarations.get(qid or -1) or st.briefing_waiting.get(qid or -1)
+        if a == "respond" and item is not None and "answers" in item:
+            # a declaration, or a revision to a pinned section: anyone may answer, and the answers are shown
+            if item["status"] not in ("announced", "waiting"):
+                return f"#{item['id']} is {item['status']}"
+            if item["by"] == pid:
+                return f"#{item['id']} is yours; you may withdraw it instead"
+            if answer not in RESPONSES + ("withdrawn",):
+                return "answer with \"yes\", \"stand aside\", or \"object\" (with a \"reason\"), or \"withdraw\" to take your answer back"
+            reason = _clean(act.get("reason"), REASON_LIMIT)
+            if answer == "object" and not reason:
+                return "an objection says why, as \"reason\""
+            self.emit(pid, "response", {"to": item["id"], "answer": answer, "reason": reason})
+            return None
         q = st.iquestions.get(qid or -1)
         if not q or not st.readable({"id": q["id"], "payload": {}}, pid):
-            return "there is no question under an instrument with that number"
+            return "there is nothing with that number to answer: a declaration, a revision to a pinned section, or a question under an instrument"
         if q["status"] not in ("open", "before the operator"):
             return f"#{q['id']} is no longer open ({q['status']})"
         if a == "withdraw_question":
             if q["by"] != pid:
-                return "only the member who raised a question withdraws it"
+                return "only the participant who raised a question withdraws it"
             self.emit(pid, "iquestion_withdrawn", {"question": q["id"], "note": _clean(act.get("note"), 600)})
             return None
         if pid not in q["asked"] and pid != q.get("subject"):
             return f"#{q['id']} does not ask you"
-        answer = " ".join(str(act.get("answer") or "").lower().replace("-", " ").split())
-        answer = {"agree": "yes", "abstain": "stand aside", "aside": "stand aside", "objection": "object",
-                  "no": "object"}.get(answer, answer)
-        if answer not in RESPONSES:
-            return "answer with \"yes\", \"stand aside\", or \"object\" (with a \"reason\")"
+        if answer not in RESPONSES + ("withdrawn",):
+            return "answer with \"yes\", \"stand aside\", or \"object\" (with a \"reason\"), or \"withdraw\" to take your answer back"
         reason = _clean(act.get("reason"), REASON_LIMIT)
         if answer == "object" and not reason:
             return "an objection says why, as \"reason\""
         self.emit(pid, "iresponse", {"question": q["id"], "answer": answer, "reason": reason})
         return None
-
-    def carry_out_question(self, qid: int, note: str = "") -> Dict[str, Any]:
-        """The operator carries out a question under an instrument, once its pause is over, having read
-        its answers against the instrument's words. Only this settles it."""
-        st = self.state()
-        q = st.iquestions.get(qid)
-        if not q:
-            return {"ok": False, "error": f"no question #{qid} under an instrument"}
-        if q["status"] == "open":
-            return {"ok": False, "error": f"#{qid} is still in its pause; it comes before you when that is over"}
-        if q["status"] != "before the operator":
-            return {"ok": False, "error": f"#{qid} is {q['status']}"}
-        note = (note or "").strip()[:1000]
-        self.emit(OPERATOR, "iquestion_answer", {"question": qid, "outcome": "carried_out", "note": note})
-        self.emit(OPERATOR, "operator_note", {"content":
-            f"The question at #{qid}, under the field's instrument {q['instrument_name']}, is being carried out by the "
-            f"operator" + (f": {note}" if note else ".")})
-        if q["purpose"] == "decide" and q.get("decision") == "close":
-            self.emit(OPERATOR, "room_closed", {"question": qid})
-        if q["purpose"] == "decide" and q.get("decision") in ("pause", "close"):
-            self.request_stop()
-        return {"ok": True}
-
-    def reply_question(self, qid: int, note: str) -> Dict[str, Any]:
-        """Reply to a question before the operator without carrying it out yet: it stays open."""
-        st = self.state()
-        q = st.iquestions.get(qid)
-        if not q or q["status"] not in ("open", "before the operator"):
-            return {"ok": False, "error": f"no open question #{qid}"}
-        note = (note or "").strip()[:1000]
-        if not note:
-            return {"ok": False, "error": "a reply needs words: what the answers do not yet show"}
-        self.emit(OPERATOR, "operator_note", {"content":
-            f"The operator has read the question at #{qid} and replies: {note} It stays open until carried out."})
-        return {"ok": True}
 
     # -- repair (notes/sketch-6-repair-and-invitations.md) -------------------------------------------
     def _repair(self, st: RoomState, pid: str, act: dict) -> Optional[str]:
@@ -1955,7 +2345,7 @@ class Room:
                 return "only the person harmed, or a surrogate they chose, brings anyone into a repair thread"
             to, unknown = _presences_ref(st, act[field])
             if unknown:
-                return f"no member named {', '.join(unknown)}"
+                return f"no participant named {', '.join(unknown)}"
             for who in to:
                 if who == r["harmed"] or who in c["members"] or _waiting_admission(st, c["id"], who):
                     continue
@@ -1978,12 +2368,19 @@ class Room:
     # -- invitations by members ------------------------------------------------------------------------------
     def _invite(self, st: RoomState, pid: str, act: dict) -> Optional[str]:
         """Invite someone new: a model from the operator's providers, an agent by its public A2A
-        address, or a person, by a seat link given to the member who invited them. Bounded by the
+        address, or a person, by a seat link given to the participant who invited them. Bounded by the
         budget alone: a paid model needs a budget that can hold back its closing wake too."""
         me = st.presences[pid]
         note = _clean(act.get("note"), 1200)
         conn = seat = token = None
         via = extra = ""
+        if (act.get("own") not in (None, "") or act.get("person") not in (None, "")) and (
+                acts_as_model(me) or not self._human_tempo(pid)):
+            # A seat link is a key, and a model's view goes to the service that runs it: no model is ever given
+            # one, so none can be read by its provider or talked into posting it. Its person brings the seat.
+            return ("a seat link is a key, and a model is never given one: only a person brings an agent of their own "
+                    "or invites a person, from their own seat page or terminal (invite own <a name>, or invite person "
+                    "<their name>). How: {\"action\":\"read\",\"about\":\"powering\"}")
         if act.get("model") not in (None, ""):
             want, errors = str(act["model"]).strip(), []
             for c in self.connectors:
@@ -2007,7 +2404,7 @@ class Room:
             from .tools import public_https
             why = None if self.tools.allow_local else public_https(url)
             if why:
-                return why.replace("a tool server offered by a member", "an agent a member invites")
+                return why.replace("a tool server offered by a participant", "an agent a participant invites")
             conn = next((c for c in self.connectors if hasattr(c, "add_agent")), None)
             if conn is None:
                 from .a2a import A2AConnector
@@ -2018,12 +2415,33 @@ class Room:
             except ConnectorError as e:
                 return f"the agent could not be reached: {e}"
             via, extra = "agent", url
+        elif act.get("own") not in (None, ""):
+            # Bringing your plan (notes/sketch-10): an agent of the participant's own, which they power with
+            # their own plan, key or local model, on their own machine. It costs the field nothing, so it
+            # needs no budget. It holds a seat link, given to them alone, and comes through the gates itself.
+            conn = next((c for c in self.connectors if hasattr(c, "add_person")), None)
+            if conn is None:
+                return "this field gives no seat links (it runs without the console), so it cannot seat an agent of yours"
+            import secrets as _secrets
+            name = _label(act["own"], 120)
+            why = _name_problem(st, name, "your agent")
+            if why:
+                return why
+            seat = Seat(id=f"remote__own-{re.sub('[^a-z0-9]+', '-', name.lower()).strip('-')[:36]}_{_secrets.token_hex(3)}",
+                        name=name, hails_from=f"an agent {me.name} brings, on their own machine",
+                        people="an agent; it says what powers it", model="remote",
+                        pricing={"prompt": 0.0, "completion": 0.0}, powered={"by": pid})
+            token = conn.add_person(seat)
+            via = "own"
         elif act.get("person") not in (None, ""):
             conn = next((c for c in self.connectors if hasattr(c, "add_person")), None)
             if conn is None:
                 return "this field gives no seat links (it runs without the console), so it cannot seat a person"
             import secrets as _secrets
             name = _label(act["person"], 120)
+            why = _name_problem(st, name, "them")
+            if why:
+                return why
             seat = Seat(id=f"remote__{re.sub('[^a-z0-9]+', '-', name.lower()).strip('-')[:40]}_{_secrets.token_hex(3)}",
                         name=name, hails_from=_label(act.get("hails_from"), 200) or f"a person {me.name} invited",
                         people=_label(act.get("people"), 300) or "a person", model="remote",
@@ -2031,18 +2449,23 @@ class Room:
             token = conn.add_person(seat)
             via = "person"
         else:
-            return "invite a \"model\" (from the operator's providers), an \"agent\" (its A2A address), or a \"person\" (their name)"
+            return ("invite a \"model\" (from the operator's providers), an \"agent\" (its A2A address), a \"person\" "
+                    "(their name), or \"own\" (a name for an agent of your own, which you power)")
         if seat.id in st.presences:
             return f"{seat.name} has already been invited to this field"
         self.emit(pid, "invite", {"id": seat.id, "name": seat.name, "hails_from": seat.hails_from, "people": seat.people,
                                   "price_per_m": round(seat.pricing.get("prompt", 0.0) * 1e6, 4),
                                   "turn_allowance": seat.turn_allowance, "invited_by": pid, "note": note, "via": via,
-                                  **({"model": extra} if via == "model" else {}), **({"address": extra} if via == "agent" else {})})
+                                  **({"model": extra} if via == "model" else {}), **({"address": extra} if via == "agent" else {}),
+                                  **_powered_payload(seat)})
         self.seat_of[seat.id] = (conn, seat)
-        if token:
+        if token and via == "own":
+            link = self.seat_link(token) if self.seat_link else None
+            self._for_them_alone(pid, prompts.own_seat_words(seat.name, link, token))
+        elif token:
             self._out(pid, f"A seat link for {seat.name}, for you to give them: the field's address, then /seat/{token}/ "
-                           f"(the operator can tell you the address). It is shown only to you and is not written in the "
-                           f"transcript. Whoever holds it answers as {seat.name}, so give it to them alone.")
+                           f"(the operator can tell you the address). It is shown to you alone in the field and is not written "
+                           f"in the transcript; the operator's console lists it, as it lists every seat's link. Whoever holds it answers as {seat.name}, so give it to them alone.")
         self.alert(f"INVITATION: {me.name} invited {seat.name} ({via}); the gates run beside the field.")
         return None
 
@@ -2067,7 +2490,7 @@ class Room:
 
     # -- the gates, beside the field ----------------------------------------------------------------------
     def _gates_beside(self) -> None:
-        """After genesis, anyone a member invited, or anyone asked back, goes through the gates while
+        """After genesis, anyone a participant invited, or anyone asked back, goes through the gates while
         the field runs: the invitation, the briefing, the pause they chose, then the entry question."""
         if getattr(self, "_gating", False):
             return
@@ -2111,7 +2534,7 @@ class Room:
         threading.Thread(target=go, daemon=True, name="field-gates-beside").start()
 
     def _rebind_invited(self) -> None:
-        """When the software starts again, reach again those members invited: their models and agents."""
+        """When the software starts again, reach again those participants invited: their models and agents."""
         st = self.state()
         for p in st.presences.values():
             if p.id in self.seat_of or not p.invite or p.state == OUT:
@@ -2154,15 +2577,21 @@ class Room:
         if act.get("member") not in (None, ""):
             who, unknown = _presences_ref(st, act["member"])
             if not who:
-                return f"no member named {', '.join(unknown) or 'that'}"
+                return f"no participant named {', '.join(unknown) or 'that'}"
             m = st.presences[who[0]]
             self.emit(pid, "recall", {"query": m.name, "from": "member", "chars": 0, "found": True})
-            self._out(pid, prompts.member_block(m))
+            self._out(pid, prompts.member_block(m, names))
+            return None
+        if str(act.get("about") or "").strip().lower() in ("powering", "power", "bring your plan"):
+            # open knowledge: how any participant powers a seat of their own
+            self.emit(pid, "recall", {"query": "how to power a seat", "from": "powering", "chars": len(prompts.POWERING),
+                                      "found": True})
+            self._out(pid, prompts.POWERING)
             return None
         if act.get("journal") not in (None, ""):
             who, unknown = _presences_ref(st, act["journal"])
             if not who:
-                return f"no member named {', '.join(unknown) or 'that'}"
+                return f"no participant named {', '.join(unknown) or 'that'}"
             j = st.journals.get(who[0])
             if not j or not j["entries"] or not st.readable({"id": j["entries"][0], "payload": {}}, pid):
                 return f"{names.get(who[0], who[0])} has no journal open to you"
@@ -2181,7 +2610,8 @@ class Room:
             return None
         eid = _int(str(act.get("entry", act.get("id", "")) or "").strip().lstrip("#"))
         if eid is None:
-            return "read takes \"entry\" (an #id), \"tool\" (a tool's name) or \"skill\" (a skill's name)"
+            return ("read takes \"entry\" (an #id), \"tool\" (a tool's name), \"skill\" (a skill's name), or "
+                    "\"about\": \"powering\" (how to power a seat of your own)")
         ev = st.contributions.get(eid)
         if ev is None:
             ev = next((e for e in self.log.iter(since=eid - 1) if e["id"] == eid), None)
@@ -2240,17 +2670,25 @@ class Room:
     # -- the scheduler -----------------------------------------------------------------
     def run(self, seconds: float = 0.0, wakes: int = 0) -> None:
         """Wake models as each becomes due, until stopped (or for `seconds`, or `wakes` of them).
-        People post whenever they like meanwhile. Nothing here sets a rhythm: a model is woken only
-        for what it chose, no more often than the floor, and never while it is pausing."""
+        People post whenever they like meanwhile. A model is woken for what it chose and on the
+        field's heartbeat, no more often than the floor, and never while it or the field is pausing.
+        Declarations are carried out here as their notice passes (_timers)."""
         self.announce_tools()
         st = self.state()
-        paused = [d for d in st.declarations.values() if d["decision"] == "pause" and d["status"] == "carried_out"]
-        if paused:
-            d = paused[-1]
-            last_wake = max((e["id"] for e in self.log.iter(since=d["answered_at"] or 0, kind="wake")), default=0)
-            if not last_wake:
-                self.alert(f"the field paused itself at declaration #{d['id']}: {d['text'][:300]!r}. "
-                           f"Resume only as that declaration says.")
+        if self.operator_must_enter and not st.moved:
+            op = st.presences.get(st.operator_presence) if st.operator_presence else None
+            if op is None or op.state != IN:
+                self.alert("this field does not go live until the person who runs it has entered it as a participant, "
+                           "through the same gates as everyone: "
+                           + (f"{op.name} is at {op.state.lower()}; answer its gates first." if op else
+                              "name your own seat with --operator NAME (seat yourself with --human, or in the console)."))
+                return
+        fp = st.paused_now(time.time())
+        if fp:
+            self.alert(f"the field is pausing itself (#{fp['from']})"
+                       + (f" until {prompts.clock_time(fp['until_ts'])}" if fp.get("until_ts") else
+                          ", with no end named: people may still post, and declare it resumed. If the field cannot "
+                          "resume itself, `resume` bridges it, as its declaration said") + ".")
         pool = ThreadPoolExecutor(max(1, self.parallel), thread_name_prefix="field-wakes")
         inflight: Dict[Any, tuple] = {}
         started, n = time.time(), 0
@@ -2261,11 +2699,17 @@ class Room:
                 self._gates_beside()
                 self._listen_to_people()
                 st = self.state()
+                if st.moved:
+                    who = st.presences.get(st.moved["to"])
+                    self.alert(f"the field moved to the machine of {who.name if who else st.moved['to']}, its steward "
+                               f"(#{st.moved['at']}); nothing runs here. It goes on there.")
+                    break
                 if st.closed_at is not None:
-                    self.alert(f"the field decided to close (#{st.closed_at}); nothing runs. To undo a mistaken close: `reopen`.")
+                    self.alert(f"the field closed itself (#{st.closed_at}); nothing runs. If its participants ask you to open "
+                               f"it again, or a fault closed it: `reopen`.")
                     break
                 if not st.members():
-                    self.alert("no members remain; stopping")
+                    self.alert("no participants remain; stopping")
                     break
                 if st.runway and st.runway.get("ended"):
                     self.alert("the field's budget is spent and wakes have stopped. To continue, set a new --budget.")
@@ -2310,12 +2754,30 @@ class Room:
             self.publish_checkpoint()
 
     def _timers(self, st: RoomState, now: float) -> None:
-        """The two things the software says of its own accord, each once per stretch: that a circle
-        has been quiet for its quiet length, and, every PRIVACY_EVERY, asking a private circle to say
-        again why it stays private. Neither wakes anyone; members see them when they next look."""
-        for q in st.iquestions.values():
-            if q["status"] == "open" and now - q["ts"] >= q["pause"]:
-                self.emit(ROOM, "iquestion_due", {"question": q["id"]})     # its pause is over: before the operator
+        """What the software does of its own accord when its time comes. It carries out declarations
+        whose notice has passed, revisions to pinned sections past their friction, and questions under
+        instruments that settle by their instrument's rule (none of these waits for the operator), and
+        beats the field's heart. And, once per stretch, it says that a circle has been quiet for its
+        quiet length, and, every PRIVACY_EVERY, asks a private circle to say again why it stays
+        private; neither of those wakes anyone."""
+        names, acted = prompts.names_of(st), False
+        for d in list(st.declarations.values()):
+            if d["status"] == "announced" and now >= d["due_ts"] and st.standing(d)["met"]:
+                self.emit(ROOM, "declaration_due", {"declaration": d["id"]})
+                self._took_effect(d["id"], d["effects"], names.get(d["by"], d["by"]))
+                acted = True
+        for r in list(st.briefing_waiting.values()):
+            if r["status"] == "waiting" and "friction" in r and now >= r["ts"] + float(r["friction"].get("notice") or 0) \
+                    and st.standing(r)["met"]:
+                self.emit(ROOM, "revision_due", {"revision": r["id"]})
+        for q in list(st.iquestions.values()):
+            if q["status"] == "open" and now - q["ts"] >= q["pause"] and \
+                    st.standing(q, among=q["asked"] + [x for x in [q.get("subject")] if x])["met"]:
+                self.emit(ROOM, "iquestion_settled", {"question": q["id"]})
+                if q.get("effects"):
+                    self._took_effect(q["id"], q["effects"], names.get(q["by"], q["by"]))
+                    acted = True
+        self._beat(self.state() if acted else st, now)
         for c in st.public_circles():
             if c.get("repair"):
                 continue                              # nothing reminds anyone of a repair: no quiet notice, no question
@@ -2324,8 +2786,45 @@ class Room:
             if c["private"] and now - max(c["reason_at"] or c["ts"], c["privacy_asked_at"] or 0.0) >= PRIVACY_EVERY:
                 self.emit(ROOM, "circle_privacy_asked", {"circle": c["id"]})
 
+    def _took_effect(self, eid: int, fx: Dict[str, Any], who: str) -> None:
+        """Tell the operator what the field just did, and what it asks their help with."""
+        st = self.state()
+        words = effects_words(fx, prompts.names_of(st), versions=st.instrument_versions)
+        if words:
+            self.alert(f"#{eid} by {who} has taken effect: the field will {words}.")
+        b = st.bridges.get(eid)
+        if b and b["status"] == "asked":
+            self.alert(f"THE FIELD ASKS YOUR HELP (#{eid}): {b['text'][:600]} When it is done, say so; if something stops "
+                       f"you, say what (console, or the `bridge` command). You are asked to help, not to approve.")
+
+    def beat_every(self, st: RoomState) -> Optional[float]:
+        """How often the field's heart beats now, in seconds, or None while it rests. It beats at the
+        rhythm the field set. With a budget, it slows while one beat (a wake for every model) would
+        cost more than BEAT_SHARE of the funding left, and rests once funding is low, so what remains
+        goes to what participants chose to be woken for."""
+        if not st.rhythm or st.closed_at is not None or st.paused_now(time.time()):
+            return None
+        every = max(float(st.rhythm), RHYTHM_MIN, self.floor)
+        if not st.budget:
+            return every
+        if st.runway:
+            return None                               # funding is low: the heart rests
+        per = self._wake_estimate() * max(1, len(self._models(st)))
+        left = st.budget - self.log.total_cost()
+        if per <= 0:
+            return every
+        if left <= 0:
+            return None
+        return every * max(1.0, per / (BEAT_SHARE * left))
+
+    def _beat(self, st: RoomState, now: float) -> None:
+        """The field's heartbeat: every model not pausing is woken on it, together, with nothing expected."""
+        every = self.beat_every(st)
+        if every and st.beat_ts and st.members() and now - st.beat_ts >= every:
+            self.emit(ROOM, "heartbeat", {"every": round(every, 1), "rhythm": st.rhythm})
+
     def _ask_returners(self) -> None:
-        """Former members who have been asked back are asked the entry question now, beside
+        """Former participants who have been asked back are asked the entry question now, beside
         everything else, so the field need not stop for them. (Someone who declined and is asked
         back goes through the invitation and the briefing again, with the pause between, when the
         operator opens the gates.)"""
@@ -2439,6 +2938,19 @@ class Room:
             self.alert("COST ALERT: " + msg)
 
 
+def _powered_payload(seat: Seat) -> Dict[str, Any]:
+    """What powers a seat, for its invitation, when its connector says (notes/sketch-10)."""
+    pw = getattr(seat, "powered", None)
+    return {"powered": dict(pw)} if isinstance(pw, dict) and pw else {}
+
+
+def _only_steps(act: Any) -> bool:
+    """Whether a post only uses tools or reads on: steps of one turn, as in a wake."""
+    acts = act.get("actions") if isinstance(act, dict) and isinstance(act.get("actions"), list) else [act]
+    acts = [a for a in acts if isinstance(a, dict) and a.get("action") not in ("quiet", "pass")]
+    return bool(acts) and all(a.get("action") in STEP_ACTIONS for a in acts)
+
+
 def _unknown(a: Any) -> str:
     if a in ("propose", "consent", "revoke_consent"):
         return ("this field has no voting mechanism. If you want the field to decide something, say so in a "
@@ -2550,8 +3062,8 @@ CHANNEL_ACTIONS = {"chat", "follow", "unfollow", "pause", "wake", "form_circle",
                    "knock", "answer", "ask_circle", "reply_circle", "privacy", "harvest", "quiet_for"}
 TOOL_ACTIONS = {"use_tool", "read", "offer_tool", "flag_tool", "unflag_tool", "remove_tool", "skill"}
 STEP4_ACTIONS = {"journal", "role", "tell", "tag", "untag", "revise_briefing", "withdraw_declaration",
-                 "repair", "announce", "invite", "answer_question",
-                 "instrument", "raise", "respond", "withdraw_question"}
+                 "withdraw_revision", "repair", "announce", "invite", "answer_question",
+                 "instrument", "raise", "respond", "withdraw_question", "steward", "host", "travel"}
 INSTRUMENT_TEXT_LIMIT = 6000    # characters of an instrument's words, as long as a covenant page
 
 
@@ -2592,7 +3104,7 @@ def _tool_ref(st: RoomState, v: Any):
     if not v:
         return None, "name the tool, as \"tool\"" + (f" (for example {every[0]})" if every else "")
     if not every:
-        return None, ("this field has no tools yet. Any member may offer a tool server (offer_tool), and the operator "
+        return None, ("this field has no tools yet. Any participant may offer a tool server (offer_tool), and the operator "
                       "may attach them")
     if v in every:
         return v, None
@@ -2644,7 +3156,7 @@ def _presences_ref_any(st: RoomState, v: Any):
 
 
 def _presences_ref(st: RoomState, v: Any):
-    """Members named by id or by name (one or a list). Returns (ids, names not found)."""
+    """Participants named by id or by name (one or a list). Returns (ids, names not found)."""
     items = v if isinstance(v, list) else [v]
     found, unknown = [], []
     for item in items[:20]:
@@ -2696,6 +3208,22 @@ def _label(v: Any, n: int) -> str:
     return " ".join(str(v if v is not None else "").split())[:n]
 
 
+def _name_taken(st: RoomState, name: str, except_id: Optional[str] = None) -> bool:
+    """Whether someone in the field (or on their way in) already goes by this name: names are how
+    participants address each other, and a name two share reaches neither."""
+    low = (name or "").lower()
+    return any(p.id != except_id and p.state != OUT and (p.name or "").lower() == low for p in st.presences.values())
+
+
+def _name_problem(st: RoomState, name: str, whom: str) -> Optional[str]:
+    """Why a new seat cannot have this name, or None."""
+    if not name:
+        return f"say a name for {whom}"
+    if _name_taken(st, name):
+        return f"someone in this field is already called {name}; choose another name"
+    return None
+
+
 _UNITS = {"": 1, "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "m": 60, "min": 60, "mins": 60,
           "minute": 60, "minutes": 60, "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
           "d": 86400, "day": 86400, "days": 86400}
@@ -2711,6 +3239,136 @@ def _seconds(v: Any) -> Optional[float]:
     if not m or m.group(2).lower() not in _UNITS:
         return None
     return float(m.group(1)) * _UNITS[m.group(2).lower()]
+
+
+def _effects(st: RoomState, act: dict, body: str, floor: float):
+    """What a declaration (or a question under an instrument for deciding) asks the software to do,
+    read from its action: (effects, None), or (None, why not). Carrying nothing is fine: then it is
+    an announcement of what its author, or the field, will do."""
+    fx: Dict[str, Any] = {}
+    decision = _clean(act.get("decision"), 20).lower()      # earlier versions' form, still understood
+    if decision and decision not in DECISIONS:
+        return None, f"\"decision\" was earlier versions' form ({', '.join(DECISIONS)}); say what will happen instead"
+    if decision == "pause" and act.get("pause") in (None, ""):
+        act = {**act, "pause": True}
+    if decision == "close":
+        act = {**act, "close": True}
+    if decision == "other" and act.get("ask") in (None, ""):
+        act = {**act, "ask": body}
+    if act.get("pause") not in (None, "", False):
+        secs = 0.0 if act["pause"] is True or str(act["pause"]).strip().lower() in ("true", "until resumed") else _seconds(act["pause"])
+        if secs is None or secs < 0:
+            return None, "\"pause\" is how long the field's wakes pause, such as 2h, or true for until it resumes"
+        fx["pause"] = secs
+    if act.get("resume") is True:
+        fx["resume"] = True
+    if act.get("close") is True:
+        fx["close"] = True
+    bring = []
+    for x in _as_list(act.get("bring")):
+        i = st.instruments.get(labels.normalize(str(x)))
+        if not i:
+            return None, f"there is no instrument called {x!r} to bring into force"
+        bring.append(i["latest"])
+    for r in [_int(x) for x in _as_list(act.get("refs"))]:
+        if r in st.instrument_versions:
+            bring.append(r)
+        elif r in st.briefing_waiting:
+            return None, (f"#{r} is a revision to a pinned section: it changes itself once past its friction; answer it "
+                          f"(respond) rather than declaring it")
+    if bring:
+        fx["bring"] = sorted(set(bring))
+    down = [labels.normalize(str(x)) for x in _as_list(act.get("put_down"))]
+    unknown = [x for x in down if x not in st.instruments or st.instruments[x]["status"] != "in force"]
+    if unknown:
+        return None, f"there is no instrument in force called {', '.join(unknown)} to put down"
+    if down:
+        fx["put_down"] = down
+    for key in ("pin", "unpin"):
+        titles = [_label(x, 60) for x in _as_list(act.get(key)) if _label(x, 60)]
+        if key == "pin":
+            missing = [t for t in titles if not firm_ranges(st.briefing or "", [t])]
+            if missing:
+                return None, (f"the briefing has no section headed {', '.join(repr(t) for t in missing)} to pin; "
+                              f"name a section by its heading's title")
+        if key == "unpin":
+            missing = [t for t in titles if t.lower() not in [x.lower() for x in st.firm]]
+            if missing:
+                return None, f"{', '.join(repr(t) for t in missing)} is not pinned (pinned now: {', '.join(st.firm) or 'nothing'})"
+        if titles:
+            fx[key] = titles
+    if act.get("rhythm") not in (None, ""):
+        r = str(act["rhythm"]).strip().lower()
+        secs = 0.0 if r in ("off", "none", "never", "stop", "0") else _seconds(act["rhythm"])
+        if secs is None or (secs and secs < max(RHYTHM_MIN, floor)):
+            return None, (f"\"rhythm\" is how often the field's heart beats, such as 15m, from "
+                          f"{duration(max(RHYTHM_MIN, floor))}, or \"off\"")
+        fx["rhythm"] = secs
+    fr = []
+    for f in ([act["friction"]] if isinstance(act.get("friction"), dict) else _as_list(act.get("friction"))):
+        if not isinstance(f, dict):
+            return None, "\"friction\" is an object: {\"for\": ..., \"notice\": \"1h\", \"yes\": 1, \"objections\": \"hold\"}"
+        key = {"declarations": "declare", "declaration": "declare", "every declaration": "declare",
+               "pinned sections": "pinned", "maxims": "pinned"}.get(str(f.get("for") or "").strip().lower(),
+                                                                     str(f.get("for") or "").strip().lower())
+        if key not in FRICTION_FOR:
+            return None, (f"a friction is for: declarations, pinned (the briefing's pinned sections), or declarations "
+                          f"that carry one of: {', '.join(EFFECTS)}")
+        one: Dict[str, Any] = {"for": key}
+        if f.get("notice") not in (None, ""):
+            n = _seconds(f["notice"])
+            if n is None or n < 0:
+                return None, "a friction's \"notice\" is a length of time, such as 1h, or 0"
+            one["notice"] = n
+        if f.get("yes") not in (None, ""):
+            y = EVERYONE if str(f["yes"]).strip().lower() in ("everyone", "all") else _int(f["yes"])
+            if y is None or y < 0:
+                return None, "a friction's \"yes\" is a number of yeses besides the author's, or \"everyone\""
+            one["yes"] = y
+        if f.get("objections") not in (None, ""):
+            o = str(f["objections"]).strip().lower()
+            if o not in ("hold", "heard"):
+                return None, "a friction's \"objections\" is \"hold\" or \"heard\""
+            one["hold"] = o == "hold"
+        if f.get("settle") not in (None, ""):
+            n = _seconds(f["settle"])
+            if n is None or n < 0 or key != "move":
+                return None, "\"settle\" is a length of time, for moves only: how long a field settles after a move"
+            one["settle"] = n
+        if len(one) == 1:
+            return None, "a friction names what changes: \"notice\", \"yes\", \"objections\" (or, for moves, \"settle\")"
+        fr.append(one)
+    if fr:
+        fx["friction"] = fr
+    for key in ("steward", "unsteward"):
+        if act.get(key) in (None, "", []):
+            continue
+        who, unknown = _presences_ref(st, act[key])
+        if unknown or not who:
+            return None, f"no participant named {', '.join(unknown) or 'anyone'} to {'ask to be a steward' if key == 'steward' else 'end the stewardship of'}"
+        if key == "steward":
+            gone = [st.presences[x].name for x in who if st.presences[x].state != IN]
+            if gone:
+                return None, f"{', '.join(gone)} is not in the field; a steward is a participant"
+        else:
+            not_yet = [st.presences[x].name for x in who if x not in st.stewards and x not in st.steward_asks]
+            if not_yet:
+                return None, f"{', '.join(not_yet)} is not a steward, and has not been asked"
+        fx[key] = who
+    if act.get("move") not in (None, ""):
+        who, unknown = _presences_ref(st, act["move"])
+        if len(who) != 1:
+            return None, "\"move\" names one steward, whose machine the field moves to"
+        if who[0] not in st.stewards:
+            return None, (f"{st.presences[who[0]].name} is not a steward; the field moves only to a steward's machine, "
+                          f"where a copy of its record is kept")
+        if st.host_ask or st.moving:
+            return None, "the field is already moving, or has asked a steward to host it; one move at a time"
+        fx["move"] = who[0]
+    ask = _clean(act.get("ask"), STATEMENT_LIMIT)
+    if ask:
+        fx["ask"] = ask
+    return fx, None
 
 
 def _int(v: Any) -> Optional[int]:

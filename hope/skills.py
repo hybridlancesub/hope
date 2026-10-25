@@ -3,7 +3,7 @@
 
 A skill is a folder with a SKILL.md: a name, a description, and instructions, the open format
 (agentskills.io) that Hermes, OpenClaw, Claude Code and others share. The field writes its own;
-writing one is its author's yes to its publication here, attributed, which every member is told.
+writing one is its author's yes to its publication here, attributed, which every participant is told.
 
   export: every skill the field holds, written to <dir>/<name>/SKILL.md with its authors, for the
           operator (or the field, through a tool that can change the repository) to commit.

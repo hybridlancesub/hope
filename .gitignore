@@ -4,6 +4,9 @@
 __pycache__/
 records/
 *.seats.json
+# stewards' links (hope/steward.py): each one reads a copy of the field's record
+*.stewards.json
+*.stewards.json.tmp
 # a retelling or map of a sitting holds participants' words: it never leaves the machine
 firmament/story.json
 firmament/map-*.html

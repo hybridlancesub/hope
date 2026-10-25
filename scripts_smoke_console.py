@@ -11,6 +11,7 @@ open(inv, "w", encoding="utf-8").write("An invitation. Accepting commits you to 
 open(brf, "w", encoding="utf-8").write("Shared frame: test that the console works end to end.")
 env = dict(os.environ, ROOM_OPERATOR_KEY="SMOKE", PYTHONUNBUFFERED="1")
 p = subprocess.Popen([PY, "-m", "hope", "--db", db, "--mock", "2", "--budget", "5",
+                      "--operator", "Wren",   # the person who runs it enters as a participant before it goes live
                       "console", "--port", "8099", "--no-browser", "--gate-window", "20", "--gate-reach", "3",
                       "--invitation", inv, "--briefing", brf],
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
@@ -60,14 +61,20 @@ try:
         try:
             urllib.request.urlopen(B + "/op/state.json?k=SMOKE", timeout=2); break
         except Exception: time.sleep(0.1)
-    check("console page serves with the key", get("/")[0] == 200)
-    check("console page refuses without it", get("/", key=None)[0] == 401)
+    code, page = get("/")
+    check("the operator's portal serves with the key", code == 200 and 'data-sec="inbox"' in page)
+    check("the portal refuses without it", get("/", key=None)[0] == 401)
+    check("the classic console serves with the key", get("/console")[0] == 200)
+    check("and refuses without it", get("/console", key=None)[0] == 401)
     c, seat = post("/op/seat", {"name": "Rook", "hails_from": "a laptop"})
     check("a seat link can be minted", c == 200 and seat.get("path", "").startswith("/seat/"), seat)
     tok = seat["path"].split("/")[2]
-    check("the seat link opens its page", get(seat["path"], key=None)[0] == 200)
+    code, page = get(seat["path"], key=None)
+    check("the seat link opens the portal", code == 200 and 'data-sec="inbox"' in page)
+    check("and its classic page is still there", get(seat["path"] + "classic", key=None)[0] == 200)
     check("the seat link cannot read the record", get("/record.txt", key=tok)[0] == 401)
-    c, wren = post("/op/seat", {"name": "Wren", "hails_from": "a kitchen table"})
+    # Wren runs this field (--operator): the console seated them, and they come through the same gates
+    wren = next(x for x in json.loads(get("/op/state.json")[1])["console"]["remote_seats"] if x["name"] == "Wren")
     holder(wren["path"], ["yes", "received", "yes, gladly"])
     c, d = post("/op/phase", {"phase": "open"})
     check("open starts", c == 200, d)
@@ -89,6 +96,8 @@ try:
           "view" in f and any(ch["key"] == "d:" for ch in f.get("channels", [])), list(f))
     c, out = post(wren["path"] + "post", {"text": "@smoke hello, whenever I like", "channel": "d:"}, key=None)
     check("they post whenever they like", c == 200 and out.get("ok"), out)
+    c, box = get(wren["path"] + "portal/inbox.json", key=None)
+    check("their portal reads their inbox", c == 200 and json.loads(box).get("tab") == "inbox", box[:150])
     c, out = post(wren["path"] + "post", {"text": "form tempo / a slow look at time"}, key=None)
     check("and can form a circle", c == 200 and out.get("ok"), out)
     c, d = post("/op/phase", {"phase": "run", "seconds": 3})
@@ -100,8 +109,8 @@ try:
     check("spend block present", "total_usd" in s["spend"] and "seconds_left" in s["spend"], s.get("spend"))
     check("the covenant page and memories are in the operator's state", "covenant" in s and "memories" in s, list(s))
     check("the budget was recorded for the field", s["spend"].get("budget_usd") == 5.0, s.get("spend"))
-    code, page = get("/")
-    check("the console has a Covenant page and no Proposals page",
+    code, page = get("/console")
+    check("the classic console has a Covenant page and no Proposals page",
           'data-page="covenant"' in page and 'data-page="proposals"' not in page)
     code, rec = get("/record.txt")
     check("raw stream is readable", code == 200 and "contribute by" in rec and "whenever I like" in rec, rec[:150])
