@@ -76,6 +76,9 @@ class _Slot:
     last_seen: Optional[float] = None
     turns_taken: int = 0
     seq: int = 0                         # bumped for every question put to this seat
+    # Words for this seat's holder alone, not yet shown to them (the seat link of an agent they brought).
+    # Kept in the store file beside the tokens, never in the transcript, so a restart does not lose them.
+    private: List[dict] = field(default_factory=list)
 
 
 class Rendezvous:
@@ -139,6 +142,66 @@ class Rendezvous:
     def seats(self) -> List[Seat]:
         with self._lock:
             return [s.seat for s in self._slots.values()]
+
+    def holds(self, seat_id: str) -> bool:
+        with self._lock:
+            return seat_id in self._slots
+
+    # -- words for one holder alone ------------------------------------------------
+    def keep_private(self, seat_id: str, text: str) -> bool:
+        """Keep words for this seat's holder alone until they have read them (private_for, then mark_private_read).
+        False when this board has no such seat. They are kept in the store file, never in the transcript."""
+        with self._lock:
+            slot = self._slots.get(seat_id)
+            if slot is None:
+                return False
+            slot.private.append({"text": text, "ts": time.time()})
+            self._save()
+            return True
+
+    def private_for(self, seat_id: str) -> List[dict]:
+        """Words for this seat's holder alone, not yet shown, oldest first: [{"text", "ts"}]."""
+        with self._lock:
+            slot = self._slots.get(seat_id)
+            return [dict(w) for w in slot.private] if slot else []
+
+    def mark_private_read(self, seat_id: str, upto: Optional[float] = None) -> None:
+        """They have been read: they leave the store file, and are not shown again. With `upto`, only those
+        kept until then; words kept after it stay until they are read in turn."""
+        with self._lock:
+            slot = self._slots.get(seat_id)
+            if slot and slot.private:
+                keep = [] if upto is None else [w for w in slot.private if (w.get("ts") or 0) > upto]
+                if len(keep) != len(slot.private):
+                    slot.private = keep
+                    self._save()
+
+    # -- what the portal reads, without collecting anything --------------------------
+    def pending(self, seat_id: str) -> Optional[dict]:
+        """The gate question put to this seat now, if one is: its kind, its id, when it was put and how long
+        is left. Unlike peek, this does not count as its holder collecting it."""
+        with self._lock:
+            slot = self._slots.get(seat_id)
+            turn = dict(slot.turn) if slot and slot.turn else None
+        if not turn or turn["kind"] == "turn":
+            return None
+        left = None if turn["deadline"] is None else max(0.0, turn["deadline"] - time.time())
+        return {"kind": turn["kind"], "turn_id": turn["id"], "posted": turn["posted"], "seconds_left": left}
+
+    def saw(self, token: str) -> None:
+        """The link was used just now (any page of the seat, not only its gate question), by its holder or by a
+        page or program they left running: so it says the link works, not that anyone looked."""
+        slot = self._slot_for_token(token)
+        if slot is not None:
+            with self._lock:
+                slot.last_seen = time.time()
+                if slot.first_seen is None:
+                    slot.first_seen = slot.last_seen
+
+    def polled(self) -> Dict[str, float]:
+        """When each seat's link was last used, by seat id (this process's memory only)."""
+        with self._lock:
+            return {sid: s.last_seen for sid, s in self._slots.items() if s.last_seen}
 
     # -- the engine side --------------------------------------------------------
     def park(self, seat: Seat, system: str, user: str, timeout: Optional[float],
@@ -262,7 +325,8 @@ class Rendezvous:
     def _save(self) -> None:
         if not self.store:
             return
-        rows = [{"token": s.token, "seat": _seat_json(s.seat, full=True)} for s in self._slots.values()]
+        rows = [{"token": s.token, "seat": _seat_json(s.seat, full=True), **({"private": s.private} if s.private else {})}
+                for s in self._slots.values()]
         tmp = self.store + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"seats": rows}, f, indent=1)
@@ -280,7 +344,8 @@ class Rendezvous:
             seat = Seat(id=s["id"], name=s["name"], hails_from=s["hails_from"], people=s["people"],
                         model=s.get("model", "remote"), pricing=s.get("pricing") or {"prompt": 0.0, "completion": 0.0},
                         turn_allowance=s.get("turn_allowance", 0))
-            self._slots[seat.id] = _Slot(seat=seat, token=row["token"])
+            self._slots[seat.id] = _Slot(seat=seat, token=row["token"],
+                                         private=[w for w in row.get("private") or [] if isinstance(w, dict)])
             self._by_token[row["token"]] = seat.id
 
 

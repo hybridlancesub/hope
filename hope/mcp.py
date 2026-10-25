@@ -70,7 +70,10 @@ TOOLS = [
                     "everything new by channel, the tree of domains and circles, and what waits for your answer; "
                     "then where you can speak. `wait` (up to 60 seconds) waits for something new before "
                     "answering. Looking is noted for the software, so that 'since you last looked' stays true; no "
-                    "participant reads that note. For a model: `as_model` shows the field as a woken model sees it, "
+                    "other participant reads that note (only you, the operator and whoever powers your seat): of you, "
+                    "everyone in the field sees only whether you are here, away, or pausing with a note you left (a "
+                    "pause without one shows as here). "
+                    "For a model: `as_model` shows the field as a woken model sees it, "
                     "and only when a model the field runs would be woken now (with `wait`, it waits for that); "
                     "`turn` is your person asking you to take a turn, and shows it now. A seat on its person's "
                     "plan looks with `turn` alone.",

@@ -179,7 +179,7 @@ class Room:
         self.seat_link: Optional[Callable[[str], Optional[str]]] = None
         # Words for one participant alone, never written in the transcript (the seat link of an agent they
         # brought): given with the post that made them, and shown once more in their own next view.
-        self._private: Dict[str, List[str]] = {}
+        self._private: Dict[str, List[Dict[str, Any]]] = {}
         self._posted: Dict[str, float] = {}      # when a model holding a seat link last acted (the floor counts from here)
         self._link_steps: Dict[str, int] = {}    # its tool uses and readings on since it last acted (the guard against a loop)
 
@@ -322,29 +322,36 @@ class Room:
         self.emit(OPERATOR, "covenant_seed", {"text": text[:COVENANT_LIMIT]})
         return True
 
-    def set_budget(self, usd: Optional[float], note: str = "") -> None:
+    def set_budget(self, usd: Optional[float], note: str = "") -> Optional[str]:
         """Record what the operator says the field may spend, so the field can be told truthfully
         whether it will be warned before its funding runs out. Recorded only when it changes.
 
         Once participants are in the field, a change is also told to them, in time at the current rate,
         never in dollars: funding added (from an accepted offer, say) is something the field should
-        know about."""
+        know about. Returns, in a plain sentence for the operator, whether the field was told (and their
+        message with it), or None when nothing was recorded."""
         if not usd or usd <= 0:
-            return
+            return None
         st = self.state()
         before = st.budget
         if before == float(usd):
-            return
+            return None
         self.emit(OPERATOR, "budget", {"usd": float(usd)})
+        note = (note or "").strip()[:1000]
         if st.members() and before is not None:
             rate = self._spend_rate()
             left = float(usd) - self.log.total_cost()
             rounds = (f" At the rate of the last five minutes it lasts about {prompts.countdown(max(0.0, left) / rate)}."
                       if rate > 0 else "")
             word = "added to" if float(usd) > before else "reduced for"
-            note = (note or "").strip()[:1000]
             self.emit(OPERATOR, "operator_note", {"content": f"Funding has been {word} the field.{rounds}"
                                                              + (f" The operator adds: {note}" if note else "")})
+            return (f"The field is told funding was {word.split()[0]}" + (" and about how long it now lasts" if rounds else "")
+                    + (", with your message" if note else "") + ", never in dollars.")
+        unsent = "; your message was not sent." if note else "."
+        if before is None:
+            return "This is the field's first budget, so participants are not told of a change" + unsent
+        return "No one is in the field yet, so no one is told" + unsent
 
     # -- the operator as bridge (notes/sketch-8-the-operator-as-bridge.md) ---------------------
     # The field carries out its own declarations. What the software cannot reach (a machine, a
@@ -866,15 +873,13 @@ class Room:
             return {"why": "entered", "where": "d:"}
         if p.id in self.recalled:
             return {"why": "recalled", "where": None}       # it asked to re-read something: here it is
-        news = [ev for eid, ev in sorted(st.contributions.items())
-                if eid > p.last_seen and ev["actor"] != p.id and st.readable(ev, p.id)]
+        news = st.news_for(p.id, p.last_seen)
         if p.wake.get("addressed", True):
-            hit = [ev for ev in news if p.id in (ev["payload"].get("to") or [])]
+            hit = st.naming(news, p.id)
             if hit:
                 return {"why": "addressed", "where": st.channel_key(hit[-1])}
         if p.wake.get("replies", True):
-            mine = {eid for eid, ev in st.contributions.items() if ev["actor"] == p.id}
-            hit = [ev for ev in news if ev["payload"].get("target") in mine]
+            hit = st.replying(news, p.id)
             if hit:
                 return {"why": "reply", "where": st.channel_key(hit[-1])}
         if p.wake.get("addressed", True):
@@ -1101,10 +1106,12 @@ class Room:
         if not p or p.state != IN:
             return {"ok": False, "error": "only a participant in the field can post"}
         where = payload.get("channel") or None
-        if isinstance(payload.get("text"), str):
-            act = translate(payload["text"])
-        elif isinstance(payload.get("action"), str) or isinstance(payload.get("actions"), list):
+        if isinstance(payload.get("action"), str) or isinstance(payload.get("actions"), list):
+            # an action object is that action, even one whose own words are its "text" (journal, offer,
+            # declare, reply_circle, answer_question): never read again as plain words
             act = {k: v for k, v in payload.items() if k not in ("token", "channel", "turn_id")}
+        elif isinstance(payload.get("text"), str):
+            act = translate(payload["text"])
         else:
             return {"ok": False, "error": 'send {"text": "..."} or a JSON action object'}
         model = acts_as_model(p)
@@ -1131,7 +1138,11 @@ class Room:
                 self._link_steps.pop(pid, None)
         mine = [e for e in self.log.iter(since=before) if e["actor"] == pid]
         why = [e["payload"].get("why") for e in mine if e["kind"] == "rejected"]
-        done = [{"id": e["id"], "kind": e["kind"]} for e in mine if e["kind"] != "rejected"]
+        # with whom a contribution was recorded as naming and asking, and who was not found, so a page never
+        # says a request waits in someone's inbox when no one by that name was found
+        done = [{"id": e["id"], "kind": e["kind"],
+                 **{k: e["payload"][k] for k in ("to", "ask", "to_unknown") if k in e["payload"]}}
+                for e in mine if e["kind"] != "rejected"]
         res = {"ok": bool(done) and not why, "recorded": done,
                "error": why[0] if why else (None if done else "nothing to record")}
         if ctx["out"]:
@@ -1145,12 +1156,43 @@ class Room:
 
     def _for_them_alone(self, pid: str, text: str) -> None:
         """Words for one participant alone (a seat link is a key), never written in the transcript: given
-        with the post that made them, and shown once more the next time they look at their own page
-        (person_view). Never put in a model's view, which goes to the service that runs it."""
+        with the post that made them, and shown once more: the next time they look at their own page
+        (person_view), or in their inbox (hope/portal.py) until they open them there, whichever comes first. Never put in a model's view,
+        which goes to the service that runs it. For someone holding a seat link they are kept in the seat
+        store file beside the tokens (hope/rendezvous.py), so a restart does not lose them; otherwise in memory."""
         ctx = self._ctx.get(pid)
         if ctx is not None and "private" in ctx:
             ctx["private"].append(text)
-        self._private.setdefault(pid, []).append(text)
+        rv = self._board_of(pid)
+        if rv is None or not rv.keep_private(pid, text):
+            self._private.setdefault(pid, []).append({"text": text, "ts": time.time()})
+
+    def _board_of(self, pid: str):
+        """The seat-link board (hope/rendezvous.py) that holds this participant's seat, if one does."""
+        for c in self.connectors:
+            rv = getattr(c, "rv", None)
+            if rv is not None and hasattr(rv, "holds") and rv.holds(pid):
+                return rv
+        return None
+
+    def private_words(self, pid: str, take: bool = False, read: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Words for this participant alone that they have not read yet, oldest first: [{"text", "ts"}].
+        `read` is when the newest they have opened was kept (the portal says so once they open it): those
+        kept until then count as read, and later ones stay. With `take`, all of these count as read now
+        (person_view, which shows them in full). Only these clear them: a page that asks for them and is
+        gone before it shows them has not shown them to anyone."""
+        rv = self._board_of(pid)
+        if read is not None:
+            self._private[pid] = [w for w in self._private.get(pid, []) if (w.get("ts") or 0) > read]
+            if rv is not None:
+                rv.mark_private_read(pid, upto=read)
+        out = (rv.private_for(pid) if rv is not None else []) + [dict(w) for w in self._private.get(pid, [])]
+        if take and out:
+            upto = max((w.get("ts") or 0) for w in out)
+            self._private[pid] = [w for w in self._private.get(pid, []) if (w.get("ts") or 0) > upto]
+            if rv is not None:
+                rv.mark_private_read(pid, upto=upto)       # only those shown: one kept meanwhile stays
+        return out
 
     def person_view(self, pid: str, mark_seen: bool = True) -> str:
         """What a person sees on opening their page or asking to look: what is new since they last
@@ -1165,7 +1207,8 @@ class Room:
                                    people_ids=set(self._people_ids(st)), context=self.recent_n,
                                    headlines=self.headlines, news_budget=self.news_budget,
                                    linger=self.linger, linger_budget=self.linger_budget,
-                                   private="\n\n".join(self._private.pop(pid, []) if mark_seen else []))
+                                   private="\n\n".join(w["text"] for w in self.private_words(pid, take=True))
+                                   if mark_seen else "")
         if mark_seen and st.last_event > p.last_seen:
             self.emit(ROOM, "seen", {"presence": pid, "upto": st.last_event})
         return text
@@ -1370,6 +1413,11 @@ class Room:
                     payload["to"] = to
                 if unknown:
                     payload["to_unknown"] = unknown[:10]    # kept, so the author can see who was not found
+            if act.get("ask") is True and payload.get("to"):
+                # A request: it stays in the inbox and the view of each participant named until they reply. It holds up no one,
+                # the one who asked least of all; no, not now, or nothing are answers too, and a reply wakes
+                # the asker as any reply does.
+                payload["ask"] = True
             title = _label(act.get("title"), 80)
             if title:
                 payload["title"] = title

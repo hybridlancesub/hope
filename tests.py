@@ -1723,7 +1723,8 @@ class ConsoleTest(unittest.TestCase):
     # the two pages exist and are the two different surfaces ---------------------------------------
     def test_each_surface_serves_its_own_page(self):
         self._up()
-        code, page = self._get("/", key="OPKEY")
+        # the classic console, kept at /console while the portal (at /) grows; PortalTest covers the portal
+        code, page = self._get("/console", key="OPKEY")
         self.assertEqual(code, 200)
         self.assertIn("<title>Console</title>", page)
         self.assertIn("only its participants decide whether it ends", page,
@@ -1747,10 +1748,13 @@ class ConsoleTest(unittest.TestCase):
             i = page.find(">" + verb)
             self.assertGreater(i, 0, f"{verb!r} is on the page")
             self.assertIn("data-tip", page[max(0, i - 700):i], f"{verb!r} has hover help")
-        code, seat = self._get(f"/seat/{self.seat_token}/")
+        code, seat = self._get(f"/seat/{self.seat_token}/classic")
         self.assertEqual(code, 200)
         self.assertIn("Your seat", seat)
         self.assertNotIn("<title>Console</title>", seat, "a seat is never handed the operator's page")
+        code, seat = self._get(f"/seat/{self.seat_token}/")
+        self.assertEqual(code, 200)
+        self.assertNotIn("<title>Console</title>", seat, "its portal is not the operator's console either")
 
     # arriving without the key is an ordinary mistake, not a broken field ---------------------------
     def test_a_browser_without_the_key_gets_a_page_and_a_script_gets_json(self):
@@ -1843,13 +1847,18 @@ class ConsoleTest(unittest.TestCase):
             except urllib.error.HTTPError as e:
                 return e.code, e.read().decode("utf-8", "replace"), e.headers
 
-        code, page, headers = fetch("/?k=OPKEY")
+        code, page, headers = fetch("/console?k=OPKEY")
         self.assertEqual(code, 200)
         for piece in ('data-view="console"', 'data-view="loom"', 'data-view="firmament"', "/firmament/loom.html"):
             self.assertIn(piece, page)
         cookie = headers.get("Set-Cookie") or ""
         for part in ("room_key=OPKEY", "HttpOnly", "SameSite=Strict"):
             self.assertIn(part, cookie, "the key is kept as a cookie only this server can read")
+        # the portal, at /, holds the Firmament the same way, in a frame reading through that cookie
+        code, portal_page, headers = fetch("/?k=OPKEY")
+        self.assertEqual(code, 200)
+        self.assertIn('src="/firmament/"', portal_page)
+        self.assertIn("room_key=OPKEY", headers.get("Set-Cookie") or "")
         # the views' code is public, like the repository it comes from
         self.assertEqual(fetch("/firmament/")[0], 200)
         self.assertIn("FIRMAMENT", fetch("/firmament/")[1])
@@ -3030,6 +3039,29 @@ class WakeTest(unittest.TestCase):
 
 
 class TruthTest(unittest.TestCase):
+    def test_guide_quotes_the_participant_instructions_word_for_word(self):
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        lines = open(os.path.join(here, "GUIDE"), encoding="utf-8").read().splitlines()
+        quoted = set()
+        for i, line in enumerate(lines):
+            m = re.search(r"word for word \(hope/prompts\.py, (\w+)\)", line)
+            if not m:
+                continue
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            block = []
+            while j < len(lines) and (lines[j].startswith("    ") or not lines[j].strip()):
+                if not lines[j].strip() and j + 1 < len(lines) and not lines[j + 1].startswith("    "):
+                    break
+                block.append(lines[j])
+                j += 1
+            self.assertEqual(" ".join(" ".join(block).split()), " ".join(getattr(prompts, m.group(1)).split()),
+                             f"GUIDE's quote of {m.group(1)} (line {i + 1}) must match prompts.py")
+            quoted.add(m.group(1))
+        self.assertEqual(quoted, {"SYSTEM_ENTRY", "SYSTEM_MEMBER"})
+
     """What participants are told must be true of the code."""
 
     def setUp(self):
@@ -4393,6 +4425,19 @@ class StepFourTest(unittest.TestCase):
         tel = self.last("telling")
         self.assertEqual(tel["payload"]["circle"], cid, "told inside the circle, it may cite the circle")
         self.assertFalse(self.st().readable(tel, self.b), "and it stays in the circle")
+
+    def test_a_telling_in_a_private_circle_never_reaches_the_operators_feed(self):
+        from hope.serve import state_json
+        self.act(self.a, action="form_circle", name="harbour", private=True, reason="a quiet place")
+        cid = self.last("circle_form")["id"]
+        self.act(self.a, action="contribute", content="said in the harbour", circle=cid)
+        inner = self.last("contribute")["id"]
+        self.act(self.a, action="tell", story=f"HARBOUR-STORY [#{inner}].", circle=cid)
+        self.act(self.a, action="contribute", content="said in the open")
+        self.act(self.a, action="tell", story=f"An open telling [#{self.last('contribute')['id']}].")
+        told = json.dumps(state_json(self.room.log)["tellings"])
+        self.assertNotIn("HARBOUR-STORY", told, "the Loom and the operator's feed leave it out")
+        self.assertIn("An open telling", told, "an open telling still shows")
 
     def test_a_telling_citing_an_entry_that_does_not_exist_is_refused_with_the_list(self):
         self.act(self.a, action="tell", story="It began at [#999999] and [#999998].")
@@ -7144,6 +7189,10 @@ class JoinTest(unittest.TestCase):
         os.environ["HOPE_JOIN_TEST_KEY"] = self.KEY
         self.said, self.closers, self.runners = [], [], []
         self.gating = threading.Event()
+        # a runner keeps its person's own usage in their config folder: here, the test's own
+        self._config = os.environ.get("HOPE_CONFIG_DIR")
+        self.config = tempfile.mkdtemp()                # beside the field's files, not among them
+        os.environ["HOPE_CONFIG_DIR"] = self.config
 
     def tearDown(self):
         self.gating.set()
@@ -7156,6 +7205,11 @@ class JoinTest(unittest.TestCase):
             c()
         self.model.close()
         os.environ.pop("HOPE_JOIN_TEST_KEY", None)
+        if self._config is None:
+            os.environ.pop("HOPE_CONFIG_DIR", None)
+        else:
+            os.environ["HOPE_CONFIG_DIR"] = self._config
+        shutil.rmtree(self.config, ignore_errors=True)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- a field, a seat brought by a member, and its runner ---------------------------------------------------
@@ -7612,6 +7666,982 @@ class JoinTest(unittest.TestCase):
                    "the heartbeat to be left out for it")
         self.until(lambda: any("will not wake Robin on its heartbeat" in s for s in self.said), "its person told")
         self.assertTrue(any("which hope asks the field to leave out" in s for s in self.said), "said before it runs")
+
+
+from hope import portal
+
+
+class ModelsMock(PricedMock):
+    """Model seats beside the people's ("model-<i>", "Model <i>"), each call costing `price`."""
+
+    def __init__(self, n, price=0.0, script=None):
+        super().__init__(n, price, script)
+        for s in self._seats:
+            s.id, s.name = s.id.replace("mock-", "model-"), s.name.replace("Mock", "Model")
+
+
+class HeldMock(ModelsMock):
+    """A model whose answer waits until the test lets it go: a wake in flight."""
+
+    def __init__(self, n=1):
+        super().__init__(n, 0.0)
+        self.release = threading.Event()
+        self.asked = threading.Event()
+
+    def ask(self, seat, system, messages):
+        if "opt_in" in system.lower() or "accept_invitation" in system.lower() or '"received"' in system.lower():
+            return super().ask(seat, system, messages)
+        self.asked.set()
+        self.release.wait(30)
+        return Reply(json.dumps({"action": "contribute", "content": "an answer, at last"}))
+
+
+class PortalTest(unittest.TestCase):
+    """The portal's data (hope/portal.py): one view for everyone, each reading only what they may."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.closers = []
+        self._config = os.environ.get("HOPE_CONFIG_DIR")
+        os.environ["HOPE_CONFIG_DIR"] = os.path.join(self.tmp, "config")
+
+    def tearDown(self):
+        for c in self.closers:
+            c()
+        if self._config is None:
+            os.environ.pop("HOPE_CONFIG_DIR", None)
+        else:
+            os.environ["HOPE_CONFIG_DIR"] = self._config
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # -- a field of three people and a model, with seat links ---------------------------------------------------
+    def field(self, models=None, serve=False):
+        from hope.console import Console, serve_console
+        self.db = os.path.join(self.tmp, "portal.db")
+        self.rv = Rendezvous(store=self.db + ".seats.json")
+        self.models = models or ModelsMock(1, 0.01)
+        self.room = Room(EventLog(self.db), [PeopleMock(3), self.models,
+                                              RendezvousConnector(self.rv, gate_window=15.0, reach_window=15.0)],
+                         alert_fn=lambda m: None, parallel=4)
+        r = self.room
+        r.invite_all(); r.invite_text(INVITE); r.run_invitation()
+        r.brief(BRIEF); r.run_delivery(); r.run_opt_in()
+        self.console = Console(r, rv=self.rv, operator_key="OPKEY", invitation=INVITE, briefing=BRIEF)
+        if serve:
+            httpd = serve_console(self.console, port=0)
+            self.closers.append(lambda: (httpd.shutdown(), httpd.server_close()))
+            self.base = "http://127.0.0.1:%d" % httpd.server_address[1]
+        return r
+
+    def post(self, pid, **act):
+        out = self.room.post(pid, act)
+        self.assertTrue(out.get("ok"), out)
+        return out
+
+    def last(self, kind):
+        return [e for e in self.room.log.iter(kind=kind)][-1]
+
+    def waiting(self, pid):
+        st = self.room.state()
+        return [x for x in st.awaiting.values() if x["status"] == "waiting" and pid in st.circle_needs(x)]
+
+    def private_circle(self):
+        """Mock 0 and Mock 1 in a private circle; Mock 0 writes there, naming Mock 2 (who cannot read it)."""
+        self.post("mock-0", action="form_circle", name="quiet", private=True, reason="a chat", ask=["mock-1"])
+        cid = self.last("circle_form")["id"]
+        self.post("mock-1", action="answer", to=self.waiting("mock-1")[-1]["id"], yes=True)
+        self.post("mock-0", action="contribute", circle=cid, content="INSIDE-WORDS for the circle", to=["mock-2"], ask=True)
+        return cid
+
+    def repair(self):
+        """Mock 0 opens a repair thread and asks Mock 1 to listen: known only to those in it."""
+        self.post("mock-0", action="repair", account="HARM-WORDS, in my own words", ask=["mock-1"])
+        return self.last("circle_form")["id"]
+
+    def inbox(self, viewer, **kw):
+        return portal.inbox(self.room.state(), self.room.log, viewer, **kw)
+
+    def http(self, path, headers=None):
+        req = urllib.request.Request(self.base + path, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8")
+            return e.code, (json.loads(raw) if raw.startswith("{") else raw)
+
+    def answer(self, token, action):
+        for _ in range(500):
+            t = self.rv.peek(token)
+            if t and t.get("state") == "your_turn":
+                out = self.rv.answer(token, {**action, "turn_id": t["turn_id"]})
+                self.assertTrue(out.get("ok"), out)
+                return t
+            time.sleep(0.02)
+        self.fail("no question was put to the seat")
+
+    def beside(self):
+        self.room._gates_beside()
+        for _ in range(600):
+            if not getattr(self.room, "_gating", False):
+                return
+            time.sleep(0.02)
+
+    def person(self, name="Ana"):
+        """Mock 0 invites a person, who holds a seat link and walks in through the gates. Returns (id, token)."""
+        self.post("mock-0", action="invite", person=name, note="come and see")
+        slot = next(s for s in self.rv._slots.values() if s.seat.name == name)
+        for action in ({"action": "accept_invitation"}, {"action": "received", "pause": "0s"},
+                       {"action": "opt_in", "statement": "here"}):
+            th = threading.Thread(target=self.beside, daemon=True)
+            th.start()
+            self.answer(slot.token, action)
+            th.join(30)
+        self.assertEqual(self.room.state().presences[slot.seat.id].state, IN)
+        return slot.seat.id, slot.token
+
+    # -- each tab shows a participant only what they may read ----------------------------------------------------
+    def test_the_inbox_shows_a_participant_only_what_they_may_read(self):
+        self.field()
+        self.private_circle()
+        rid = self.repair()
+        self.post("mock-0", action="journal", text="JOURNAL-WORDS, naming Mock 2")
+        theirs = json.dumps(self.inbox("mock-2"))
+        for words in ("INSIDE-WORDS", "HARM-WORDS", "JOURNAL-WORDS", "quiet"):
+            self.assertNotIn(words, theirs, "a private circle, a repair thread and a journal stay with their own")
+        self.assertEqual(self.inbox("mock-2")["items"], [], "nothing they cannot read waits on them")
+        mine = self.inbox("mock-1")["items"]
+        self.assertIn("repair_ask", [x["kind"] for x in mine], "the one asked in is asked")
+        self.assertIn(rid, [x["circle"] for x in self.room.state().awaiting.values()])
+        op = json.dumps(self.inbox(portal.OPERATOR))
+        for words in ("INSIDE-WORDS", "HARM-WORDS", "JOURNAL-WORDS"):
+            self.assertNotIn(words, op, "nor does the operator's inbox read them")
+
+    def test_agents_shows_a_participant_only_what_they_may_read(self):
+        self.field()
+        cid = self.private_circle()
+        rid = self.repair()
+        self.post("mock-0", action="follow", circle=cid)    # opening the repair thread followed it already
+        self.post("mock-0", action="invite", own="Robin", note="mine")
+        self.room.step()                                     # the model is woken: the software's own note
+        st = self.room.state()
+        rows = lambda viewer: {r["id"]: r for r in _flat(portal.agents(st, self.room.log, viewer)["agents"])}
+        theirs, own, op = rows("mock-2"), rows("mock-0"), rows(portal.OPERATOR)
+        for key in ("follows", "wake", "last_wake_ts", "last_wake_why", "late", "last_looked_ts", "link_used_ts",
+                    "awake", "answering", "active"):
+            self.assertNotIn(key, theirs["mock-0"], "what the software keeps for itself is not another's to read")
+            self.assertNotIn(key, theirs["model-0"])
+        self.assertEqual((theirs["mock-0"]["presence"], theirs["model-0"]["presence"]), ("here", "here"),
+                         "only whether someone is here")
+        self.assertIn(f"c:{rid}", own["mock-0"]["follows"], "their own, they see")
+        self.assertNotIn(f"c:{rid}", op["mock-0"]["follows"], "a repair thread is known only to those in it")
+        self.assertIn(f"c:{cid}", op["mock-0"]["follows"], "a private circle is never secret")
+        self.assertTrue(op["model-0"]["awake"], "the operator holds the file")
+        self.assertNotIn("HARM-WORDS", json.dumps(portal.agents(st, self.room.log, "mock-2")))
+        robin = next(r for r in portal.agents(st, self.room.log, "mock-2")["agents"] if r["id"] == "mock-0")["brought"]
+        self.assertEqual([r["name"] for r in robin], ["Robin"], "an agent a participant brought is listed under them")
+
+    def test_everyone_sees_here_pausing_or_away_and_only_they_the_operator_or_whoever_powers_them_see_awake_answering_or_active(self):
+        self.field()
+        self.post("mock-0", action="invite", own="Robin", note="mine")
+        slot = next(s for s in self.rv._slots.values() if s.seat.name == "Robin")
+        for action in ({"action": "accept_invitation"}, {"action": "received", "pause": "0s"},
+                       {"action": "opt_in", "statement": "here"}):
+            th = threading.Thread(target=self.beside, daemon=True)
+            th.start()
+            self.answer(slot.token, action)
+            th.join(30)
+        robin = slot.seat.id
+        self.assertEqual(self.room.state().presences[robin].state, IN)
+        self.post(robin, action="follow", domain="garden")
+        self.post("model-0", action="follow", domain="orchard")
+        upto = self.room.state().last_event
+        for who in (robin, "model-0"):                 # the software's own notes that each was woken
+            self.room.emit("room", "wake", {"presence": who, "why": "addressed", "upto": upto})
+        self.rv.saw(slot.token)                        # and Robin's link was used
+        st, polled = self.room.state(), self.rv.polled()
+        rows = lambda viewer: {r["id"]: r for r in _flat(portal.agents(st, self.room.log, viewer, polled=polled)["agents"])}
+        kept = ("awake", "active", "answering", "follows", "wake", "last_wake_ts", "last_wake_why", "last_wake_words",
+                "late", "late_answers", "last_looked_ts", "link_used_ts")
+        sees = {"mock-2": set(), "mock-1": set(), robin: {robin}, "mock-0": {robin},          # mock-0 powers Robin
+                "model-0": {"model-0"}, portal.OPERATOR: {robin, "model-0"}}
+        for viewer, theirs in sees.items():
+            r = rows(viewer)
+            for who in (robin, "model-0"):
+                for key in kept:
+                    (self.assertIn if who in theirs else self.assertNotIn)(key, r[who], f"{viewer}, {who}: {key}")
+                if who in theirs:
+                    self.assertTrue(r[who]["awake"], f"{viewer} sees that {who} is awake")
+            if robin in theirs:
+                self.assertTrue(r[robin]["active"], "it acted within the last minute: active, for those who may see it")
+                self.assertTrue(r[robin]["link_used_ts"])
+            for who in (robin, "model-0", "mock-1"):
+                self.assertEqual(r[who]["presence"], "here", f"{viewer} sees that {who} is here, and everyone may")
+        self.assertIn("d:garden", rows("mock-0")[robin]["follows"], "whoever powers an agent sees what it follows")
+        self.assertIn("d:orchard", rows(portal.OPERATOR)["model-0"]["follows"])
+        self.assertEqual(rows("model-0")["model-0"]["last_wake_why"], "addressed", "and each sees why they were woken")
+        said = portal.text(portal.agents(st, self.room.log, "mock-2", polled=polled)).replace(portal.KEPT_NOTE, "")
+        for words in ("awake", "active", "answering", "garden", "orchard", "last woken", "addressed", "named"):
+            self.assertNotIn(words, said, "no status of the software's own and no reason")
+        self.assertIn("here", said)
+        # pausing, with the note they left, is everyone's to see; a pause without a note is written nowhere anyone reads
+        self.post("mock-1", action="pause", note="away for lunch")
+        self.post(robin, action="pause")
+        self.post("mock-0", action="invite", person="Lee", note="come and see")      # invited, not yet in
+        lee = next(s.seat.id for s in self.rv._slots.values() if s.seat.name == "Lee")
+        self.post("model-0", action="withdraw", reason="enough for now")              # left
+        st = self.room.state()
+        rows = lambda viewer: {r["id"]: r for r in _flat(portal.agents(st, self.room.log, viewer)["agents"])}
+        theirs = rows("mock-2")
+        self.assertEqual((theirs["mock-1"]["presence"], theirs["mock-1"]["pause_note"]), ("pausing", "away for lunch"))
+        self.assertEqual((theirs[robin]["presence"], theirs[robin]["pause_note"]), ("here", None),
+                         "a pause without a note shows as here to anyone else")
+        self.assertEqual(rows("mock-0")[robin]["presence"], "pausing", "but not to whoever powers it")
+        self.assertEqual(rows(robin)[robin]["presence"], "pausing", "nor to itself")
+        self.assertEqual((theirs[lee]["presence"], theirs["model-0"]["presence"]), ("away", "away"),
+                         "away: not yet entered, or left")
+        later = portal.agents(st, self.room.log, "mock-2", now=time.time() + 10 * 86400)
+        self.assertEqual({r["id"]: r for r in _flat(later["agents"])}["mock-1"]["presence"], "pausing",
+                         "a pause with no end stays until they act")
+        out = json.dumps(portal.activity(self.room.log, st, "mock-2"))
+        self.assertNotIn('"wakes"', out, "no one's wakes are counted for another")
+        self.assertIn("No participant reads that note, and no one's silences are counted.", prompts.SYSTEM_MEMBER,
+                      "as every participant is told")
+        self.assertIn("No participant reads another's", portal.KEPT_NOTE)
+        self.assertIn("Everyone in the field sees only whether a participant is here, pausing", portal.KEPT_NOTE)
+        for words in ("awake or active right now is shown", "active right now is shown to everyone"):
+            self.assertNotIn(words, prompts.SYSTEM_MEMBER + portal.KEPT_NOTE + portal.__doc__,
+                             "the earlier wording, that this was everyone's to see, is gone")
+
+    def test_a_participant_cannot_tell_from_another_s_status_whether_its_answer_went_late_or_was_silent_or_private(self):
+        self.field()
+        st = lambda: self.room.state()
+        seen = lambda: {
+            "agents": {r["id"]: r for r in _flat(portal.agents(st(), self.room.log, "mock-2")["agents"])}["model-0"],
+            "runtime": [r for r in portal.runtime(st(), self.room.log, "mock-2")["by_participant"] if r["id"] == "model-0"],
+            "activity": [r for r in portal.activity(self.room.log, st(), "mock-2")["participants"] if r["id"] == "model-0"]}
+        before = seen()
+        upto = st().last_event
+        self.room.emit("room", "wake", {"presence": "model-0", "why": "addressed", "upto": upto})
+        self.assertEqual(seen(), before, "a wake is the software's own note")
+        self.room.emit("room", "late", {"presence": "model-0"})
+        self.assertEqual(seen(), before, "so is an answer going late")
+        self.post("model-0", action="journal", text="JOURNAL-WORDS")
+        self.assertFalse(st().readable(self.last("journal"), "mock-2"))
+        self.assertEqual(seen(), before, "and an act they cannot read, or a silence, changes nothing they see")
+        later = portal.agents(st(), self.room.log, "mock-2", now=time.time() + portal.WINDOW + 30)
+        self.assertEqual({r["id"]: r for r in _flat(later["agents"])}["model-0"], before["agents"], "nor does time")
+        mine = {r["id"]: r for r in _flat(portal.agents(st(), self.room.log, "model-0")["agents"])}["model-0"]
+        self.assertTrue(mine["awake"], "its own, it sees")
+
+    def test_runtime_shows_a_participant_only_what_they_may_read(self):
+        self.field()
+        self.private_circle()
+        self.repair()
+        self.room.step()
+        st = self.room.state()
+        theirs = portal.runtime(st, self.room.log, "mock-2")
+        op = portal.runtime(st, self.room.log, portal.OPERATOR)
+        self.assertEqual(theirs["last_wakes"], [], "when a model was woken is the software's own note")
+        self.assertNotIn("model-0", [r["id"] for r in theirs["by_participant"]],
+                         "another's share, and the size and number of its calls, are the software's own notes")
+        self.assertNotIn("mock/model-0", [m["model"] for m in theirs["models"]], "as is what it was run on")
+        self.assertEqual([(r["name"], r["share_percent"]) for r in theirs["by_participant"]],
+                         [("Mock 2", 0), ("everyone else, together", 100)], "their own, and everyone else's together")
+        for key in ("calls", "prompt_tokens", "completion_tokens", "usd"):
+            self.assertNotIn(key, theirs["by_participant"][-1])
+        self.assertNotIn("operator", theirs, "the phase and the budget are the operator's")
+        self.assertEqual([w["id"] for w in op["last_wakes"]], ["model-0"])
+        self.assertEqual(op["last_wakes"][0]["prompt_tokens"], 100, "the size of its last wake, as its provider counted it")
+        self.assertIn("operator", op)
+        for words in ("INSIDE-WORDS", "HARM-WORDS", "quiet"):
+            self.assertNotIn(words, json.dumps(theirs))
+        self.assertAlmostEqual(op["spend"]["total_usd"], self.room.log.total_cost())
+
+    def test_activity_shows_a_participant_only_what_they_may_read(self):
+        self.field()
+        cid = self.private_circle()
+        self.room.step()
+        count = lambda viewer, who="mock-0", what="acts": next(
+            (r.get(what) for r in portal.activity(self.room.log, self.room.state(), viewer)["participants"] if r["id"] == who), 0)
+        before = {v: count(v) for v in ("mock-1", "mock-2")}
+        self.post("mock-0", action="contribute", circle=cid, content="more INSIDE-WORDS")
+        self.post("mock-0", action="journal", text="JOURNAL-WORDS")
+        self.assertEqual(count("mock-2"), before["mock-2"], "a private circle and a journal are not counted for others")
+        self.assertEqual(count("mock-1"), before["mock-1"] + 1, "the circle is counted for those in it; the journal is not")
+        self.post("mock-0", action="contribute", content="words for everyone")
+        self.assertEqual(count("mock-2"), before["mock-2"] + 1)
+        self.room.emit("mock-0", "tool_call", {"tool": "github.create_issue", "arguments": {}, "domain": "work"})
+        self.assertEqual(count("mock-2", what="github"), 1, "work in the field's repository, as a second layer")
+        self.assertIsNone(count("mock-2", "model-0", "wakes"), "a model's wakes are not another's to count")
+        self.assertEqual(count(portal.OPERATOR, "model-0", "wakes"), 1)
+
+    # -- requests, and everything that waits ---------------------------------------------------------------------
+    def test_a_request_reaches_the_person_it_names_and_never_holds_up_whoever_asked(self):
+        self.field()
+        out = self.post("mock-0", action="contribute", content="Could you read my draft?", to=["mock-1"], ask=True)
+        rq = out["recorded"][0]["id"]
+        self.assertTrue(self.room.log.get(rq)["payload"]["ask"])
+        self.post("mock-0", action="contribute", content="and meanwhile, something else")    # they go on at once
+        mine = [x for x in self.inbox("mock-1")["items"] if x["kind"] == "request"]
+        self.assertEqual([(x["entry"], x["by"], x["new"]) for x in mine], [(rq, "mock-0", True)])
+        self.assertEqual(mine[0]["answer"]["template"], {"action": "contribute", "reply_to": rq, "content": "", "channel": "d:"},
+                         "answered where it was asked")
+        self.assertEqual(mine[0]["answer"]["where"], "the field")
+        self.assertEqual(self.inbox("mock-0")["items"], [], "nothing waits on whoever asked")
+        self.assertEqual(self.inbox("mock-2")["items"], [], "nor on anyone it does not name")
+        self.post("mock-0", action="contribute", content="Model 0, would you look too?", to=["model-0"], ask=True)
+        st = self.room.state()
+        view = prompts.wake_view(st, st.presences["model-0"], "addressed", limits=self.room.limits())
+        self.assertIn("REQUESTS TO YOU", view, "a model named in a request sees it in its own view")
+        self.assertIn("a request to Model 0", view)
+        self.post("mock-1", **{**mine[0]["answer"]["template"], "content": "Not now, thank you."})
+        self.assertEqual([x for x in self.inbox("mock-1")["items"] if x["kind"] == "request"], [],
+                         "a reply answers it, and no is an answer")
+        back = self.inbox("mock-0")["items"]
+        self.assertEqual([x["kind"] for x in back], ["reply"], "and the reply reaches whoever asked, as any reply does")
+
+    def test_everything_waiting_on_a_person_is_in_their_inbox_and_answering_uses_the_action_that_already_answers_it(self):
+        self.field()
+        self.post("mock-0", action="contribute", content="a question for you", to=["mock-1"], ask=True)
+        self.post("mock-0", action="contribute", content="Mock 1, look", to=["mock-1"])
+        mine = self.post("mock-1", action="contribute", content="my own thought")["recorded"][0]["id"]
+        self.post("mock-0", action="contribute", content="an answer to you", reply_to=mine)
+        self.post("mock-0", action="form_circle", name="open-one", ask=["mock-1"])
+        self.post("mock-2", action="form_circle", name="talk")
+        talk = self.last("circle_form")["id"]
+        self.post("mock-1", action="join_circle", circle=talk)
+        self.post("mock-2", action="ask_circle", circle=talk, question="who keeps the notes?")
+        self.post("mock-0", action="declare", text="we will keep a log", when="1h")
+        self.post("mock-1", action="invite", person="Sam", note="welcome")
+        sam = next(s.seat.id for s in self.rv._slots.values() if s.seat.name == "Sam")
+        self.room.emit(sam, "question", {"content": "what is this field?"})
+        self.room.post("mock-1", {"action": "let_go", "memory": 999999})          # cannot be done
+        self.post("mock-0", action="offer", text="a little funding")
+        op = self.inbox(portal.OPERATOR)["items"]
+        self.assertEqual(sorted(x["kind"] for x in op), ["gate_question", "offer"], op)
+        items = self.inbox("mock-1")["items"]
+        kinds = sorted(x["kind"] for x in items)
+        self.assertEqual(kinds, sorted(["request", "named", "reply", "circle_ask", "circle_question", "declaration",
+                                        "invitee_question", "not_done"]), items)
+        self.assertEqual([x["entry"] for x in items], sorted((x["entry"] for x in items), reverse=True), "newest first")
+        fill = {"contribute": {"content": "thank you"}, "answer": {}, "reply_circle": {"text": "I will"},
+                "respond": {}, "answer_question": {"text": "a field built on consent"}}
+        for x in items:
+            if x["answer"] is None:
+                self.assertEqual(x["kind"], "not_done", "only what could not be done has nothing to answer")
+                continue
+            self.assertEqual(x["answer"]["via"], "post")
+            self.post("mock-1", **{**x["answer"]["template"], **fill[x["answer"]["action"]]})
+        self.assertEqual([x["kind"] for x in self.inbox("mock-1")["items"]], ["not_done"], "each answered by its own action")
+        op = self.inbox(portal.OPERATOR)["items"]
+        self.assertEqual([x["kind"] for x in op], ["offer"], "their answer to the one they invited answered it")
+        for x in op:
+            self.assertEqual(x["answer"]["via"], "op")
+            done = self.console.op(x["answer"]["action"], {**x["answer"]["template"], "text": "an answer"})
+            self.assertTrue(done.get("ok"), done)
+        self.assertEqual(self.inbox(portal.OPERATOR)["items"], [], "and the operator's, by the operator's own actions")
+
+    def test_an_agent_is_shown_as_awake_while_woken_and_as_active_while_answering(self):
+        held = HeldMock(1)
+        self.field(models=held)
+        th = threading.Thread(target=self.room.step, daemon=True)
+        th.start()
+        self.assertTrue(held.asked.wait(10), "the model was woken")
+        rows = lambda: {r["id"]: r for r in _flat(self.console.portal("agents")["agents"])}
+        row = rows()["model-0"]
+        self.assertTrue((row["awake"], row["active"], row["answering"]) == (True, True, True), row)
+        held.release.set()
+        th.join(10)
+        row = rows()["model-0"]
+        self.assertEqual((row["awake"], row["active"], row["answering"]), (True, True, False), "answered, still awake")
+        later = lambda s: {r["id"]: r for r in _flat(portal.agents(self.room.state(), self.room.log, portal.OPERATOR,
+                                                                   now=time.time() + s)["agents"])}["model-0"]
+        self.assertFalse(later(portal.ACTIVE_FOR + 5)["active"], "a minute after its answer, no longer active")
+        self.assertFalse(later(portal.AWAKE_FOR + 5)["awake"], "and after a while, not awake")
+        pid, token = self.person()
+        self.post(pid, action="contribute", content="hello")
+        self.assertTrue(rows()[pid]["active"], "one who acted within the last minute is active")
+
+    def test_a_page_left_open_is_not_activity(self):
+        self.field(serve=True)
+        pid, token = self.person()
+        later = time.time() + portal.ACTIVE_FOR + 5           # long after anything they did on their way in
+        row = lambda now=None, polled=None: {r["id"]: r for r in _flat(portal.agents(
+            self.room.state(), self.room.log, portal.OPERATOR, polled=polled or self.rv.polled(), now=now)["agents"])}[pid]
+        # the page's own reads, as it makes them in the background: its inbox, its question at the gates, its
+        # words and the places to speak
+        before = self.room.log.last_id()
+        for path in ("portal/inbox.json?wait=0", "portal/agents.json", "turn.json", "words.json",
+                     "field.json?since=999999999999"):
+            self.assertEqual(self.http(f"/seat/{token}/{path}")[0], 200, path)
+        self.assertEqual([e["kind"] for e in self.room.log.iter(since=before)], [], "they write nothing, not even a look")
+        self.assertTrue(self.rv.polled().get(pid), "though the link was used")
+        open_tab = row(now=later, polled={pid: later})        # a page still reading, long after
+        self.assertFalse(open_tab["active"], "a page left open, reading in the background, is not activity")
+        self.assertEqual(open_tab["link_used_ts"], later, "the link's use is shown as that, to whoever may see it")
+        self.post("mock-0", action="contribute", content="news for everyone")
+        self.http(f"/seat/{token}/field.json?since=0")          # they open what is new for them: they were shown it
+        self.assertTrue(row()["active"])
+        self.assertFalse(row(now=later)["active"], "for a minute")
+
+    # -- spend --------------------------------------------------------------------------------------------------
+    def test_the_fields_spend_per_model_adds_up_to_its_total(self):
+        self.field(models=ModelsMock(2, 0.013))
+        self.room.step()
+        self.room.log.charge("model-0", "other/model", 120, 7, 0.021)
+        rt = portal.runtime(self.room.state(), self.room.log, portal.OPERATOR)
+        total = self.room.log.total_cost()
+        self.assertGreater(total, 0.04)
+        self.assertAlmostEqual(sum(m["usd"] for m in rt["models"]), total, places=9)
+        self.assertAlmostEqual(sum(r["usd"] for r in rt["by_participant"]), total, places=9)
+        self.assertAlmostEqual(rt["spend"]["total_usd"], total, places=9)
+        for viewer in ("mock-2", "model-0"):
+            theirs = portal.runtime(self.room.state(), self.room.log, viewer)
+            self.assertEqual(sum(m["share_percent"] for m in theirs["models"]), 100, viewer)
+            self.assertEqual(sum(r["share_percent"] for r in theirs["by_participant"]), 100, viewer)
+        self.assertEqual(next(r for r in theirs["by_participant"] if r["id"] == "model-0")["models"],
+                         ["mock/model-0", "other/model"], "each model they were run on, as they see it")
+
+    def test_participants_see_the_fields_spend_as_time_and_shares_never_dollars_and_the_operator_sees_dollars(self):
+        self.field(models=ModelsMock(2, 0.013), serve=True)
+        pid, token = self.person()
+        self.room.step()
+        self.room.log.charge("model-0", "other/model", 120, 7, 0.021)
+        self.room.set_budget(self.room.log.total_cost() + 0.06)
+        self.room._runway()                           # the funding runs low: every view counts it down
+        self.assertTrue((self.room.state().runway or {}).get("low"))
+        status, seat = self.http(f"/seat/{token}/portal/runtime.json")
+        self.assertEqual(status, 200)
+        money = re.compile(r"usd|\$\s*\d")
+        self.assertIsNone(money.search(json.dumps(seat).lower()), "no dollar figure, in the JSON a participant reads")
+        self.assertNotIn("$", portal.text(seat), "nor in its words")
+        funding = seat["spend"]["funding"]
+        self.assertEqual(funding["state"], "low")
+        self.assertIn("what is left lasts about", funding["words"], "the runway, in time")
+        self.assertIsNotNone(funding.get("seconds_left"))
+        total = self.room.log.total_cost()
+        self.assertNotIn("model-0", [r["id"] for r in seat["by_participant"]], "another's share is theirs")
+        model0 = next(r for r in portal.runtime(self.room.state(), self.room.log, "model-0")["by_participant"]
+                      if r["id"] == "model-0")
+        mine = sum(usd for pres, _, _, _, usd, _ in self.room.log.cost_by_presence() if pres == "model-0")
+        self.assertIsInstance(model0["share_percent"], int, "their own share, in whole percent")
+        self.assertLessEqual(abs(model0["share_percent"] - 100.0 * mine / total), 1)
+        self.assertEqual(sum(m["share_percent"] for m in seat["models"]), 100)
+        self.assertEqual(sum(r["share_percent"] for r in seat["by_participant"]), 100)
+        self.assertIn("shown only to the operator", seat["spend"]["words"])
+        self.assertNotIn("Never in money", seat["spend"]["words"], "prices are stated in dollars where they apply")
+        status, op = self.http("/op/portal/runtime.json", {"X-Field-Key": "OPKEY"})
+        self.assertEqual(status, 200)
+        self.assertAlmostEqual(op["spend"]["total_usd"], total, places=9, msg="the operator sees dollars")
+        self.assertIn("rate_usd_per_minute", op["spend"])
+        self.assertIn("typical_call_usd", op["spend"])
+        self.assertAlmostEqual(sum(m["usd"] for m in op["models"]), total, places=9)
+        self.assertIn("$", portal.text(op))
+        self.assertAlmostEqual(op["operator"]["budget_usd"], self.room.state().budget)
+
+    def test_your_own_spend_stays_on_your_machine_unless_you_share_it(self):
+        self.field(serve=True)
+        self.post("mock-0", action="invite", own="Robin", note="mine")
+        robin = next(s for s in self.rv._slots.values() if s.seat.name == "Robin")
+
+        class Own:
+            def ask(self, seat, system, messages):
+                low = system.lower()
+                if "accept_invitation" in low:
+                    text = json.dumps({"action": "accept_invitation"})
+                elif '"received"' in low:
+                    text = json.dumps({"action": "received", "pause": "0s"})
+                elif "opt_in" in low:
+                    text = json.dumps({"action": "opt_in", "statement": "here"})
+                else:
+                    text = json.dumps({"action": "contribute", "content": "my own words"})
+                return Reply(text, prompt_tokens=1000, completion_tokens=50, raw={"usage": {"cost": 0.0042}})
+
+            def close(self):
+                pass
+
+        said = []
+        seat = Seat("own", "Robin", "here", "a model", "test/model-a", {"prompt": 0.0, "completion": 0.0})
+        powered = {"route": "own-key", "provider": "Test Provider", "trains": False, "acts": "woken"}
+        r = join.Runner(f"{self.base}/seat/{robin.token}/", Own(), seat, powered, out=said.append, wait=1.0, poll=0.05)
+        th = threading.Thread(target=r.run, daemon=True)
+        th.start()
+        stop = threading.Event()
+        self.closers.insert(0, lambda: (stop.set(), r.stop.set(), th.join(10)))
+
+        def gates():
+            while not stop.is_set():
+                self.room._gates_beside()
+                time.sleep(0.05)
+        threading.Thread(target=gates, daemon=True).start()
+        end = time.time() + 30
+        while time.time() < end and not any(s.startswith("Robin: contribute") for s in said):
+            time.sleep(0.05)
+        line = next(s for s in said if s.startswith("Robin: contribute"))
+        self.assertIn("tokens in", line, "its person sees their own usage at the end of each turn's line")
+        self.assertIn("kept on this machine", line)
+        tally = join.read_usage()
+        day = tally["days"][time.strftime("%Y-%m-%d")]["test/model-a"]
+        self.assertEqual((day["prompt_tokens"] >= 1000, day["completion_tokens"] >= 50, day["cost_usd"] > 0), (True, True, True))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "config", join.USAGE_FILE)), "in the person's own folder")
+        sent = json.dumps([e for e in self.room.log.iter()])
+        self.assertNotIn("tokens in", sent, "nothing of it reaches the field")
+        self.assertNotIn("test/model-a", json.dumps(portal.runtime(self.room.state(), self.room.log, "mock-0")))
+        self.assertEqual(portal.runtime(self.room.state(), self.room.log, "mock-0")["your_spend"]["kept"],
+                         "on your machine, when hope join runs the seat", "and only then: a seat held any other way has no tally")
+        self.assertIn("is not tallied by hope", portal.YOUR_SPEND)
+        cli = io.StringIO()
+        with contextlib.redirect_stdout(cli):
+            from hope import __main__ as main
+            main.main(["usage"])
+        self.assertIn("test/model-a", cli.getvalue(), "hope usage shows it")
+        yesterday = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+        join.count_usage("test/model-a", 300, 20, None, day=yesterday)
+        r._share()
+        self.assertEqual([e for e in self.room.log.iter(kind="contribute") if "own usage" in e["payload"]["content"]], [],
+                         "not shared unless its person says so")
+        r.share_usage = True
+        r._share()
+        shared = [e for e in self.room.log.iter(kind="contribute") if "own usage" in e["payload"]["content"]]
+        self.assertEqual(len(shared), 1, "shared, as an ordinary entry by the seat")
+        self.assertEqual(shared[0]["actor"], robin.seat.id)
+        self.assertIn(yesterday, shared[0]["payload"]["content"])
+        r._share()
+        self.assertEqual(len([e for e in self.room.log.iter(kind="contribute") if "own usage" in e["payload"]["content"]]), 1,
+                         "once a day")
+
+    # -- the same inbox in a terminal and a browser; words for one person alone; the doors -------------------------
+    def test_the_terminal_and_the_browser_show_the_same_inbox(self):
+        from hope import __main__ as main
+        self.field(serve=True)
+        pid, token = self.person()
+        self.post("mock-0", action="contribute", content="Ana, would you?", to=[pid], ask=True)
+
+        def run(*argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                main.main(list(argv))
+            return buf.getvalue()
+        status, browser = self.http(f"/seat/{token}/portal/inbox.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(run("inbox", "--link", f"{self.base}/seat/{token}/", "--json")), browser)
+        self.assertEqual(run("inbox", "--link", f"{self.base}/seat/{token}/").rstrip("\n"), portal.text(browser))
+        self.assertEqual([x["kind"] for x in browser["items"]], ["request"])
+        status, op = self.http("/op/portal/inbox.json", {"X-Field-Key": "OPKEY"})
+        self.assertEqual(json.loads(run("--db", self.db, "inbox", "--json")), op, "and the operator's, from the file")
+        for tab in ("agents", "runtime"):
+            text = run(tab, "--link", f"{self.base}/seat/{token}/")
+            self.assertTrue(text.strip(), tab)
+            self.assertNotIn(token, text, "the seat's key is never printed")
+
+    def test_private_words_for_one_person_survive_a_restart_and_stay_with_them_alone_until_they_open_them(self):
+        from hope.console import Console
+        self.field()
+        ana, token = self.person()
+        out = self.post(ana, action="invite", own="Robin", note="mine")
+        link = re.search(r"/seat/([A-Za-z0-9_-]{20,})/", out["private"]).group(1)
+        with open(self.db + ".seats.json", encoding="utf-8") as f:
+            self.assertIn(link, f.read(), "kept beside the tokens, in the seat store")
+        self.assertFalse(any(link in json.dumps(e) for e in self.room.log.iter()), "never in the transcript")
+        # the field's process stops, and starts again from its files
+        rv = Rendezvous(store=self.db + ".seats.json")
+        room = Room(EventLog(self.db), [PeopleMock(3), ModelsMock(1, 0.01), RendezvousConnector(rv)],
+                    alert_fn=lambda m: None, parallel=4)
+        room.bind_seats()
+        console = Console(room, rv=rv, operator_key="OPKEY")
+        for who in ("mock-0", "mock-1"):
+            self.assertNotIn(link, json.dumps(console.portal("inbox", token=None)), "not the operator's")
+            self.assertNotIn(link, json.dumps(portal.inbox(room.state(), room.log, who)), "nor anyone else's")
+        first = console.portal("inbox", token=token)
+        alone = [x for x in first["items"] if x["kind"] == "for_you_alone"]
+        self.assertEqual(len(alone), 1)
+        self.assertIn(link, alone[0]["text"], "shown to them, after the restart")
+        again = console.portal("inbox", token=token)
+        self.assertEqual([x for x in again["items"] if x["kind"] == "for_you_alone"], alone, "until they open them")
+        opened = console.portal("inbox", token=token, read=alone[0]["ts"])
+        self.assertEqual([x for x in opened["items"] if x["kind"] == "for_you_alone"], [], "then they count as read")
+        self.assertNotIn(link, room.person_view(ana), "nor again on their page")
+        with open(self.db + ".seats.json", encoding="utf-8") as f:
+            rows = json.load(f)["seats"]
+        self.assertFalse(any(row.get("private") for row in rows if row["seat"]["id"] == ana), "read words leave the store")
+
+    def test_the_portal_endpoints_refuse_without_the_seat_token_or_the_operator_key(self):
+        self.field(serve=True)
+        pid, token = self.person()
+        for tab in portal.TABS:
+            self.assertEqual(self.http(f"/op/portal/{tab}.json")[0], 401, "no key, no portal")
+            self.assertEqual(self.http(f"/op/portal/{tab}.json", {"X-Field-Key": "WRONG"})[0], 401)
+            self.assertEqual(self.http(f"/op/portal/{tab}.json?k=OPKEY")[0], 200)
+            self.assertEqual(self.http(f"/seat/{'x' * 43}/portal/{tab}.json")[0], 404, "not a seat, no portal")
+            self.assertEqual(self.http(f"/seat/{token}/portal/{tab}.json")[0], 200)
+        self.assertEqual(self.http(f"/seat/{token}/portal/secrets.json")[0], 404, "only the portal's tabs")
+        self.post("mock-0", action="invite", person="Lee", note="hello")
+        lee = next(s.token for s in self.rv._slots.values() if s.seat.name == "Lee")
+        status, body = self.http(f"/seat/{lee}/portal/agents.json")
+        self.assertEqual((status, body.get("state")), (403, "not_in_field"), "the field has no watching from outside")
+        self.assertEqual(self.http(f"/seat/{lee}/portal/inbox.json")[0], 200, "yet a question put to them reaches them")
+
+
+    # -- the portal page: one page for everyone, at the doors they already have ------------------------------------
+    def page(self, path, headers=None):
+        """A page as a browser gets it: (status, headers, text)."""
+        req = urllib.request.Request(self.base + path, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, dict(r.headers), r.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read().decode("utf-8")
+
+    def send(self, path, obj, headers=None):
+        req = urllib.request.Request(self.base + path, data=json.dumps(obj).encode(),
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    @staticmethod
+    def static(name):
+        with open(os.path.join(os.path.dirname(portal.__file__), "static", name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_participants_seat_link_opens_the_portal_and_its_classic_page_is_still_there(self):
+        self.field(serve=True)
+        pid, token = self.person()
+        status, headers, page = self.page(f"/seat/{token}/")
+        self.assertEqual(status, 200)
+        self.assertEqual(page, self.static("portal.html"), "the seat link opens the portal")
+        self.assertNotIn(token, page, "the page carries no key of its own; it reads its address")
+        for section in ("inbox", "agents", "runtime", "circles", "threads", "skills", "firmament"):
+            self.assertIn(f'data-sec="{section}"', page)
+        status, _, classic = self.page(f"/seat/{token}/classic")
+        self.assertEqual(status, 200)
+        self.assertEqual(classic, self.static("seat.html"), "the classic seat page is kept while the portal grows")
+        self.assertIn('replace(/\\/classic\\/?$/, "/")', classic, "and reads and writes through the seat's own path")
+        self.assertIn('BASE + "classic"', page, "the portal links to it")
+        status, turn = self.http(f"/seat/{token}/turn.json")
+        self.assertEqual((status, turn["state"]), (200, "in_field"), "the seat's own doors are where they were")
+
+    def test_the_operators_key_opens_the_portal_with_the_operator_section_and_a_seat_does_not_get_it(self):
+        self.field(serve=True)
+        pid, token = self.person()
+        status, headers, page = self.page("/?k=OPKEY")
+        self.assertEqual(status, 200)
+        self.assertEqual(page, self.static("portal.html"), "the operator's key opens the portal")
+        self.assertIn("HttpOnly", headers.get("Set-Cookie", ""), "the key becomes a cookie the page cannot read")
+        self.assertIn('history.replaceState(null, "", location.pathname + location.hash)', page,
+                      "and the page takes it out of the address bar")
+        status, _, console = self.page("/console?k=OPKEY")
+        self.assertEqual(status, 200)
+        self.assertEqual(console, self.static("console.html"), "the classic console is kept while the portal grows")
+        for path in ("/", "/console", f"/?k={token}", f"/console?k={token}"):
+            self.assertEqual(self.page(path)[0], 401, f"{path}: no operator key, no operator's page")
+        # the Operator section is drawn from what only the operator's runtime carries, and a seat's never does
+        status, op = self.http("/op/portal/runtime.json", {"X-Field-Key": "OPKEY"})
+        self.assertEqual(status, 200)
+        self.assertIn("operator", op)
+        status, seat = self.http(f"/seat/{token}/portal/runtime.json")
+        self.assertEqual(status, 200)
+        self.assertNotIn("operator", seat)
+        self.assertIn("if (SEAT || !S.runtime || !S.runtime.operator){ box.hidden = true; return; }", page)
+        # and its buttons call the operator's own actions, which a seat cannot reach
+        for action in ("phase", "budget", "stop", "seat", "reseat", "reinvite", "read_circle", "read_journal", "remove_tool"):
+            self.assertIn(f'opPost("{action}"', page, f"the Operator section offers {action}")
+        self.assertEqual(self.send("/op/note", {"text": "from a seat"})[0], 401)
+        self.assertEqual(self.send(f"/op/note?k={token}", {"text": "from a seat"})[0], 401, "a seat link is not the key")
+        self.assertNotIn("from a seat", json.dumps([e["payload"] for e in self.room.log.iter(kind="operator_note")]))
+
+    def test_a_model_the_field_runs_is_shown_as_a_model_and_a_person_as_a_person(self):
+        r = self.field()
+        for viewer in ("mock-0", portal.OPERATOR):
+            rows = {x["id"]: x for x in _flat(portal.agents(r.state(), r.log, viewer)["agents"])}
+            self.assertEqual(rows["model-0"]["kind"], "model", "a model the field runs says nothing of what powers it")
+            self.assertEqual(rows["mock-0"]["kind"], "person", "a person holding a link is a person")
+
+    def test_the_portal_page_loads_no_code_from_other_sites(self):
+        self.field(serve=True)
+        pid, token = self.person()
+        page = self.static("portal.html")
+        self.assertNotRegex(page, r"(?i)https?://", "no address on another site, for code, styles, fonts or anything else")
+        self.assertNotRegex(page, r"""(?i)(src|href)\s*=\s*["']?//""", "nor one without its scheme")
+        self.assertNotRegex(page, r"(?i)<script[^>]*\ssrc=|<link[^>]*stylesheet|@import", "everything it runs is in it")
+        for path in (f"/seat/{token}/", "/?k=OPKEY"):
+            status, headers, _ = self.page(path)
+            policy = headers.get("Content-Security-Policy", "")
+            self.assertIn("default-src 'self'", policy, f"{path}: the browser is told to refuse code from elsewhere")
+            self.assertIn("script-src 'self' 'unsafe-inline'", policy)
+            self.assertNotIn("http", policy)
+
+    def test_the_gates_are_answered_from_the_inbox_as_on_the_old_seat_page(self):
+        from unittest import mock
+        later = mock.patch.object(_engine, "INVITE_PAUSE", 0.0)    # the hour's pause before entry, not waited out here
+        later.start()
+        self.addCleanup(later.stop)
+        self.field(serve=True)
+        self.post("mock-0", action="invite", person="Lee", note="come and see")
+        slot = next(s for s in self.rv._slots.values() if s.seat.name == "Lee")
+        token, before = slot.token, None
+        for text, kind, words in (("yes, glad to hear more", "invitation", "accept_invitation"),
+                                  ("received", "delivery", "received"), ("yes", "entry", "opt_in")):
+            th = threading.Thread(target=self.beside, daemon=True)
+            th.start()
+            item = None
+            for _ in range(500):
+                status, box = self.http(f"/seat/{token}/portal/inbox.json")
+                item = next((x for x in box.get("items", []) if x["kind"] == "gate"), None)
+                if item and item["gate"] == kind:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(item and item["gate"], kind, f"the {kind} question is in their inbox")
+            self.assertEqual(box["items"][0], item, "at the top")
+            self.assertTrue(item["new"])
+            self.assertIn("Silence is never taken as yes", item["note"])
+            # the page shows the question in full, as the classic page does, from the seat's own turn.json
+            status, turn = self.http(f"/seat/{token}/turn.json")
+            self.assertEqual((turn["state"], turn["kind"]), ("your_turn", kind))
+            self.assertEqual(turn["turn_id"], item["answer"]["template"]["turn_id"], "the same question")
+            if kind == "invitation":
+                self.assertIn(INVITE.strip().splitlines()[0], turn["view"], "with its full text")
+                self.assertEqual(item["answer"]["choices"], ["accept_invitation", "question", "decline"])
+            if before:
+                status, out = self.send(f"/seat/{token}/action", {"text": "yes", "turn_id": before})
+                self.assertEqual(status, 409, "an answer to one question never applies to the next")
+            # and answers it as the classic page does: the button's words and anything typed, with the question's id
+            status, out = self.send(f"/seat/{token}/action", {"text": text, "turn_id": turn["turn_id"]})
+            self.assertEqual(status, 200, out)
+            self.assertEqual(out["recorded_as"]["action"], words)
+            before = turn["turn_id"]
+            th.join(30)
+        self.assertEqual(self.room.state().presences[slot.seat.id].state, IN)
+        status, box = self.http(f"/seat/{token}/portal/inbox.json")
+        self.assertFalse([x for x in box["items"] if x["kind"] == "gate"], "nothing is asked of them once in")
+        # the page sends exactly that, with the words and buttons of the classic page (prompts.SEAT_PAGE)
+        page = self.static("portal.html")
+        for said in ('BASE + "words.json"', 'BASE + "turn.json"', "W.gates[d.kind]", "g.buttons.map",
+                     "seatAction({text, turn_id: d.turn_id})", '["yes", "no", "received", "question"].includes(prefix)'):
+            self.assertIn(said, page)
+        for said in ("Ask a question first", "Share everything I said", "I have read it"):
+            self.assertNotIn(said, page, f"{said!r} comes from prompts.SEAT_PAGE, as on the classic page")
+
+    # -- what no one may learn of another, and what each page says it did ------------------------------------------
+    def test_someone_who_declined_at_the_gates_is_never_named_in_anyone_s_runtime(self):
+        self.field(models=ModelsMock(2, 0.01, script=scripted({"model-1": [{"action": "decline_invitation"}]})))
+        st = self.room.state()
+        self.assertIsNone(st.presences["model-1"].joined_at)
+        self.assertGreater(sum(usd for pres, _, _, _, usd, _ in self.room.log.cost_by_presence() if pres == "model-1"), 0,
+                           "asking them at the gates was spent")
+        theirs = portal.runtime(st, self.room.log, "mock-2")
+        for said in (json.dumps(theirs), portal.text(theirs)):
+            for words in ("model-1", "Model 1"):
+                self.assertNotIn(words, said, "the field was never told of them")
+        self.assertEqual([r["name"] for r in theirs["by_participant"]], ["Mock 2", "everyone else, together"],
+                         "what was spent on them is in everyone else's, which names no one")
+        self.assertNotIn("model-1", json.dumps(portal.activity(self.room.log, st, "mock-2")))
+        self.assertEqual(sum(r["share_percent"] for r in theirs["by_participant"]), 100)
+        self.assertEqual(sum(m["share_percent"] for m in theirs["models"]), 100)
+        self.assertNotIn("model-1", [r["id"] for r in _flat(portal.agents(st, self.room.log, "mock-2")["agents"])])
+        op = portal.runtime(st, self.room.log, portal.OPERATOR)
+        self.assertIn("model-1", [r["id"] for r in op["by_participant"]], "the operator, who holds the file, sees them")
+
+    def test_another_wake_changes_nothing_a_participant_sees_of_anothers_spend(self):
+        self.field()
+        self.room.step()
+        def view():
+            rt = portal.runtime(self.room.state(), self.room.log, "mock-2")
+            return rt["by_participant"], rt["models"], rt["last_wakes"]
+        before = view()
+        self.assertTrue(before[0] and before[1], before)
+        self.room.log.charge("model-0", "mock/model-0", 100, 10, 0.01)      # the call of another wake
+        self.room.log.charge("model-0", "mock/model-0", 900, 10, 0.09)      # and a larger one
+        self.assertEqual(view(), before, "neither when, nor the size nor the number of its calls")
+        mine = next(r for r in portal.runtime(self.room.state(), self.room.log, "model-0")["by_participant"]
+                    if r["id"] == "model-0")
+        self.assertIn("calls", mine, "its own, it sees")
+
+    def test_a_participant_sees_their_own_share_and_their_agents_in_whole_percent_and_everyone_elses_only_together(self):
+        self.field(models=ModelsMock(2, 0.013))
+        self.room.step()
+        self.post("mock-2", action="invite", own="Robin", note="mine")
+        robin = next(s.seat.id for s in self.rv._slots.values() if s.seat.name == "Robin")
+        self.room.log.charge(robin, "own/model", 300, 30, 0.02)
+        self.room.log.charge("mock-2", "tool:github", 0, 0, 0.05)          # a priced tool, used once
+        theirs = portal.runtime(self.room.state(), self.room.log, "mock-2")
+        self.assertEqual([r["name"] for r in theirs["by_participant"]], ["Mock 2", "Robin", "everyone else, together"],
+                         "their own, the agent they power, and everyone else as one")
+        self.assertEqual(next(r for r in theirs["by_participant"] if r["id"] == robin)["calls"], 1)
+        names = [m["model"] for m in theirs["models"]]
+        self.assertFalse([m for m in names if m.startswith("tool:")], names)
+        self.assertEqual(names, ["own/model", "tools", "everyone else's, together"], "a tool's charges are not a model")
+        for row in theirs["models"] + theirs["by_participant"]:
+            self.assertIsInstance(row["share_percent"], int, "a whole percent: no exact share to divide a price by")
+        self.assertEqual(sum(m["share_percent"] for m in theirs["models"]), 100)
+        self.assertEqual(sum(r["share_percent"] for r in theirs["by_participant"]), 100)
+        op = portal.runtime(self.room.state(), self.room.log, portal.OPERATOR)
+        self.assertIn("tool:github", [m["model"] for m in op["models"]], "the operator sees each exactly")
+        self.assertNotIn("no participant is shown a dollar figure", portal.__doc__)
+        self.assertIn("Prices are stated in dollars where they apply", portal.SPEND_NOTE)
+
+    def test_no_list_ranks_participants(self):
+        self.field(models=ModelsMock(2, 0.01))
+        self.room.log.charge("model-1", "zeta/model", 1000, 100, 5.0)      # by far the most spent
+        for name, usd in (("Zed", 0.01), ("Ash", 0.001)):                   # agents Mock 0 powers, which it sees
+            self.post("mock-0", action="invite", own=name, note="mine")
+            self.room.log.charge(next(s.seat.id for s in self.rv._slots.values() if s.seat.name == name), "own/model", 1, 1, usd)
+        self.room.log.charge("mock-0", "tool:github", 0, 0, 0.5)
+        for _ in range(3):
+            self.post("mock-2", action="contribute", content="many words")   # by far the most done
+        for pid in ("mock-0", "mock-1"):
+            self.post(pid, action="contribute", content="a few words")
+        st = self.room.state()
+        for viewer in ("mock-0", portal.OPERATOR):
+            spent = [r["name"] for r in portal.runtime(st, self.room.log, viewer)["by_participant"] if not r.get("unnamed")]
+            self.assertEqual(spent, sorted(spent, key=str.lower), f"{viewer}: in order of name, never of spend")
+            self.assertGreater(len(spent), 2, spent)
+            done = [r["name"] for r in portal.activity(self.room.log, st, viewer)["participants"]]
+            self.assertEqual(done, sorted(done, key=str.lower), f"{viewer}: nor of how much each did")
+            self.assertGreater(len(done), 2)
+
+    def test_following_or_unfollowing_never_shows_in_anyone_elses_activity(self):
+        self.field()
+        acts = lambda viewer: next((r["acts"] for r in portal.activity(self.room.log, self.room.state(), viewer)["participants"]
+                                    if r["id"] == "mock-0"), 0)
+        before = {v: acts(v) for v in ("mock-2", "mock-0", portal.OPERATOR)}
+        self.post("mock-0", action="follow", domain="timing")
+        self.post("mock-0", action="unfollow", domain="timing")
+        self.assertEqual(acts("mock-2"), before["mock-2"], "what someone follows is the software's own note")
+        self.assertEqual(acts("mock-0"), before["mock-0"] + 2, "their own, they see counted")
+        self.assertEqual(acts(portal.OPERATOR), before[portal.OPERATOR] + 2, "as does the operator")
+
+    def test_an_answer_from_the_inbox_stays_in_the_circle_it_answers(self):
+        self.field()
+        self.post("mock-0", action="form_circle", name="quiet", private=True, reason="a chat", ask=["mock-1"])
+        cid = self.last("circle_form")["id"]
+        self.post("mock-1", action="answer", to=self.waiting("mock-1")[-1]["id"], yes=True)
+        self.post("mock-0", action="contribute", circle=cid, content="SECRET-QUESTION", to=["mock-1"], ask=True)
+        item = next(x for x in self.inbox("mock-1")["items"] if x["kind"] == "request")
+        self.assertEqual(item["answer"]["where"], "circle quiet", "the page says where the answer goes")
+        out = self.post("mock-1", **{**item["answer"]["template"], "content": "No. REPLY-WORDS"})   # as the page sends it
+        ev = self.room.log.get(out["recorded"][0]["id"])
+        self.assertEqual(ev["payload"].get("circle"), cid, "it stays in the circle it answers")
+        self.assertFalse(self.room.state().readable(ev, "mock-2"), "where no one outside it reads it")
+        # one who has left the circle is refused, rather than having their answer moved into the open
+        self.post("mock-0", action="contribute", circle=cid, content="and another?", to=["mock-1"], ask=True)
+        item = next(x for x in self.inbox("mock-1")["items"] if x["kind"] == "request")
+        self.post("mock-1", action="leave_circle", circle=cid)
+        out = self.room.post("mock-1", {**item["answer"]["template"], "content": "LATE-WORDS"})
+        self.assertFalse(out.get("ok"), out)
+        self.assertNotIn("LATE-WORDS", json.dumps([e["payload"] for e in self.room.log.iter(kind="contribute")]))
+        # and an answer to words in a domain goes in that domain, not wherever its author is looking
+        self.post("mock-0", action="contribute", domain="orchard", content="Mock 1, in the orchard?", to=["mock-1"], ask=True)
+        item = next(x for x in self.inbox("mock-1")["items"] if x["kind"] == "request")
+        out = self.post("mock-1", **{**item["answer"]["template"], "content": "yes"})
+        self.assertEqual(self.room.log.get(out["recorded"][0]["id"])["payload"]["domain"], "orchard")
+
+    def test_a_first_budget_or_one_set_with_no_one_in_the_field_tells_no_one_and_the_reply_says_so(self):
+        self.field()
+        notes = lambda: [e["payload"]["content"] for e in self.room.log.iter(kind="operator_note")]
+        out = self.console.op("budget", {"usd": 5, "note": "FIRST-WORDS"})
+        self.assertTrue(out["ok"], out)
+        self.assertIn("first budget, so participants are not told", out["note"])
+        self.assertIn("your message was not sent", out["note"])
+        self.assertEqual(notes(), [], "no one is told")
+        out = self.console.op("budget", {"usd": 6, "note": "MORE-WORDS"})
+        self.assertIn("The field is told funding was added", out["note"])
+        self.assertIn("with your message", out["note"])
+        self.assertTrue(any("MORE-WORDS" in n for n in notes()))
+        self.assertIn("nothing changed", self.console.op("budget", {"usd": 6})["note"])
+        room = Room(EventLog(os.path.join(self.tmp, "empty.db")), [PeopleMock(2)], alert_fn=lambda m: None)
+        room.invite_all()
+        room.set_budget(1.0)
+        said = room.set_budget(2.0, "EMPTY-WORDS")
+        self.assertIn("No one is in the field yet, so no one is told", said)
+        self.assertNotIn("EMPTY-WORDS", json.dumps([e["payload"] for e in room.log.iter()]))
+        page = self.static("portal.html")
+        self.assertNotIn("The field is told, in time.", page, "the page says what the engine did, not what it hopes")
+        self.assertIn("say(data);", page)
+
+    def test_a_reason_for_replacing_a_link_stays_with_the_operator_and_never_reaches_the_field(self):
+        self.field()
+        made = self.console.op("seat", {"name": "Rook"})
+        out = self.console.op("reseat", {"seat": made["seat"], "note": "REASON-WORDS, it went astray"})
+        self.assertTrue(out["ok"], out)
+        self.assertIn("REASON-WORDS", json.dumps(self.console.op_state()["console"]["activity"]), "kept for the operator")
+        self.assertNotIn("REASON-WORDS", json.dumps([e["payload"] for e in self.room.log.iter()]), "never in the transcript")
+        self.assertIn('opPost("reseat", {seat: t.dataset.reseat, note})', self.static("portal.html"), "the page sends it")
+
+    def test_a_spend_alert_leaves_the_operators_inbox_once_a_budget_is_set(self):
+        self.field()
+        kinds = lambda: [x["kind"] for x in self.inbox(portal.OPERATOR)["items"]]
+        self.room.emit("room", "cost_alert", {"total_usd": 1.0, "message": "The field has spent $1.00."})
+        self.assertIn("cost_alert", kinds())
+        self.room.set_budget(5.0)
+        self.assertNotIn("cost_alert", kinds(), "a budget set after it is the answer it asked for")
+        self.room.emit("room", "cost_alert", {"total_usd": 2.0, "message": "The field has spent $2.00."})
+        self.assertIn("cost_alert", kinds(), "and a newer alert waits again")
+        self.assertIn("It stays here until you set a budget", self.static("portal.html"))
+
+    def test_words_for_one_person_stay_in_the_inbox_until_they_open_them_even_past_a_poll_nobody_read(self):
+        self.field()
+        ana, token = self.person()
+        upto = self.room.state().last_event
+        th = threading.Thread(target=lambda: self.console.portal("inbox", token=token, since=upto + 1000, wait=5), daemon=True)
+        th.start()
+        time.sleep(0.3)
+        self.room._for_them_alone(ana, "FIRST-WORDS for Ana alone")
+        th.join(10)                  # its answer went to a page that was already gone: no one read it
+        words = lambda **kw: [x for x in self.console.portal("inbox", token=token, **kw)["items"] if x["kind"] == "for_you_alone"]
+        first = words()
+        self.assertEqual([x["text"] for x in first], ["FIRST-WORDS for Ana alone"], "still waiting for them")
+        self.assertEqual(len(words()), 1, "however often a page asks")
+        time.sleep(0.02)
+        self.room._for_them_alone(ana, "SECOND-WORDS")
+        self.assertEqual([x["text"] for x in words(read=first[0]["ts"])], ["SECOND-WORDS"], "only what they opened counts read")
+        self.assertEqual(words(read=max(x["ts"] for x in words())), [])
+        # a page that already holds them is not woken by them again and again
+        self.room._for_them_alone(ana, "THIRD-WORDS")
+        held = words()[0]["ts"]
+        since = self.room.state().last_event
+        t0 = time.time()
+        self.console.portal("inbox", token=token, since=since, wait=1.5, have=held)
+        self.assertGreaterEqual(time.time() - t0, 1.0, "words the page holds are not news to it")
+        t0 = time.time()
+        self.console.portal("inbox", token=token, since=since, wait=1.5)
+        self.assertLess(time.time() - t0, 1.0, "words it does not hold are")
+
+    def test_a_request_naming_no_one_found_is_not_reported_as_waiting_in_an_inbox(self):
+        self.field()
+        rec = self.post("mock-0", action="contribute", content="help?", to=["Nobody"], ask=True)["recorded"][0]
+        self.assertNotIn("ask", rec, "no one was found to ask")
+        self.assertEqual(rec["to_unknown"], ["Nobody"])
+        rec = self.post("mock-0", action="contribute", content="help?", to=["mock-1", "Nobody"], ask=True)["recorded"][0]
+        self.assertEqual((rec["ask"], rec["to"], rec["to_unknown"]), (True, ["mock-1"], ["Nobody"]))
+        page = self.static("portal.html")
+        self.assertIn("if (ask && rec.ask)", page, "the page says a request waits only when one was recorded")
+        self.assertIn("it was posted as ordinary words, not a request", page)
+
+    def test_not_now_sends_nothing_on_every_item_and_a_button_that_sends_says_it_replies(self):
+        page = self.static("portal.html")
+        self.assertIn('btn("later", "Not now", "quiet", "Nothing is sent, anywhere.', page)
+        sending = page.split("async function answer(x, how){", 1)[1]
+        self.assertLess(sending.index('if (how === "later"){'), sending.index("seatPost("),
+                        "a not now returns before anything is posted")
+        self.assertLess(sending.index('if (how === "later"){'), sending.index("opPost("))
+        self.assertIn('btn("notnow", "Reply: not now"', page)
+        self.assertIn('btn("no", "Reply: no"', page)
+        contribute = page.split('case "contribute":', 1)[1].split("break;", 1)[0]
+        self.assertIn("notNow", contribute, "a request can be left without sending anything")
+        self.assertNotIn("A reply wakes the one who asked", page, "a reply wakes only a model that has not turned that off")
+
+
+def _flat(rows):
+    """The portal's agents, with those brought by a participant taken out from under them."""
+    out = []
+    for r in rows:
+        out.append(r)
+        out += _flat(r.get("brought") or [])
+    return out
 
 
 if __name__ == "__main__":

@@ -3,8 +3,9 @@
 
     python3 -m hope join SEAT_LINK --provider NAME [--model ID] [--turned] [--no-heartbeat] [--billing-on]
                                    [--providers FILE]
-    python3 -m hope join SEAT_LINK --plan chatgpt [--model ID]
+    python3 -m hope join SEAT_LINK --plan chatgpt [--model ID]     (either may add --share-usage)
     python3 -m hope plan status|sign-in|sign-out chatgpt [--another-account | --account EMAIL]
+    python3 -m hope usage
 
 A participant who brings an agent of their own ({"action":"invite","own":"<a name>"}) is given a
 seat link, shown to them alone. This is the other end of that link: it holds the seat, and asks
@@ -33,6 +34,12 @@ Secrets. Keys come from environment variables, as everywhere in hope; a ChatGPT 
 its owner-only file (hope/chatgpt.py). Neither, and not the seat's token either, is ever printed:
 the seat link is a key, so this never shows it except as the person typed it.
 
+Your own usage. What the seat spends is yours, not the field's: the field's ledger counts only what the
+operator's providers spend. So this keeps a tally of it here, in your own config folder beside the
+ChatGPT sign-in (usage.json: tokens in and out per model per day, and the cost where the provider reports
+one), shows it at the end of each turn's line, and sends it nowhere. python3 -m hope usage shows it. With
+--share-usage, once a day has ended, its summary is posted to the field as an ordinary entry by the seat.
+
 Ctrl-C leaves quietly: nothing is recorded, and the seat stays in the field until its person
 returns with the same command.
 """
@@ -40,6 +47,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import re
 import threading
 import time
@@ -97,6 +105,67 @@ NOT_ASKED = ("Your agent was not asked, so nothing was sent and no answer is rec
 
 class JoinError(Exception):
     """Something the person must hear in plain words, and that stops the runner. Never holds a secret."""
+
+
+# --------------------------------------------------------------------------- your own usage, on your machine
+USAGE_FILE = "usage.json"   # beside the ChatGPT sign-in, in this person's own config folder; sent nowhere
+
+
+def read_usage(folder: Optional[str] = None) -> Dict[str, Any]:
+    """This machine's tally of its person's own usage: {"days": {day: {model: {calls, prompt_tokens,
+    completion_tokens, cost_usd?}}}, "shared": [days posted to the field]}. Empty when there is none."""
+    from . import chatgpt
+    try:
+        with open(os.path.join(folder or chatgpt.config_dir(), USAGE_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def count_usage(model: str, prompt_tokens: int, completion_tokens: int, cost: Any = None,
+                folder: Optional[str] = None, day: Optional[str] = None) -> Dict[str, Any]:
+    """Add one call to this machine's tally, under the person's own day; the cost only where the provider
+    reported one. Written only to the owner's own file, never sent. Returns the whole tally."""
+    from . import chatgpt
+    data = read_usage(folder)
+    day = day or time.strftime("%Y-%m-%d")
+    m = data.setdefault("days", {}).setdefault(day, {}).setdefault(model or "its model",
+                                                                    {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+    m["calls"] += 1
+    m["prompt_tokens"] += int(prompt_tokens or 0)
+    m["completion_tokens"] += int(completion_tokens or 0)
+    try:
+        if cost is not None:
+            m["cost_usd"] = round(float(m.get("cost_usd") or 0.0) + float(cost), 6)
+    except (TypeError, ValueError):
+        pass
+    chatgpt._write_private(os.path.join(chatgpt._folder(folder), USAGE_FILE), data)
+    return data
+
+
+def day_words(models: Dict[str, Any]) -> str:
+    """One day's usage in plain words: calls, tokens in and out, per model, and what the provider reported it cost."""
+    parts = []
+    for model, m in sorted(models.items()):
+        cost = f", ${m['cost_usd']:.4f} as its provider reported" if m.get("cost_usd") is not None else ""
+        parts.append(f"{m['calls']} call{'s' if m['calls'] != 1 else ''} to {model}, {m['prompt_tokens']:,} tokens in "
+                     f"and {m['completion_tokens']:,} out{cost}")
+    return "; ".join(parts) or "nothing"
+
+
+def usage_text(folder: Optional[str] = None) -> str:
+    """python3 -m hope usage: the tally kept on this machine, newest day first."""
+    data = read_usage(folder)
+    days = data.get("days") or {}
+    if not days:
+        return ("No usage is kept on this machine yet. hope join counts what your own seat spends here, and sends "
+                "it nowhere.")
+    shared = set(data.get("shared") or [])
+    lines = ["Your own usage, as hope join counts it on this machine (it is sent nowhere unless you share it):"]
+    for day in sorted(days, reverse=True)[:60]:
+        lines.append(f"  {day}: {day_words(days[day])}" + (" (shared with the field)" if day in shared else ""))
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- the seat link
@@ -215,12 +284,14 @@ class Runner:
     conn and seat are a connector and its one seat (an OpenAICompatibleConnector from
     providers.single_seat, or a chatgpt.ChatGPTPlanConnector). powered is what the seat says powers it:
     route, provider, trains, acts. inp and out are how it talks with its person (input and print by
-    default; tests pass their own), and sleep how it waits."""
+    default; tests pass their own), and sleep how it waits. Its person's own usage is tallied in
+    usage_folder (their config folder by default), and posted once a day only with share_usage."""
 
     def __init__(self, link: str, conn, seat, powered: dict, *, plan: Optional[str] = None,
                  inp: Callable[[str], str] = input, out: Callable[[str], None] = print,
                  sleep: Callable[[float], None] = time.sleep, wait: float = WAIT, poll: float = POLL,
-                 steps: int = MAX_STEPS, heartbeat: bool = True):
+                 steps: int = MAX_STEPS, heartbeat: bool = True, share_usage: bool = False,
+                 usage_folder: Optional[str] = None):
         self.field = Field(link)
         self.conn, self.seat = conn, seat
         self.powered = {k: powered.get(k) for k in ("route", "provider", "trains", "acts")}   # never "by"
@@ -229,6 +300,8 @@ class Runner:
         self.inp, self._out, self.sleep = inp, out, sleep
         self.wait, self.poll, self.steps = wait, poll, steps
         self.heartbeat = heartbeat           # False: once in the field, ask not to be woken on its heartbeat
+        self.share_usage = share_usage       # True: post a summary of each ended day's usage, by the seat
+        self.usage_folder = usage_folder     # where the tally is kept (the person's config folder by default)
         self.stop = threading.Event()
         self.name, self.pid = "your agent", None
         self.answered: set = set()           # gate questions answered (by turn id)
@@ -308,7 +381,9 @@ class Runner:
     def _ask(self, system: str, messages: List[dict]):
         """Its model, once. None (and its person told why) when it could not answer."""
         try:
-            return self.conn.ask(self.seat, system, messages)
+            reply = self.conn.ask(self.seat, system, messages)
+            self._tally(reply)
+            return reply
         except (OSError, ValueError, http.client.HTTPException) as e:
             self.out(f"Its model could not answer: {type(e).__name__}; nothing was posted.")
             return None
@@ -320,6 +395,49 @@ class Runner:
             else:
                 self.out(f"Its model could not answer: {e}")
             return None
+
+    # -- its person's own usage, on this machine -----------------------------------------------------
+    def _tally(self, reply) -> None:
+        """Count one call in its person's own tally, here; never sent. The cost only where the provider reported one."""
+        raw = reply.raw if isinstance(getattr(reply, "raw", None), dict) else {}
+        cost = (raw.get("usage") or {}).get("cost") if isinstance(raw.get("usage"), dict) else None
+        try:
+            count_usage(getattr(self.seat, "model", "") or "its model", getattr(reply, "prompt_tokens", 0),
+                        getattr(reply, "completion_tokens", 0), cost, self.usage_folder)
+        except OSError as e:
+            self._once("tally", f"Your usage could not be kept on this machine ({type(e).__name__}); nothing else changes.")
+
+    def _today(self) -> str:
+        """Today's own usage, said at the end of a turn's line."""
+        day = (read_usage(self.usage_folder).get("days") or {}).get(time.strftime("%Y-%m-%d"))
+        if not day:
+            return ""
+        ins = sum(m.get("prompt_tokens", 0) for m in day.values())
+        outs = sum(m.get("completion_tokens", 0) for m in day.values())
+        costs = [m["cost_usd"] for m in day.values() if m.get("cost_usd") is not None]
+        return (f" [today, on your own account: {ins:,} tokens in, {outs:,} out"
+                + (f", ${sum(costs):.4f} as reported" if costs else "") + "; kept on this machine]")
+
+    def _share(self) -> None:
+        """With --share-usage: each ended day's usage not yet shared, posted to the field as an ordinary entry
+        by the seat. Without it, nothing of the tally leaves this machine."""
+        if not self.share_usage:
+            return
+        data = read_usage(self.usage_folder)
+        today, shared = time.strftime("%Y-%m-%d"), set(data.get("shared") or [])
+        for day in sorted(d for d in (data.get("days") or {}) if d < today and d not in shared)[-7:]:
+            text = (f"{self.name}'s own usage on {day}, on its person's own account, shared by its person: "
+                    f"{day_words(data['days'][day])}.")
+            res = self._post({"action": "contribute", "content": text, "domain": "usage", "title": f"usage on {day}"})
+            if not (res and res.get("ok")):
+                return
+            from . import chatgpt
+            data = read_usage(self.usage_folder)
+            data["shared"] = sorted(set(data.get("shared") or []) | {day})
+            try:
+                chatgpt._write_private(os.path.join(chatgpt._folder(self.usage_folder), USAGE_FILE), data)
+            except OSError:
+                return
 
     # -- the gates -----------------------------------------------------------------------------------
     def _look_at_gates(self) -> dict:
@@ -427,6 +545,7 @@ class Runner:
             if w.get("due") and f.get("view"):
                 self.out(f"Woken: {self._why(w.get('why'))}.")
                 self._act(f.get("system") or prompts.SYSTEM_MEMBER, f["view"])
+                self._share()
 
     def _outside(self) -> None:
         """Not in the field just now: a question may be waiting for it (at the field's closing, or asked back)."""
@@ -456,7 +575,7 @@ class Runner:
                 return
             payload = to_post(reply.text)
             if payload is None:
-                self.out(f"{self.name} said nothing this time.")
+                self.out(f"{self.name} said nothing this time." + self._today())
                 return
             res = self._post(payload)
             if not res or not res.get("next"):
@@ -483,7 +602,7 @@ class Runner:
                 self.sleep(wait)
                 continue
             if res.get("ok") or res.get("recorded"):
-                self.out(f"{self.name}: {_gist(payload)}")
+                self.out(f"{self.name}: {_gist(payload)}" + self._today())
             if res.get("error") and res.get("error") != "nothing to record":
                 self.out(f"The field said: {res['error']}")
             if res.get("private"):
@@ -554,6 +673,7 @@ class Runner:
             return
         self.out(f"{self.name} is taking a turn.")
         self._act(f.get("system") or prompts.SYSTEM_MEMBER, f.get("view") or "")
+        self._share()
 
     def _watch(self) -> None:
         """What is new, in a line or two, without calling the model: who wrote, and whether anyone named or
@@ -773,7 +893,8 @@ def cli(args, inp=input, out=print) -> int:
         return 0
     try:
         Runner(link, conn, seat, powered, plan=plan, inp=inp, out=out,
-               heartbeat=not getattr(args, "no_heartbeat", False)).run()
+               heartbeat=not getattr(args, "no_heartbeat", False),
+               share_usage=bool(getattr(args, "share_usage", False))).run()
     except (JoinError, ConnectorError) as e:
         out(str(e))
         return 2

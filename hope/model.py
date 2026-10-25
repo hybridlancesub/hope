@@ -386,6 +386,7 @@ class RoomState:
     round_at: int = 0                        # the event that began it
     clocks: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {c: {} for c in CLOCKS})  # members' settings only
     budget: Optional[float] = None           # USD the operator has said this field may spend, if they said
+    budget_at: Optional[int] = None          # the event that set it: a spend alert before it has been answered
     runway: Optional[Dict[str, Any]] = None  # the latest runway notice, if the budget is running low
     declarations: Dict[int, Dict[str, Any]] = field(default_factory=dict)  # by event id: what, when, answers, status
     bridges: Dict[int, Dict[str, Any]] = field(default_factory=dict)       # what the field asked the operator's help with
@@ -668,6 +669,31 @@ class RoomState:
         if pid in c["members"]:
             return True
         return any(leave is not None and ev["id"] < leave for _, leave in c["spans"].get(pid, []))
+
+    def news_for(self, pid: str, since: int) -> List[Dict[str, Any]]:
+        """Contributions after `since` that a participant may read and did not write, oldest first."""
+        return [ev for eid, ev in sorted(self.contributions.items())
+                if eid > since and ev["actor"] != pid and self.readable(ev, pid)]
+
+    @staticmethod
+    def naming(evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones that name a participant in "to"."""
+        return [ev for ev in evs if pid in (ev["payload"].get("to") or [])]
+
+    def replying(self, evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones that reply to something a participant wrote."""
+        mine = {eid for eid, ev in self.contributions.items() if ev["actor"] == pid}
+        return [ev for ev in evs if ev["payload"].get("target") in mine]
+
+    def unanswered(self, evs: List[Dict[str, Any]], pid: str) -> List[Dict[str, Any]]:
+        """Of these entries, the ones a participant has not replied to."""
+        answered = {ev["payload"].get("target") for ev in self.contributions.values() if ev["actor"] == pid}
+        return [ev for ev in evs if ev["id"] not in answered]
+
+    def requests_for(self, pid: str) -> List[Dict[str, Any]]:
+        """Requests naming a participant ("to" with "ask") that they may read and have not replied to, oldest
+        first. A request holds up no one: it only waits, and silence is never a yes."""
+        return self.unanswered([ev for ev in self.naming(self.news_for(pid, 0), pid) if ev["payload"].get("ask")], pid)
 
     def follows(self, p: Presence, ev: Dict[str, Any]) -> bool:
         """Whether an entry is in something a participant follows, by choice or by having written there."""
@@ -1294,6 +1320,7 @@ class RoomState:
             self.round_at = eid
         elif k == "budget":
             self.budget = float(p["usd"]) if p.get("usd") else None
+            self.budget_at = eid
             self.runway = None               # a new budget starts the runway over
         elif k == "runway":
             self.runway = {"id": eid, **p}
